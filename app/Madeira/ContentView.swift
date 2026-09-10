@@ -851,6 +851,10 @@ struct ContentView: View {
     @State private var debuggerAttached = isDebuggerAttached()
     @ObservedObject private var input = InputSettings.shared
     @State private var pointerPanel = false
+    // Path is relative to the prefix's C: drive, e.g. "Program Files\MyGame\Game.exe"
+    // -- the game itself must already be copied into drive_c (Files app or devicectl).
+    @AppStorage("madeira.customExePath") private var customExePath = ""
+    @AppStorage("madeira.customArgs") private var customArgs = ""
     @Namespace private var pointerNS
     /// .compact = iPhone landscape: game surface expands, arrow keys appear.
     @Environment(\.verticalSizeClass) private var vSizeClass
@@ -957,6 +961,7 @@ struct ContentView: View {
             .zIndex(10)
             Divider()
             actionButtons
+            customLaunchControls
             Divider()
             logConsole
         }
@@ -1516,6 +1521,56 @@ struct ContentView: View {
             }
             .padding()
         }
+    }
+
+    /// Launch any exe already copied into the prefix's C: drive, without a
+    /// per-title button/rebuild. Path is entered relative to drive_c, e.g.
+    /// "Program Files\MyGame\Game.exe".
+    private var customLaunchControls: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Custom game (path on C:\\)")
+                .font(.caption)
+                .foregroundColor(.secondary)
+            TextField("Program Files\\MyGame\\Game.exe", text: $customExePath)
+                .textFieldStyle(.roundedBorder)
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+            TextField("Launch args (optional)", text: $customArgs)
+                .textFieldStyle(.roundedBorder)
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+            Button("Launch Custom Game") {
+                launchCustomGame()
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.indigo)
+            .disabled(customExePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+    }
+
+    private func launchCustomGame() {
+        let trimmedPath = customExePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedPath.isEmpty else { return }
+
+        var winPath = trimmedPath.replacingOccurrences(of: "/", with: "\\")
+        if !winPath.lowercased().hasPrefix("c:\\") {
+            winPath = "C:\\" + winPath.trimmingCharacters(in: CharacterSet(charactersIn: "\\"))
+        }
+
+        let trimmedArgs = customArgs.trimmingCharacters(in: .whitespacesAndNewlines)
+        setenv("MADEIRA_EXE", winPath, 1)
+        if trimmedArgs.isEmpty {
+            unsetenv("MADEIRA_ARGS")
+        } else {
+            setenv("MADEIRA_ARGS", trimmedArgs, 1)
+        }
+        unsetenv("MADEIRA_DESKTOP")
+
+        logStore.log("Custom game: MADEIRA_EXE = \(winPath)"
+            + (trimmedArgs.isEmpty ? "" : ", MADEIRA_ARGS = \(trimmedArgs)"))
+        runWineFullSequence()
     }
 
     private func runTriangleTest() {
