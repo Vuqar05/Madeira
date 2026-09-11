@@ -844,6 +844,41 @@ struct MadeiraMetalView: UIViewRepresentable {
     func updateUIView(_ uiView: MetalBackedView, context: Context) {}
 }
 
+// ============================================================================
+// Tooling UI design tokens.
+//
+// The chrome frames a black Metal surface, so it is dark-first and the root
+// pins .dark — `.primary`/`.secondary` on a light background washed out against
+// the game strip. One definition per colour and radius, so panels, cards and
+// chips stay consistent instead of every call site inventing its own opacity.
+// ============================================================================
+enum MDTheme {
+    static let bg      = Color(red: 0.055, green: 0.060, blue: 0.075)
+    static let surface = Color(red: 0.098, green: 0.106, blue: 0.130)
+    static let raised  = Color(red: 0.145, green: 0.157, blue: 0.188)
+    static let line    = Color.white.opacity(0.09)
+    static let accent  = Color(red: 0.36, green: 0.64, blue: 1.00)
+    static let text    = Color.white.opacity(0.92)
+    static let dim     = Color.white.opacity(0.55)
+    static let faint   = Color.white.opacity(0.32)
+    static let ok      = Color(red: 0.32, green: 0.83, blue: 0.55)
+    static let warn    = Color(red: 1.00, green: 0.72, blue: 0.30)
+    static let bad     = Color(red: 1.00, green: 0.44, blue: 0.44)
+    static let radius: CGFloat = 12
+}
+
+extension View {
+    /// Panel/card chrome: filled rounded rect under a hairline border.
+    func mdCard(fill: Color = MDTheme.surface, padding: CGFloat = 12) -> some View {
+        self
+            .padding(padding)
+            .background(RoundedRectangle(cornerRadius: MDTheme.radius, style: .continuous)
+                .fill(fill))
+            .overlay(RoundedRectangle(cornerRadius: MDTheme.radius, style: .continuous)
+                .strokeBorder(MDTheme.line, lineWidth: 1))
+    }
+}
+
 struct ContentView: View {
     @StateObject private var logStore = LogStore.shared
     @State private var jitStatus: JITStatus = .unknown
@@ -855,9 +890,22 @@ struct ContentView: View {
     // -- the game itself must already be copied into drive_c (Files app or devicectl).
     @AppStorage("madeira.customExePath") private var customExePath = ""
     @AppStorage("madeira.customArgs") private var customArgs = ""
+    @State private var panel: Panel = .launch
+    @State private var showGuide = false
+    @State private var showCustomSheet = false
+    @State private var showDevTests = false
+    @State private var errorsOnly = false
     @Namespace private var pointerNS
     /// .compact = iPhone landscape: game surface expands, arrow keys appear.
     @Environment(\.verticalSizeClass) private var vSizeClass
+
+    /// The bottom half is one of two panels rather than both stacked: the log
+    /// needs the height, and the launch targets need room to be more than a row
+    /// of look-alike capsules.
+    enum Panel: String, CaseIterable {
+        case launch = "Launch"
+        case console = "Console"
+    }
 
     enum JITStatus {
         case unknown
@@ -890,36 +938,64 @@ struct ContentView: View {
             .navigationTitle("Madeira")
             .navigationBarTitleDisplayMode(.inline)
             .navigationBarHidden(vSizeClass == .compact)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button { showGuide = true } label: {
+                        Image(systemName: "questionmark.circle")
+                            .foregroundStyle(MDTheme.dim)
+                    }
+                }
+            }
             .onAppear {
                 jit_install_trap_handler()
                 entitlements = EntitlementStatus.check()
                 logEntitlementStatus()
             }
         }
+        .preferredColorScheme(.dark)
+        .sheet(isPresented: $showGuide) {
+            SetupGuideView().preferredColorScheme(.dark)
+        }
+        .sheet(isPresented: $showCustomSheet) {
+            customGameSheet.preferredColorScheme(.dark)
+        }
     }
 
-    /// Portrait: classic tooling layout — header, badges, 240pt game strip,
-    /// key row, action buttons, log console.
+    /// Portrait: status strip, game surface, input bar, then one of two
+    /// swappable panels (launch targets / log console).
     private var portraitBody: some View {
         VStack(spacing: 0) {
-            // Readouts sit ABOVE the game strip, closest to the surface they
-            // describe: entitlement indicators, then the present/FPS readout,
-            // then the surface itself. (Only the KEY row stays below — it is
-            // input, not instrumentation.)
-            //
-            // NOTE: the surface is a raw window-level view positioned over the
-            // placeholder (MetalHostView.shared), so SwiftUI content laid "on
-            // top" of the strip is covered — these rows must be siblings above
-            // it, never overlays on it.
-            if let ents = entitlements {
-                entitlementBadges(ents)
+            statusBar
+            surfaceSection
+            inputBar
+            panelPicker
+            Group {
+                switch panel {
+                case .launch:  launchPanel
+                case .console: consolePanel
+                }
             }
-            HStack(spacing: 6) {
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .background(MDTheme.bg)
+    }
+
+    /// Readouts sit ABOVE the game strip, closest to the surface they describe.
+    ///
+    /// NOTE: the surface is a raw window-level view positioned over the
+    /// placeholder (MetalHostView.shared), so SwiftUI content laid "on top" of
+    /// the strip is covered — these rows must be siblings above it, never
+    /// overlays on it. For the same reason the strip is never clipped or
+    /// rounded: the chrome is drawn around it, not over it.
+    private var surfaceSection: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
                 FPSOverlay()
-                Spacer()
+                Spacer(minLength: 0)
             }
-            .padding(.horizontal, 8)
-            .padding(.bottom, 4)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(MDTheme.surface)
             MadeiraMetalView()
                 .frame(height: 240)
                 .background(Color.black)
@@ -928,43 +1004,74 @@ struct ContentView: View {
                     for: UIDevice.orientationDidChangeNotification)) { _ in
                     TouchControlsHost.attach()   // re-frame to the new bounds
                 }
-            HStack(spacing: 6) {
-                if pointerPanel {
-                    // The cursor button has slid to the leftmost slot and become
-                    // the close control; matchedGeometryEffect animates the slide.
-                    pointerToggleButton
-                    pointerModeToggle
-                    pointerSensSlider
-                } else {
-                    Group {
-                        keyButton("⏎", vk: 0x0D)   // VK_RETURN
-                        keyButton("␣", vk: 0x20)   // VK_SPACE
-                        keyButton("Esc", vk: 0x1B) // VK_ESCAPE
-                        Button { MetalBackedView.toggleKeyboard() } label: {
-                            Text("⌨").font(.system(size: 20))
-                                .frame(minWidth: 40, minHeight: 32)
-                                .background(Color.secondary.opacity(0.25))
-                                .cornerRadius(6)
-                        }
-                        JoystickKeyView()
-                    }
-                    .transition(.opacity)
-                    pointerToggleButton
-                    diagToggleButton
-                    Spacer()
-                }
-            }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            // The expanded pad overflows this row; without a raised zIndex the
-            // later VStack siblings (action buttons, log) would draw over it.
-            .zIndex(10)
-            Divider()
-            actionButtons
-            customLaunchControls
-            Divider()
-            logConsole
         }
+    }
+
+    private var inputBar: some View {
+        HStack(spacing: 6) {
+            if pointerPanel {
+                // The cursor button has slid to the leftmost slot and become
+                // the close control; matchedGeometryEffect animates the slide.
+                pointerToggleButton
+                pointerModeToggle
+                pointerSensSlider
+            } else {
+                Group {
+                    keyButton("⏎", vk: 0x0D)   // VK_RETURN
+                    keyButton("␣", vk: 0x20)   // VK_SPACE
+                    keyButton("Esc", vk: 0x1B) // VK_ESCAPE
+                    Button { MetalBackedView.toggleKeyboard() } label: {
+                        Image(systemName: "keyboard")
+                            .font(.system(size: 15, weight: .medium))
+                            .foregroundStyle(MDTheme.text)
+                            .frame(minWidth: 40, minHeight: 32)
+                            .background(chipShape)
+                    }
+                    JoystickKeyView()
+                }
+                .transition(.opacity)
+                pointerToggleButton
+                diagToggleButton
+                Spacer()
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        // The expanded pad overflows this row; without a raised zIndex the
+        // later VStack siblings (panel picker, launch/console) would draw over it.
+        .zIndex(10)
+    }
+
+    private var panelPicker: some View {
+        HStack(spacing: 4) {
+            ForEach(Panel.allCases, id: \.self) { p in
+                Button {
+                    withAnimation(.easeInOut(duration: 0.18)) { panel = p }
+                } label: {
+                    Text(p.rawValue)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(panel == p ? MDTheme.text : MDTheme.dim)
+                        .frame(maxWidth: .infinity, minHeight: 30)
+                        .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(panel == p ? MDTheme.raised : Color.clear))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(3)
+        .background(RoundedRectangle(cornerRadius: 11, style: .continuous).fill(MDTheme.surface))
+        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous)
+            .strokeBorder(MDTheme.line, lineWidth: 1))
+        .padding(.horizontal, 12)
+        .padding(.bottom, 10)
+    }
+
+    /// Shared background for the small square controls in the input bar.
+    private var chipShape: some View {
+        RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .fill(MDTheme.raised)
+            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(MDTheme.line, lineWidth: 1))
     }
 
     /// Landscape: game mode. Full-height 4:3 surface centered (aspect-fit
@@ -1012,10 +1119,10 @@ struct ContentView: View {
             JoystickPadState.shared.hidden = pointerPanel
         } label: {
             Image(systemName: pointerPanel ? "xmark" : "cursorarrow")
-                .font(.system(size: 17, weight: .medium))
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(pointerPanel ? MDTheme.accent : MDTheme.text)
                 .frame(minWidth: 40, minHeight: 32)
-                .background(Color.secondary.opacity(0.25))
-                .cornerRadius(6)
+                .background(chipShape)
         }
         .matchedGeometryEffect(id: "pointerBtn", in: pointerNS)
     }
@@ -1027,12 +1134,11 @@ struct ContentView: View {
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
             input.diagnostics.toggle()
         } label: {
-            Image(systemName: "ladybug")
-                .font(.system(size: 17, weight: .regular))
-                .foregroundStyle(.white.opacity(input.diagnostics ? 1.0 : 0.35))
+            Image(systemName: "ladybug.fill")
+                .font(.system(size: 15, weight: .regular))
+                .foregroundStyle(input.diagnostics ? MDTheme.warn : MDTheme.faint)
                 .frame(minWidth: 40, minHeight: 32)
-                .background(Color.secondary.opacity(0.25))
-                .cornerRadius(6)
+                .background(chipShape)
         }
         .buttonStyle(.plain)
     }
@@ -1043,10 +1149,10 @@ struct ContentView: View {
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
         } label: {
             Text(input.relative ? "Relative" : "Absolute")
-                .font(.system(size: 13, weight: .semibold))
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(input.relative ? MDTheme.accent : MDTheme.text)
                 .frame(minWidth: 82, minHeight: 32)
-                .background((input.relative ? Color.accentColor : Color.secondary).opacity(0.28))
-                .cornerRadius(6)
+                .background(chipShape)
         }
         .transition(.opacity)
     }
@@ -1056,9 +1162,10 @@ struct ContentView: View {
     private var pointerSensSlider: some View {
         HStack(spacing: 8) {
             Slider(value: input.relative ? $input.sensRel : $input.sensAbs, in: 0.10...8.0)
+                .tint(MDTheme.accent)
             Text(String(format: "%.2f", input.relative ? input.sensRel : input.sensAbs))
                 .font(.system(size: 12, design: .monospaced))
-                .foregroundColor(.secondary)
+                .foregroundStyle(MDTheme.dim)
                 .frame(width: 38, alignment: .trailing)
         }
         .frame(maxWidth: .infinity)
@@ -1073,56 +1180,47 @@ struct ContentView: View {
             }
         }) {
             Text(label)
-                .font(.system(size: 14, weight: .semibold, design: .monospaced))
-                .foregroundColor(.white)
-                .frame(minWidth: 34, minHeight: 30)
-                .background(Color.white.opacity(0.15))
-                .cornerRadius(6)
+                .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                .foregroundStyle(MDTheme.text)
+                .frame(minWidth: 40, minHeight: 32)
+                .background(chipShape)
         }
     }
 
-    private func entitlementBadges(_ ents: EntitlementStatus) -> some View {
-        HStack(spacing: 8) {
+    private var statusBar: some View {
+        HStack(spacing: 6) {
             // Live debugger/JIT state, not the (macOS-only, never granted on
             // iOS) allow-jit entitlement the old badge checked.
-            entitlementBadge("JIT", granted: debuggerAttached)
-            entitlementBadge("Memory+", granted: ents.increasedMemory)
-            entitlementBadge("64-bit VA", granted: ents.extendedVA)
-            Spacer()
-            // Device model rides in this row (the old standalone statusHeader
-            // row above it spent ~50pt of vertical space on nothing else).
-            VStack(alignment: .trailing, spacing: 0) {
-                Text("Device")
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-                Text(deviceInfo)
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
+            statusChip("bolt.fill", "JIT", on: debuggerAttached)
+            if let ents = entitlements {
+                statusChip("memorychip", "MEM", on: ents.increasedMemory)
+                statusChip("arrow.up.left.and.arrow.down.right", "VA", on: ents.extendedVA)
             }
+            Spacer(minLength: 4)
+            Text(deviceInfo)
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(MDTheme.faint)
         }
-        .padding(.horizontal)
-        .padding(.top, 4)
-        .padding(.bottom, 8)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
         .onReceive(Timer.publish(every: 2, on: .main, in: .common).autoconnect()) { _ in
             debuggerAttached = isDebuggerAttached()
         }
     }
 
-    private func entitlementBadge(_ label: String, granted: Bool) -> some View {
-        HStack(spacing: 4) {
-            Image(systemName: granted ? "checkmark.circle.fill" : "xmark.circle")
-                .foregroundColor(granted ? .green : .orange)
-                .font(.caption2)
+    private func statusChip(_ icon: String, _ label: String, on: Bool) -> some View {
+        let tone = on ? MDTheme.ok : MDTheme.faint
+        return HStack(spacing: 4) {
+            Image(systemName: icon).font(.system(size: 8, weight: .bold))
             Text(label)
-                .font(.caption2)
-                .foregroundColor(granted ? .primary : .secondary)
+                .font(.system(size: 10, weight: .bold, design: .rounded))
+                .tracking(0.4)
         }
-        .padding(.horizontal, 8)
+        .foregroundStyle(tone)
+        .padding(.horizontal, 7)
         .padding(.vertical, 4)
-        .background(
-            RoundedRectangle(cornerRadius: 6)
-                .fill(granted ? Color.green.opacity(0.1) : Color.orange.opacity(0.1))
-        )
+        .background(Capsule().fill(tone.opacity(on ? 0.14 : 0.07)))
+        .overlay(Capsule().strokeBorder(tone.opacity(on ? 0.30 : 0.14), lineWidth: 1))
     }
 
     private func logEntitlementStatus() {
@@ -1136,418 +1234,584 @@ struct ContentView: View {
         }
     }
 
-    private var actionButtons: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 12) {
-                Button("Enable JIT") {
-                    enableJITViaStikDebug()
-                }
-                .buttonStyle(.borderedProminent)
+    private func launchSteam() {
+        // Steam S3 first boot: virtual desktop (Steam needs a
+        // window manager) + services.exe (SCM → rpcss for Steam's
+        // COM, the chain proven in the rpcss milestone) + steam.exe
+        // itself, all launched by C:\steam-launch.bat (pushed to
+        // the prefix). Batch avoids quote-escaping hell; combase's
+        // 5s OpenSCManager retry covers the services-vs-steam race.
+        // Steam install = CrossOver copy at C:\Program Files (x86)\
+        // Steam (all boot binaries verified x86-64; steamwebhelper
+        // /libcef = 209MB → watch pool: first webhelper may fit,
+        // multiples need .text sharing). Flags: -no-cef-sandbox
+        // (sandbox can't work in Wine), -cef-disable-gpu (software
+        // render), -console (Steam's own log → our stderr). Steam
+        // WILL try to self-update through our GnuTLS stack — that
+        // attempt is itself an informative S0 re-test.
+        let deskW = 1024, deskH = 768
+        // ml589: find Steam and (re)write the launch batch. Returns
+        // false — having logged why — when there is nothing to run.
+        guard prepareSteamLaunch() else { return }
+        // ml590 STEP 1 (one-run phase check, NOT a timing measurement):
+        // arm the ml578 sock-wire probe. It answers exactly one
+        // question — does today's ~1s CM failure reach the same TLS
+        // phase ml578 did (ServerHello -> client Finished -> server
+        // encrypted records), or does it die earlier?
+        //
+        // Its numbers are NOT trustworthy as timings: no monotonic
+        // clock, a getpeername() before EVERY send/recv even after the
+        // 12-line budget is spent, and synchronous dprintf() on a path
+        // whose whole ping budget is 1000ms — it perturbs what it
+        // measures, which is why ml579 gated it off. Step 2 replaces it
+        // with a per-socket timeline (cached peer, generation counter,
+        // one line at close) that can be trusted for timing.
+        //
+        // COLD LAUNCH REQUIRED: ios_sock_wire() latches this env into a
+        // static on its FIRST call (socket.c:842), so if any earlier
+        // Wine session in this app process already touched a socket the
+        // flag is stuck off. Force-quit, launch, press this first.
+        // ml591: the phase question is ANSWERED, so the per-event
+        // probe goes back off — it distorts the very budget step 2
+        // measures. [sock-tl] replaces it and needs no env var.
+        unsetenv("MADEIRA_SOCK_WIRE")
+        // ml594 A/B: post-login hang = FEX optimizer NONTERMINATION.
+        // Chrome_InProcRendererThread (wtid 0208) sampled 9x at
+        // 97-100% CPU (cpu=277 -> 918, run=1) inside
+        // DeadFlagCalculationEliminination::ProcessBlock while EVERY
+        // other thread sat at cpu=0 and Steam presented ZERO further
+        // frames. One CompileBlock entered that pass and never came
+        // back, and the thread holds a fexlock read ref, so it can
+        // stall other FEX threads too. NOT a network/cryptnet/wineserver
+        // wait — our new guards never fired.
+        //
+        // FEX_O0 disables the default x87 + dead-flag passes
+        // (FEXCore/Source/Interface/IR/PassManager.cpp:70). Slower, but
+        // if the hang disappears the pass is convicted and the next step
+        // is disabling ONLY CreateDeadFlagCalculationEliminination().
+        // ml596: FEX_O0 has NEVER ACTUALLY BEEN TESTED, and my earlier
+        // comment here blaming it for an execute fault was WRONG.
+        // ml595 died because the JIT pool never existed: all three
+        // placement attempts returned 0x7000000000 (the forbidden guest
+        // 64G window), we logged "continuing without it", and Wine then
+        // ran with `pool not initialised` -- so LdrInitializeThunk stayed
+        // at its PE address 0x71ffd77654 instead of being redirected into
+        // the pool (a healthy run logs `redirected PC 0x71ffd77654 ->
+        // 0x12078f654`). The execute fault was the guaranteed consequence
+        // of launching without the execution substrate, and pool placement
+        // happens HERE in Swift before FEX reads any env var -- FEX_O0
+        // cannot influence it. (Caught by Sol.)
+        //
+        // Convict the dead-flag pass with a targeted FEX build that
+        // disables ONLY CreateDeadFlagCalculationEliminination(); broad O0
+        // also drops the x87 pass and proves less. unsetenv keeps a stale
+        // value from a previous launch out of play.
+        unsetenv("FEX_O0")
+        // ml597 A/B: remove ONLY DeadFlagCalculationEliminination, the pass
+        // the renderer thread was pinned inside during the ml594 hang.
+        // Everything else in the pipeline (incl. x87) stays exactly as in a
+        // known-good run, so a result here implicates or clears this one pass.
+        // The [dfe-guard] bounds ship active in BOTH arms — if the pass is
+        // exonerated and the hang recurs, they still name the failure mode.
+        // ml598 ISOLATION RUN: gate OFF, same rebuilt FEX.
+        // ml597 crashed with c000001d (ILLEGAL INSTRUCTION) after the
+        // desktop came up, but that run changed TWO things at once: my
+        // DFE gate AND ~107 lines of FEX source committed today that had
+        // never been built — the shipped xtajit64.dll dated Aug 6 while
+        // Core.cpp/IosJitAlias.cpp/TSOHandlerConfig.h and a net rewrite of
+        // WinAPI/IO.cpp were newer. Any of those can produce a
+        // miscompilation-shaped fault, so ml597 convicts nothing.
+        //   crashes again -> the REBUILD is at fault, DFE still untested
+        //   runs fine     -> disabling DFE is what breaks it
+        unsetenv("MADEIRA_NO_DFE")
+        // ml599: name the pass that corrupts the IR list.
+        //
+        // ml598 settled the mechanism: FEX hangs walking a block
+        // BACKWARDS because the intrusive Previous chain never reaches
+        // CodeBegin. Two passes make that assumption —
+        // DeadFlagCalculationEliminination::ProcessBlock and
+        // ConstrainedRAPass::Run — and the store-page freeze was the
+        // second one (PC pinned inside libarm64ecfex.dll RVA
+        // 0x100b0c-0x100cdc, all within ConstrainedRAPass::Run, for
+        // minutes at ~100% CPU while frames stayed at 4,114).
+        //
+        // Both now validate the block BEFORE touching it and repair the
+        // Previous chain from the forward chain when that is intact, so
+        // the hang should be gone either way. This var adds the sweep
+        // that reports WHICH pass first breaks the list, so the run also
+        // produces the root cause and not just the containment.
+        // ml601: SWEEP OFF. Two runs checked 118M and 47M blocks and found
+        // corruption exactly once (block 260, ml599b) — the after-every-pass
+        // sweep is not earning its cost, and it taxes every large compile.
+        // The unconditional parts STAY ON regardless of this variable: the
+        // cheap backward check at DFE and RA entry, the repair, and the
+        // bounded-walk guards. Only the attribution sweep is disabled.
+        // Set it again for a run that is specifically hunting the corrupter.
+        unsetenv("MADEIRA_IR_TOPO")
+        // ml623: TARGETED IR/RA CAPTURE for the ULTRAKILL Mono wall.
+        //
+        // FEX miscompiles ONE instruction in Mono's x86-64 emitter:
+        //   mono-2.0-bdwgc.dll+0x4db25b   mov byte ptr [rcx+2], al
+        // With RCX=0x7040140010 (valid, a fresh RWX code buffer) and AL=0x4c,
+        // it emitted `movz w6,#0x44 ; orr x8,x8,x6 ; dmb ish ; strb w8,[x6,xzr]`
+        // -- the address register still held the IMMEDIATE because the
+        // `add x6, x0, #2` that BOTH sibling branches emit was never generated,
+        // so the store landed on 0x44.
+        //
+        // This prints that instruction's IR after the frontend and after every
+        // pass, plus the emitted host bytes. The last stage at which the address
+        // computation still exists names the culprit: frontend/decoder, a named
+        // pass, RA liveness, or the ARM emitter.
+        //
+        // Compile-time only, capped at 4 captures. Unset it for a normal run.
+        setenv("MADEIRA_IRCAP_RVA", "0x4db25b", 1)
+        setenv("MADEIRA_IRCAP_MODULE", "mono-2.0-bdwgc.dll", 1)
+        setenv("MADEIRA_EXE", "explorer.exe", 1)
+        setenv("MADEIRA_ARGS",
+               "/desktop=shell,\(deskW)x\(deskH) cmd /c C:\\steam-launch.bat", 1)
+        setenv("MADEIRA_DESKTOP", "1", 1)
+        setenv("MADEIRA_SCREEN_W", String(deskW), 1)
+        setenv("MADEIRA_SCREEN_H", String(deskH), 1)
+        // ml371: surfdump ground truth — the "frozen desktop"
+        // question (fresh pixels never presented vs nothing
+        // painting upstream) is undecidable from the log alone
+        // because the [winios] present line caps at 12.
+        // ml556: surface PNG dumping also off for the clean baseline —
+        // it encodes a PNG on the present path. Restore "1" to re-enable.
+        unsetenv("MADEIRA_DUMP_SURFACES")
+        // ml493: bursts of N CONSECUTIVE frames per window. The
+        // login window's black regions change every frame, which
+        // the 2s-throttled first/latest dump can never show —
+        // adjacent frames are the only way to measure what moves.
+        setenv("MADEIRA_SURF_SEQ", "10", 1)
+        // ml515: SRCWATCH RE-ENABLED, now hooked in the MACH
+        // exception handler (where guest faults are actually
+        // delivered) instead of segv_handler. It consumes its own
+        // faults BEFORE every other classification and marks them
+        // handled via the canonical thread_set_state path, so a
+        // protection fault can no longer reach the guest as an AV.
+        // ml514 hooked the wrong path: 0 faults, black window 2/2.
+        /* ml530 (#78): srcwatch subject = the assembled steamui JS buffer, not the
+         // render bitmap. "1" would mean the legacy render subject, and the
+         // watch arms only ONCE — so with both call sites live, whichever ran
+         // first would silently win and the other would never arm at all.
+         //
+         // Target: V8 reports `SyntaxError: Invalid or unexpected token` on
+         // steamui JS that our file reads deliver byte-perfect (ml489: 73/73
+         // MATCH, the failing file 100% verified through NtReadFile). That is
+         // the DOMINANT Steam variance — 27 of 45 attempts stall right after
+         // BrowserReady because the UI script never parses — and the same
+         // corrupter family as the render glitch, so it buys both. */
+        /* ml533: back to the RENDER subject — the js subject is structurally
+        // blocked (the failing steamui files are read through a reused 64KB
+        // chunk buffer, so no assembled buffer exists in our view). The render
+        // watch now names the CALLER via the guest return address at [RSP],
+        // which is what the block-granular RIP could never do. */
+        // ml556 CLEAN-BASELINE TEST: srcwatch OFF.
+        //
+        // It write-protects the render bitmap and takes a Mach fault
+        // per page ON THE RENDER HOT PATH, and the correlation across
+        // this session is stark:
+        //     attributions 1824/2370/426/2721 -> run dies at 36-52 s
+        //     attributions 0/0/0              -> run reaches 94-106 s
+        // Runs carrying our instrumentation die in roughly half the
+        // time. Before attributing the crash to Steam or to FEX we owe
+        // ourselves the one-variable control: does it still crash with
+        // the probe off? Re-enable by restoring "render".
+        // ml574: arm the dead-release detector in wineserver.
+        // O(n) walk of object_list on every release_object — slow by
+        // design, diagnostic only. Set to "0" to disarm.
+        // ml579: DISABLED. It walks the global wineserver object list on
+        // EVERY release_object() — O(n) in the single-threaded server. It
+        // already caught the free_async_queue over-release (ml574) and that
+        // fix is shipped; leaving the detector armed just starves the server,
+        // and Steam allows each CM ping only 1000 ms. Set to "1" to re-arm.
+        setenv("MADEIRA_DEAD_RELEASE", "0", 1)
+        setenv("MADEIRA_SRCWATCH", "off", 1)
+        // ml548: restrict srcwatch to the row band where displacement
+        // was actually MEASURED, so the 400-attribution budget is not
+        // spent on the full-frame clear (which touches every page
+        // first and made the content painters invisible in ml517).
+        // Band from ml543 frame 009: the Steam logo core landed at
+        // (96,188) instead of (350,188) — exactly -254 px, one tile
+        // pitch — so rows 150..230 bracket the displaced element.
+        // ml550: was "150,230" — chosen for the SPLASH logo. On a
+        // login-window run that band produced ZERO attributions
+        // (426 on the splash run), because nothing painted there.
+        // Widen to most of the surface so the watch follows whatever
+        // the frame actually draws; the per-page budget still bounds
+        // the fault cost.
+        setenv("MADEIRA_SRCWATCH_ROWS", "0,400", 1)
+        // ml527 (#82 RETEST, ONE VARIABLE): run V8 with its JIT on.
+        //
+        // ml526's phase timeline made the case concrete — of ~39s to
+        // the login window, the single biggest block is 13.0s of
+        // BrowserReady -> GetDesiredSteamUIWindows, i.e. Steam's UI
+        // JavaScript booting, and interpreted V8 costs 5-20x there.
+        //
+        // #82 convicted jitless-off because both trial runs parked
+        // CrBrowserMain shortly after BrowserReady (ml474b +104s,
+        // ml475 +4s). ⚠️ Both ran with StikDebug attached and
+        // spinning, when every trap was a round-trip to a starved
+        // debugger — the overhead that made webhelper bring-up 89s
+        // instead of 9s (b439be6). V8's JIT emits runtime x86, the
+        // heaviest trap/compile workload in the process, so it is
+        // exactly what that overhead punished worst. The verdict may
+        // not survive early detach.
+        //
+        // ⛔ VERDICT (ml527, 2 runs): #82 SURVIVES early detach — jitless
+        // stays ON. Both jitless-off runs died in the SAME window ml474b
+        // and ml475 died in: right after BrowserReady, before
+        // GetDesiredSteamUIWindows was ever reached (13:20:19 and
+        // 13:22:45), so 4/4 across two completely different debugger
+        // regimes. The failure MODE changed — a c0000005 ->
+        // chrome_elf.dll+0xd4153 -> ffff7001 Crashpad termination rather
+        // than #82's park in NtWaitForAlertByThreadId — but the window is
+        // identical, and jitless-ON reaches the login window repeatedly
+        // through that same window.
+        //
+        // No consolation prize either: BrowserReady took 12s and 10s with
+        // the JIT on vs 8-11s (median 9s) with it off, because V8's JIT
+        // emits runtime x86 that FEX must then compile. So the debugger
+        // overhead was NOT what convicted jitless-off, and the 13s of
+        // Steam UI JavaScript stays unmeasured — neither run survived to
+        // reach it.
+        //
+        // Flip to "0" only alongside a fix for the post-BrowserReady death.
+        setenv("MADEIRA_JITLESS", "1", 1)
+        // ml514 note (kept for the record): The ml514 watch
+        // armed correctly (76 pages protected) but logged ZERO
+        // faults and produced an all-black window on two runs: the
+        // hook went in the BSD segv_handler, while guest faults in
+        // this port are handled IN-MACH by the exception server, so
+        // the protection fault was delivered to the guest as an AV
+        // and killed Chromium's paint. A probe must never break the
+        // path it measures. To revive it, hook the Mach exception
+        // server (where ios_emulate_unaligned_guest_access already
+        // runs), not segv_handler, and re-enable this env var.
+        // ml502 sentinel: DELIBERATELY NOT ENABLED. It stamps
+        // magenta into currently-black pixels, and on windows
+        // Chromium does not fully rewrite it SURVIVES and reaches
+        // the screen (console 0x200bc hit untouched=177891 in one
+        // round). It answered its question in ml503/ml504 —
+        // untouched=0 on the login window proved Chromium writes
+        // every pixel — so it must not ship enabled. Re-enable
+        // with MADEIRA_SURF_SENTINEL=1 if the question returns.
+        runWineFullSequence()
+    }
 
-                Button("Steam Testing") {
-                    // Steam S3 first boot: virtual desktop (Steam needs a
-                    // window manager) + services.exe (SCM → rpcss for Steam's
-                    // COM, the chain proven in the rpcss milestone) + steam.exe
-                    // itself, all launched by C:\steam-launch.bat (pushed to
-                    // the prefix). Batch avoids quote-escaping hell; combase's
-                    // 5s OpenSCManager retry covers the services-vs-steam race.
-                    // Steam install = CrossOver copy at C:\Program Files (x86)\
-                    // Steam (all boot binaries verified x86-64; steamwebhelper
-                    // /libcef = 209MB → watch pool: first webhelper may fit,
-                    // multiples need .text sharing). Flags: -no-cef-sandbox
-                    // (sandbox can't work in Wine), -cef-disable-gpu (software
-                    // render), -console (Steam's own log → our stderr). Steam
-                    // WILL try to self-update through our GnuTLS stack — that
-                    // attempt is itself an informative S0 re-test.
-                    let deskW = 1024, deskH = 768
-                    // ml589: find Steam and (re)write the launch batch. Returns
-                    // false — having logged why — when there is nothing to run.
-                    guard prepareSteamLaunch() else { return }
-                    // ml590 STEP 1 (one-run phase check, NOT a timing measurement):
-                    // arm the ml578 sock-wire probe. It answers exactly one
-                    // question — does today's ~1s CM failure reach the same TLS
-                    // phase ml578 did (ServerHello -> client Finished -> server
-                    // encrypted records), or does it die earlier?
-                    //
-                    // Its numbers are NOT trustworthy as timings: no monotonic
-                    // clock, a getpeername() before EVERY send/recv even after the
-                    // 12-line budget is spent, and synchronous dprintf() on a path
-                    // whose whole ping budget is 1000ms — it perturbs what it
-                    // measures, which is why ml579 gated it off. Step 2 replaces it
-                    // with a per-socket timeline (cached peer, generation counter,
-                    // one line at close) that can be trusted for timing.
-                    //
-                    // COLD LAUNCH REQUIRED: ios_sock_wire() latches this env into a
-                    // static on its FIRST call (socket.c:842), so if any earlier
-                    // Wine session in this app process already touched a socket the
-                    // flag is stuck off. Force-quit, launch, press this first.
-                    // ml591: the phase question is ANSWERED, so the per-event
-                    // probe goes back off — it distorts the very budget step 2
-                    // measures. [sock-tl] replaces it and needs no env var.
-                    unsetenv("MADEIRA_SOCK_WIRE")
-                    // ml594 A/B: post-login hang = FEX optimizer NONTERMINATION.
-                    // Chrome_InProcRendererThread (wtid 0208) sampled 9x at
-                    // 97-100% CPU (cpu=277 -> 918, run=1) inside
-                    // DeadFlagCalculationEliminination::ProcessBlock while EVERY
-                    // other thread sat at cpu=0 and Steam presented ZERO further
-                    // frames. One CompileBlock entered that pass and never came
-                    // back, and the thread holds a fexlock read ref, so it can
-                    // stall other FEX threads too. NOT a network/cryptnet/wineserver
-                    // wait — our new guards never fired.
-                    //
-                    // FEX_O0 disables the default x87 + dead-flag passes
-                    // (FEXCore/Source/Interface/IR/PassManager.cpp:70). Slower, but
-                    // if the hang disappears the pass is convicted and the next step
-                    // is disabling ONLY CreateDeadFlagCalculationEliminination().
-                    // ml596: FEX_O0 has NEVER ACTUALLY BEEN TESTED, and my earlier
-                    // comment here blaming it for an execute fault was WRONG.
-                    // ml595 died because the JIT pool never existed: all three
-                    // placement attempts returned 0x7000000000 (the forbidden guest
-                    // 64G window), we logged "continuing without it", and Wine then
-                    // ran with `pool not initialised` -- so LdrInitializeThunk stayed
-                    // at its PE address 0x71ffd77654 instead of being redirected into
-                    // the pool (a healthy run logs `redirected PC 0x71ffd77654 ->
-                    // 0x12078f654`). The execute fault was the guaranteed consequence
-                    // of launching without the execution substrate, and pool placement
-                    // happens HERE in Swift before FEX reads any env var -- FEX_O0
-                    // cannot influence it. (Caught by Sol.)
-                    //
-                    // Convict the dead-flag pass with a targeted FEX build that
-                    // disables ONLY CreateDeadFlagCalculationEliminination(); broad O0
-                    // also drops the x87 pass and proves less. unsetenv keeps a stale
-                    // value from a previous launch out of play.
-                    unsetenv("FEX_O0")
-                    // ml597 A/B: remove ONLY DeadFlagCalculationEliminination, the pass
-                    // the renderer thread was pinned inside during the ml594 hang.
-                    // Everything else in the pipeline (incl. x87) stays exactly as in a
-                    // known-good run, so a result here implicates or clears this one pass.
-                    // The [dfe-guard] bounds ship active in BOTH arms — if the pass is
-                    // exonerated and the hang recurs, they still name the failure mode.
-                    // ml598 ISOLATION RUN: gate OFF, same rebuilt FEX.
-                    // ml597 crashed with c000001d (ILLEGAL INSTRUCTION) after the
-                    // desktop came up, but that run changed TWO things at once: my
-                    // DFE gate AND ~107 lines of FEX source committed today that had
-                    // never been built — the shipped xtajit64.dll dated Aug 6 while
-                    // Core.cpp/IosJitAlias.cpp/TSOHandlerConfig.h and a net rewrite of
-                    // WinAPI/IO.cpp were newer. Any of those can produce a
-                    // miscompilation-shaped fault, so ml597 convicts nothing.
-                    //   crashes again -> the REBUILD is at fault, DFE still untested
-                    //   runs fine     -> disabling DFE is what breaks it
-                    unsetenv("MADEIRA_NO_DFE")
-                    // ml599: name the pass that corrupts the IR list.
-                    //
-                    // ml598 settled the mechanism: FEX hangs walking a block
-                    // BACKWARDS because the intrusive Previous chain never reaches
-                    // CodeBegin. Two passes make that assumption —
-                    // DeadFlagCalculationEliminination::ProcessBlock and
-                    // ConstrainedRAPass::Run — and the store-page freeze was the
-                    // second one (PC pinned inside libarm64ecfex.dll RVA
-                    // 0x100b0c-0x100cdc, all within ConstrainedRAPass::Run, for
-                    // minutes at ~100% CPU while frames stayed at 4,114).
-                    //
-                    // Both now validate the block BEFORE touching it and repair the
-                    // Previous chain from the forward chain when that is intact, so
-                    // the hang should be gone either way. This var adds the sweep
-                    // that reports WHICH pass first breaks the list, so the run also
-                    // produces the root cause and not just the containment.
-                    // ml601: SWEEP OFF. Two runs checked 118M and 47M blocks and found
-                    // corruption exactly once (block 260, ml599b) — the after-every-pass
-                    // sweep is not earning its cost, and it taxes every large compile.
-                    // The unconditional parts STAY ON regardless of this variable: the
-                    // cheap backward check at DFE and RA entry, the repair, and the
-                    // bounded-walk guards. Only the attribution sweep is disabled.
-                    // Set it again for a run that is specifically hunting the corrupter.
-                    unsetenv("MADEIRA_IR_TOPO")
-                    // ml623: TARGETED IR/RA CAPTURE for the ULTRAKILL Mono wall.
-                    //
-                    // FEX miscompiles ONE instruction in Mono's x86-64 emitter:
-                    //   mono-2.0-bdwgc.dll+0x4db25b   mov byte ptr [rcx+2], al
-                    // With RCX=0x7040140010 (valid, a fresh RWX code buffer) and AL=0x4c,
-                    // it emitted `movz w6,#0x44 ; orr x8,x8,x6 ; dmb ish ; strb w8,[x6,xzr]`
-                    // -- the address register still held the IMMEDIATE because the
-                    // `add x6, x0, #2` that BOTH sibling branches emit was never generated,
-                    // so the store landed on 0x44.
-                    //
-                    // This prints that instruction's IR after the frontend and after every
-                    // pass, plus the emitted host bytes. The last stage at which the address
-                    // computation still exists names the culprit: frontend/decoder, a named
-                    // pass, RA liveness, or the ARM emitter.
-                    //
-                    // Compile-time only, capped at 4 captures. Unset it for a normal run.
-                    setenv("MADEIRA_IRCAP_RVA", "0x4db25b", 1)
-                    setenv("MADEIRA_IRCAP_MODULE", "mono-2.0-bdwgc.dll", 1)
-                    setenv("MADEIRA_EXE", "explorer.exe", 1)
-                    setenv("MADEIRA_ARGS",
-                           "/desktop=shell,\(deskW)x\(deskH) cmd /c C:\\steam-launch.bat", 1)
-                    setenv("MADEIRA_DESKTOP", "1", 1)
-                    setenv("MADEIRA_SCREEN_W", String(deskW), 1)
-                    setenv("MADEIRA_SCREEN_H", String(deskH), 1)
-                    // ml371: surfdump ground truth — the "frozen desktop"
-                    // question (fresh pixels never presented vs nothing
-                    // painting upstream) is undecidable from the log alone
-                    // because the [winios] present line caps at 12.
-                    // ml556: surface PNG dumping also off for the clean baseline —
-                    // it encodes a PNG on the present path. Restore "1" to re-enable.
-                    unsetenv("MADEIRA_DUMP_SURFACES")
-                    // ml493: bursts of N CONSECUTIVE frames per window. The
-                    // login window's black regions change every frame, which
-                    // the 2s-throttled first/latest dump can never show —
-                    // adjacent frames are the only way to measure what moves.
-                    setenv("MADEIRA_SURF_SEQ", "10", 1)
-                    // ml515: SRCWATCH RE-ENABLED, now hooked in the MACH
-                    // exception handler (where guest faults are actually
-                    // delivered) instead of segv_handler. It consumes its own
-                    // faults BEFORE every other classification and marks them
-                    // handled via the canonical thread_set_state path, so a
-                    // protection fault can no longer reach the guest as an AV.
-                    // ml514 hooked the wrong path: 0 faults, black window 2/2.
-                    /* ml530 (#78): srcwatch subject = the assembled steamui JS buffer, not the
-                     // render bitmap. "1" would mean the legacy render subject, and the
-                     // watch arms only ONCE — so with both call sites live, whichever ran
-                     // first would silently win and the other would never arm at all.
-                     //
-                     // Target: V8 reports `SyntaxError: Invalid or unexpected token` on
-                     // steamui JS that our file reads deliver byte-perfect (ml489: 73/73
-                     // MATCH, the failing file 100% verified through NtReadFile). That is
-                     // the DOMINANT Steam variance — 27 of 45 attempts stall right after
-                     // BrowserReady because the UI script never parses — and the same
-                     // corrupter family as the render glitch, so it buys both. */
-                    /* ml533: back to the RENDER subject — the js subject is structurally
-                    // blocked (the failing steamui files are read through a reused 64KB
-                    // chunk buffer, so no assembled buffer exists in our view). The render
-                    // watch now names the CALLER via the guest return address at [RSP],
-                    // which is what the block-granular RIP could never do. */
-                    // ml556 CLEAN-BASELINE TEST: srcwatch OFF.
-                    //
-                    // It write-protects the render bitmap and takes a Mach fault
-                    // per page ON THE RENDER HOT PATH, and the correlation across
-                    // this session is stark:
-                    //     attributions 1824/2370/426/2721 -> run dies at 36-52 s
-                    //     attributions 0/0/0              -> run reaches 94-106 s
-                    // Runs carrying our instrumentation die in roughly half the
-                    // time. Before attributing the crash to Steam or to FEX we owe
-                    // ourselves the one-variable control: does it still crash with
-                    // the probe off? Re-enable by restoring "render".
-                    // ml574: arm the dead-release detector in wineserver.
-                    // O(n) walk of object_list on every release_object — slow by
-                    // design, diagnostic only. Set to "0" to disarm.
-                    // ml579: DISABLED. It walks the global wineserver object list on
-                    // EVERY release_object() — O(n) in the single-threaded server. It
-                    // already caught the free_async_queue over-release (ml574) and that
-                    // fix is shipped; leaving the detector armed just starves the server,
-                    // and Steam allows each CM ping only 1000 ms. Set to "1" to re-arm.
-                    setenv("MADEIRA_DEAD_RELEASE", "0", 1)
-                    setenv("MADEIRA_SRCWATCH", "off", 1)
-                    // ml548: restrict srcwatch to the row band where displacement
-                    // was actually MEASURED, so the 400-attribution budget is not
-                    // spent on the full-frame clear (which touches every page
-                    // first and made the content painters invisible in ml517).
-                    // Band from ml543 frame 009: the Steam logo core landed at
-                    // (96,188) instead of (350,188) — exactly -254 px, one tile
-                    // pitch — so rows 150..230 bracket the displaced element.
-                    // ml550: was "150,230" — chosen for the SPLASH logo. On a
-                    // login-window run that band produced ZERO attributions
-                    // (426 on the splash run), because nothing painted there.
-                    // Widen to most of the surface so the watch follows whatever
-                    // the frame actually draws; the per-page budget still bounds
-                    // the fault cost.
-                    setenv("MADEIRA_SRCWATCH_ROWS", "0,400", 1)
-                    // ml527 (#82 RETEST, ONE VARIABLE): run V8 with its JIT on.
-                    //
-                    // ml526's phase timeline made the case concrete — of ~39s to
-                    // the login window, the single biggest block is 13.0s of
-                    // BrowserReady -> GetDesiredSteamUIWindows, i.e. Steam's UI
-                    // JavaScript booting, and interpreted V8 costs 5-20x there.
-                    //
-                    // #82 convicted jitless-off because both trial runs parked
-                    // CrBrowserMain shortly after BrowserReady (ml474b +104s,
-                    // ml475 +4s). ⚠️ Both ran with StikDebug attached and
-                    // spinning, when every trap was a round-trip to a starved
-                    // debugger — the overhead that made webhelper bring-up 89s
-                    // instead of 9s (b439be6). V8's JIT emits runtime x86, the
-                    // heaviest trap/compile workload in the process, so it is
-                    // exactly what that overhead punished worst. The verdict may
-                    // not survive early detach.
-                    //
-                    // ⛔ VERDICT (ml527, 2 runs): #82 SURVIVES early detach — jitless
-                    // stays ON. Both jitless-off runs died in the SAME window ml474b
-                    // and ml475 died in: right after BrowserReady, before
-                    // GetDesiredSteamUIWindows was ever reached (13:20:19 and
-                    // 13:22:45), so 4/4 across two completely different debugger
-                    // regimes. The failure MODE changed — a c0000005 ->
-                    // chrome_elf.dll+0xd4153 -> ffff7001 Crashpad termination rather
-                    // than #82's park in NtWaitForAlertByThreadId — but the window is
-                    // identical, and jitless-ON reaches the login window repeatedly
-                    // through that same window.
-                    //
-                    // No consolation prize either: BrowserReady took 12s and 10s with
-                    // the JIT on vs 8-11s (median 9s) with it off, because V8's JIT
-                    // emits runtime x86 that FEX must then compile. So the debugger
-                    // overhead was NOT what convicted jitless-off, and the 13s of
-                    // Steam UI JavaScript stays unmeasured — neither run survived to
-                    // reach it.
-                    //
-                    // Flip to "0" only alongside a fix for the post-BrowserReady death.
-                    setenv("MADEIRA_JITLESS", "1", 1)
-                    // ml514 note (kept for the record): The ml514 watch
-                    // armed correctly (76 pages protected) but logged ZERO
-                    // faults and produced an all-black window on two runs: the
-                    // hook went in the BSD segv_handler, while guest faults in
-                    // this port are handled IN-MACH by the exception server, so
-                    // the protection fault was delivered to the guest as an AV
-                    // and killed Chromium's paint. A probe must never break the
-                    // path it measures. To revive it, hook the Mach exception
-                    // server (where ios_emulate_unaligned_guest_access already
-                    // runs), not segv_handler, and re-enable this env var.
-                    // ml502 sentinel: DELIBERATELY NOT ENABLED. It stamps
-                    // magenta into currently-black pixels, and on windows
-                    // Chromium does not fully rewrite it SURVIVES and reaches
-                    // the screen (console 0x200bc hit untouched=177891 in one
-                    // round). It answered its question in ml503/ml504 —
-                    // untouched=0 on the login window proved Chromium writes
-                    // every pixel — so it must not ship enabled. Re-enable
-                    // with MADEIRA_SURF_SENTINEL=1 if the question returns.
-                    runWineFullSequence()
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(.green)
+    private func launchWineDesktop() {
+        // S3-pre R2v2: raw rpcss.exe CANNOT run standalone —
+        // its wmain unconditionally StartServiceCtrlDispatcherW's
+        // (rpcss_main.c:282), which RPCs back to the SCM; without
+        // services.exe it raised + wedged in
+        // service_run_main_thread, and explorer's
+        // CoRegisterClassObject wedged behind it (seq-3680 run).
+        // Proper bootstrap: explorer's cmdline child = services.exe
+        // (SCM host, windows-subsystem = no console). It creates
+        // \pipe\svcctl early, runs auto-start services (MountMgr/
+        // Eventlog/NDIS/nsiproxy/PlugPlay — winedevice/plugplay
+        // are bundled; failures tolerated), and combase's
+        // start_rpcss then demand-starts RpcSs through the SCM
+        // with a 30s start-pending wait → rpcss runs as services'
+        // child (3-deep tree, proven depth) with a proper
+        // dispatcher connection → epmapper up → real COM.
+        // Known risk: if shellwindows_init beats services.exe's
+        // RPC_Init, OpenSCManager fails → watch whether that
+        // fails fast or hits the RaiseException→CS wedge again.
+        let deskW = 960, deskH = 540
+        setenv("MADEIRA_EXE", "explorer.exe", 1)
+        setenv("MADEIRA_ARGS",
+               "/desktop=shell,\(deskW)x\(deskH) C:\\windows\\system32\\services.exe", 1)
+        setenv("MADEIRA_DESKTOP", "1", 1)
+        setenv("MADEIRA_SCREEN_W", String(deskW), 1)
+        setenv("MADEIRA_SCREEN_H", String(deskH), 1)
+        runWineFullSequence()
+    }
 
-                Button("Wine Virtual Desktop") {
-                    // S3-pre R2v2: raw rpcss.exe CANNOT run standalone —
-                    // its wmain unconditionally StartServiceCtrlDispatcherW's
-                    // (rpcss_main.c:282), which RPCs back to the SCM; without
-                    // services.exe it raised + wedged in
-                    // service_run_main_thread, and explorer's
-                    // CoRegisterClassObject wedged behind it (seq-3680 run).
-                    // Proper bootstrap: explorer's cmdline child = services.exe
-                    // (SCM host, windows-subsystem = no console). It creates
-                    // \pipe\svcctl early, runs auto-start services (MountMgr/
-                    // Eventlog/NDIS/nsiproxy/PlugPlay — winedevice/plugplay
-                    // are bundled; failures tolerated), and combase's
-                    // start_rpcss then demand-starts RpcSs through the SCM
-                    // with a 30s start-pending wait → rpcss runs as services'
-                    // child (3-deep tree, proven depth) with a proper
-                    // dispatcher connection → epmapper up → real COM.
-                    // Known risk: if shellwindows_init beats services.exe's
-                    // RPC_Init, OpenSCManager fails → watch whether that
-                    // fails fast or hits the RaiseException→CS wedge again.
-                    let deskW = 960, deskH = 540
-                    setenv("MADEIRA_EXE", "explorer.exe", 1)
-                    setenv("MADEIRA_ARGS",
-                           "/desktop=shell,\(deskW)x\(deskH) C:\\windows\\system32\\services.exe", 1)
-                    setenv("MADEIRA_DESKTOP", "1", 1)
-                    setenv("MADEIRA_SCREEN_W", String(deskW), 1)
-                    setenv("MADEIRA_SCREEN_H", String(deskH), 1)
-                    runWineFullSequence()
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(.mint)
-
-                // ml741: Stray (UE4). Launch the shipping binary DIRECTLY rather
-                // than Stray.exe -- the launcher builds its child's command line
-                // itself and passed only "Hk_project", so Unreal picked its
-                // default RHI. That default is DX12 for this title and we only
-                // implement D3D11, which is why the first run sat on an
-                // unsignalled event for 97s at startup instead of failing loudly.
-                //
-                // Args are overridable at runtime from Documents/madeira-args.txt
-                // so UE4 flags can be tried without a rebuild; the string below is
-                // the default when that file is absent.
-                Button("Stray (UE4, -dx11)") {
-                    setenv("MADEIRA_EXE",
-                           "C:\\Program Files\\Stray\\Hk_project\\Binaries\\Win64\\Stray-Win64-Shipping.exe", 1)
-                    var args = "Hk_project -dx11 -windowed"
-                    if let d = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first,
-                       let txt = try? String(contentsOf: d.appendingPathComponent("madeira-args.txt"), encoding: .utf8) {
-                        let v = txt.trimmingCharacters(in: .whitespacesAndNewlines)
-                        if !v.isEmpty { args = v }
-                    }
-                    setenv("MADEIRA_ARGS", args, 1)
-                    unsetenv("MADEIRA_DESKTOP")
-                    logStore.log("Stray: args = \(args)")
-                    runWineFullSequence()
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(.orange)
-
-                Button("Thumper (standalone)") {
-                    // Game lives at Documents/wine/drive_c/Program Files/Thumper/
-                    // (push via scripts/deploy-thumper.sh during development;
-                    // bundled as resource for distribution later).
-                    setenv("MADEIRA_EXE",
-                           "C:\\Program Files\\Thumper\\THUMPER_win10.exe", 1)
-                    unsetenv("MADEIRA_ARGS")
-                    unsetenv("MADEIRA_DESKTOP")
-                    runWineFullSequence()
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(.pink)
-
-                Button("x64 DX11 cube") {
-                    setenv("MADEIRA_EXE", "cube-x64.exe", 1)
-                    unsetenv("MADEIRA_ARGS")
-                    runWineFullSequence()
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(.purple)
-
-                // ml731c: one-second check of the Windows clock contract
-                // (GetTickCount64 / system time / unbiased interrupt time /
-                // QueryPerformanceCounter). Verifying this by hand previously
-                // cost a five-minute game run plus a control-log comparison,
-                // and the game is too unstable to serve as a measuring tool.
-                // Each clock is checked separately so a partial failure names
-                // itself: QPC passing alone is the shared-page signature.
-                Button("x64 clock test") {
-                    setenv("MADEIRA_EXE", "clocktest-x64.exe", 1)
-                    unsetenv("MADEIRA_ARGS")
-                    unsetenv("MADEIRA_DESKTOP")
-                    runWineFullSequence()
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(.teal)
-
-                Button("arm64 DX11 cube") {
-                    runTriangleTest()
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(.blue)
-
-                Button("Clear Log") {
-                    logStore.clear()
-                }
-                .buttonStyle(.bordered)
-                .tint(.red)
-            }
-            .padding()
+    // ml741: Stray (UE4). Launch the shipping binary DIRECTLY rather
+    // than Stray.exe -- the launcher builds its child's command line
+    // itself and passed only "Hk_project", so Unreal picked its
+    // default RHI. That default is DX12 for this title and we only
+    // implement D3D11, which is why the first run sat on an
+    // unsignalled event for 97s at startup instead of failing loudly.
+    //
+    // Args are overridable at runtime from Documents/madeira-args.txt
+    // so UE4 flags can be tried without a rebuild; the string below is
+    // the default when that file is absent.
+    private func launchStray() {
+        setenv("MADEIRA_EXE",
+               "C:\\Program Files\\Stray\\Hk_project\\Binaries\\Win64\\Stray-Win64-Shipping.exe", 1)
+        var args = "Hk_project -dx11 -windowed"
+        if let d = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first,
+           let txt = try? String(contentsOf: d.appendingPathComponent("madeira-args.txt"), encoding: .utf8) {
+            let v = txt.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !v.isEmpty { args = v }
         }
+        setenv("MADEIRA_ARGS", args, 1)
+        unsetenv("MADEIRA_DESKTOP")
+        logStore.log("Stray: args = \(args)")
+        runWineFullSequence()
+    }
+
+    private func launchThumper() {
+        // Game lives at Documents/wine/drive_c/Program Files/Thumper/
+        // (push via scripts/deploy-thumper.sh during development;
+        // bundled as resource for distribution later).
+        setenv("MADEIRA_EXE",
+               "C:\\Program Files\\Thumper\\THUMPER_win10.exe", 1)
+        unsetenv("MADEIRA_ARGS")
+        unsetenv("MADEIRA_DESKTOP")
+        runWineFullSequence()
+    }
+
+    private func launchCubeX64() {
+        setenv("MADEIRA_EXE", "cube-x64.exe", 1)
+        unsetenv("MADEIRA_ARGS")
+        runWineFullSequence()
+    }
+
+    // ml731c: one-second check of the Windows clock contract
+    // (GetTickCount64 / system time / unbiased interrupt time /
+    // QueryPerformanceCounter). Verifying this by hand previously
+    // cost a five-minute game run plus a control-log comparison,
+    // and the game is too unstable to serve as a measuring tool.
+    // Each clock is checked separately so a partial failure names
+    // itself: QPC passing alone is the shared-page signature.
+    private func launchClockTest() {
+        setenv("MADEIRA_EXE", "clocktest-x64.exe", 1)
+        unsetenv("MADEIRA_ARGS")
+        unsetenv("MADEIRA_DESKTOP")
+        runWineFullSequence()
+    }
+
+    private var launchPanel: some View {
+        ScrollView {
+            VStack(spacing: 14) {
+                jitCard
+                sectionHeader("Games")
+                LazyVGrid(columns: [GridItem(.flexible(), spacing: 10),
+                                    GridItem(.flexible(), spacing: 10)], spacing: 10) {
+                    launchCard("Steam", "Client on a virtual desktop",
+                               "cloud.fill", MDTheme.accent) { launchSteam() }
+                    launchCard("Thumper", "Standalone · D3D11",
+                               "bolt.fill", Color(red: 0.95, green: 0.42, blue: 0.66)) { launchThumper() }
+                    launchCard("Stray", "UE4 · forced -dx11",
+                               "pawprint.fill", Color(red: 1.00, green: 0.62, blue: 0.29)) { launchStray() }
+                    launchCard("Custom game",
+                               customExePath.isEmpty ? "Set a path on C:\\" : customExeLabel,
+                               "folder.fill", Color(red: 0.42, green: 0.80, blue: 0.78)) {
+                        showCustomSheet = true
+                    }
+                }
+                devTestsSection
+            }
+            .padding(12)
+        }
+    }
+
+    /// Primary action. The button stays tappable whatever the state says —
+    /// StikDebug can drop its attachment at any point, so "enabled" is a
+    /// readout, never a reason to block the retry.
+    private var jitCard: some View {
+        Button { enableJITViaStikDebug() } label: {
+            HStack(spacing: 12) {
+                Image(systemName: debuggerAttached ? "bolt.fill" : "bolt.slash.fill")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(debuggerAttached ? MDTheme.ok : MDTheme.warn)
+                    .frame(width: 36, height: 36)
+                    .background(Circle()
+                        .fill((debuggerAttached ? MDTheme.ok : MDTheme.warn).opacity(0.15)))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(debuggerAttached ? "JIT enabled" : "Enable JIT")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(MDTheme.text)
+                    Text(debuggerAttached ? "Debugger attached — ready to launch"
+                                          : "Attach StikDebug before launching")
+                        .font(.system(size: 11))
+                        .foregroundStyle(MDTheme.dim)
+                }
+                Spacer(minLength: 0)
+                Text(statusText)
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(statusColor)
+            }
+            .mdCard()
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func launchCard(_ title: String, _ subtitle: String, _ icon: String,
+                            _ tint: Color, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 9) {
+                Image(systemName: icon)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(tint)
+                    .frame(width: 34, height: 34)
+                    .background(RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .fill(tint.opacity(0.15)))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(MDTheme.text)
+                    Text(subtitle)
+                        .font(.system(size: 10))
+                        .foregroundStyle(MDTheme.dim)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .frame(maxWidth: .infinity, minHeight: 92, alignment: .topLeading)
+            .mdCard()
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// The x64/arm64 probes and the bare Wine desktop are instrumentation, not
+    /// titles — collapsed so they stop competing with the games for attention.
+    private var devTestsSection: some View {
+        VStack(spacing: 8) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.18)) { showDevTests.toggle() }
+            } label: {
+                HStack(spacing: 6) {
+                    Text("DEVELOPER TESTS")
+                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                        .tracking(1.1)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9, weight: .bold))
+                        .rotationEffect(.degrees(showDevTests ? 90 : 0))
+                    Spacer()
+                }
+                .foregroundStyle(MDTheme.faint)
+            }
+            .buttonStyle(.plain)
+
+            if showDevTests {
+                VStack(spacing: 6) {
+                    devRow("Wine virtual desktop", "explorer.exe + services.exe",
+                           "macwindow") { launchWineDesktop() }
+                    devRow("x64 DX11 cube", "cube-x64.exe",
+                           "cube.fill") { launchCubeX64() }
+                    devRow("x64 clock test", "clocktest-x64.exe",
+                           "clock.fill") { launchClockTest() }
+                    devRow("arm64 DX11 cube", "native Metal path",
+                           "square.stack.3d.up.fill") { runTriangleTest() }
+                }
+            }
+        }
+    }
+
+    private func devRow(_ title: String, _ detail: String, _ icon: String,
+                        action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: icon)
+                    .font(.system(size: 13))
+                    .foregroundStyle(MDTheme.dim)
+                    .frame(width: 20)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(title)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(MDTheme.text)
+                    Text(detail)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(MDTheme.faint)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "play.fill")
+                    .font(.system(size: 10))
+                    .foregroundStyle(MDTheme.dim)
+            }
+            .mdCard(padding: 10)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func sectionHeader(_ title: String) -> some View {
+        HStack {
+            Text(title.uppercased())
+                .font(.system(size: 10, weight: .bold, design: .rounded))
+                .tracking(1.1)
+                .foregroundStyle(MDTheme.faint)
+            Spacer()
+        }
+    }
+
+    /// Last path component of the custom target, for the card subtitle.
+    private var customExeLabel: String {
+        customExePath.replacingOccurrences(of: "/", with: "\\")
+            .split(separator: "\\").last.map { String($0) } ?? customExePath
     }
 
     /// Launch any exe already copied into the prefix's C: drive, without a
     /// per-title button/rebuild. Path is entered relative to drive_c, e.g.
     /// "Program Files\MyGame\Game.exe".
-    private var customLaunchControls: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Custom game (path on C:\\)")
-                .font(.caption)
-                .foregroundColor(.secondary)
-            TextField("Program Files\\MyGame\\Game.exe", text: $customExePath)
-                .textFieldStyle(.roundedBorder)
-                .autocorrectionDisabled()
-                .textInputAutocapitalization(.never)
-            TextField("Launch args (optional)", text: $customArgs)
-                .textFieldStyle(.roundedBorder)
-                .autocorrectionDisabled()
-                .textInputAutocapitalization(.never)
-            Button("Launch Custom Game") {
-                launchCustomGame()
+    private var customGameSheet: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    sheetField("Executable path",
+                               placeholder: "Program Files\\MyGame\\Game.exe",
+                               text: $customExePath,
+                               note: "Relative to the prefix's C: drive. Copy the game into Documents/wine/drive_c yourself first — nothing is installed for you.")
+                    sheetField("Launch arguments",
+                               placeholder: "optional",
+                               text: $customArgs,
+                               note: nil)
+                    Button {
+                        showCustomSheet = false
+                        launchCustomGame()
+                    } label: {
+                        Text("Launch")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(maxWidth: .infinity, minHeight: 46)
+                            .background(RoundedRectangle(cornerRadius: 11, style: .continuous)
+                                .fill(customExePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                      ? MDTheme.raised : MDTheme.accent))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(customExePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+                .padding(16)
             }
-            .buttonStyle(.borderedProminent)
-            .tint(.indigo)
-            .disabled(customExePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .background(MDTheme.bg)
+            .navigationTitle("Custom game")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Done") { showCustomSheet = false }
+                }
+            }
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
+    }
+
+    private func sheetField(_ title: String, placeholder: String,
+                            text: Binding<String>, note: String?) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text(title)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(MDTheme.dim)
+            TextField(placeholder, text: text)
+                .font(.system(size: 13, design: .monospaced))
+                .foregroundStyle(MDTheme.text)
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+                .padding(11)
+                .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(MDTheme.surface))
+                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(MDTheme.line, lineWidth: 1))
+            if let note {
+                Text(note)
+                    .font(.system(size: 11))
+                    .foregroundStyle(MDTheme.faint)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
     }
 
     private func launchCustomGame() {
@@ -1582,39 +1846,102 @@ struct ContentView: View {
         runWineFullSequence()
     }
 
-    private var logConsole: some View {
-        let entries = logStore.entries.sorted(by: { $0.lastTimestamp > $1.lastTimestamp })
-        return List(entries) { entry in
-            HStack(alignment: .top, spacing: 8) {
-                // Timestamp of LAST occurrence
-                Text(timeString(entry.lastTimestamp))
-                    .font(.system(.caption2, design: .monospaced))
-                    .foregroundColor(.secondary)
-                    .frame(width: 64, alignment: .leading)
-                // Level chip
-                Text(entry.level.rawValue)
-                    .font(.system(.caption2, design: .monospaced))
-                    .foregroundColor(colorForLevel(entry.level))
-                    .frame(width: 28, alignment: .leading)
-                // Last raw message (the most recent line that matched this signature)
-                Text(entry.lastRaw)
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundColor(.primary)
-                    .lineLimit(2)
-                // Count badge (only if count > 1)
-                if entry.count > 1 {
-                    Text("×\(entry.count)")
-                        .font(.system(.caption2, design: .monospaced).weight(.semibold))
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Color.secondary.opacity(0.2))
-                        .cornerRadius(4)
-                        .foregroundColor(.secondary)
-                }
+    private var consolePanel: some View {
+        // Sorted once per body evaluation, not once per reader: the log can run
+        // to thousands of entries and this view re-renders on every append.
+        let entries = visibleLogEntries
+        return VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Text("\(entries.count)")
+                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(MDTheme.dim)
+                Text(errorsOnly ? "errors" : "entries")
+                    .font(.system(size: 11))
+                    .foregroundStyle(MDTheme.faint)
+                Spacer(minLength: 0)
+                consoleChip("Errors", icon: "exclamationmark.triangle.fill",
+                            tone: errorsOnly ? MDTheme.bad : MDTheme.dim,
+                            active: errorsOnly) { errorsOnly.toggle() }
+                consoleChip("Clear", icon: "trash.fill", tone: MDTheme.dim,
+                            active: false) { logStore.clear() }
             }
-            .listRowInsets(EdgeInsets(top: 2, leading: 8, bottom: 2, trailing: 8))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(MDTheme.surface)
+
+            if entries.isEmpty {
+                VStack(spacing: 8) {
+                    Image(systemName: "terminal")
+                        .font(.system(size: 24))
+                        .foregroundStyle(MDTheme.faint)
+                    Text(errorsOnly ? "No errors logged" : "Console is empty")
+                        .font(.system(size: 12))
+                        .foregroundStyle(MDTheme.faint)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                List(entries) { entry in
+                    logRow(entry)
+                        .listRowInsets(EdgeInsets(top: 3, leading: 10, bottom: 3, trailing: 10))
+                        .listRowBackground(Color.clear)
+                        .listRowSeparatorTint(MDTheme.line)
+                }
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
+            }
         }
-        .listStyle(.plain)
+        .background(MDTheme.bg)
+    }
+
+    private var visibleLogEntries: [LogStore.LogEntry] {
+        let sorted = logStore.entries.sorted(by: { $0.lastTimestamp > $1.lastTimestamp })
+        return errorsOnly ? sorted.filter { $0.level == .error } : sorted
+    }
+
+    private func logRow(_ entry: LogStore.LogEntry) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            // Level reads as a colour stripe rather than a text column — it
+            // buys back the width the old "ERR"/"DBG" cell spent.
+            RoundedRectangle(cornerRadius: 1.5)
+                .fill(colorForLevel(entry.level))
+                .frame(width: 3)
+            // Timestamp of LAST occurrence
+            Text(timeString(entry.lastTimestamp))
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(MDTheme.faint)
+                .frame(width: 54, alignment: .leading)
+            // Last raw message (the most recent line that matched this signature)
+            Text(entry.lastRaw)
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(entry.level == .error ? MDTheme.bad : MDTheme.text)
+                .lineLimit(2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            // Count badge (only if count > 1)
+            if entry.count > 1 {
+                Text("×\(entry.count)")
+                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    .foregroundStyle(MDTheme.dim)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill(MDTheme.raised))
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func consoleChip(_ label: String, icon: String, tone: Color,
+                             active: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                Image(systemName: icon).font(.system(size: 9))
+                Text(label).font(.system(size: 11, weight: .semibold))
+            }
+            .foregroundStyle(tone)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5)
+            .background(Capsule().fill(active ? tone.opacity(0.15) : MDTheme.raised))
+        }
+        .buttonStyle(.plain)
     }
 
     // ml540: ONE formatter for the whole app, built once on first use.
@@ -1792,6 +2119,10 @@ struct ContentView: View {
     /// Debugger stays attached during PE loading so mprotect_exec can use BRK
     /// to prepare code pages. Detach happens after Wine finishes + recovery.
     private func runWineFullSequence() {
+        // Watching the log is the whole point once a target is launched, and
+        // the guard below reports its refusal there too — so flip panels before
+        // it, not after.
+        panel = .console
         guard jit_check_debugged() else {
             logStore.log("JIT not enabled. Press 'Enable JIT' first.", level: .error)
             return
