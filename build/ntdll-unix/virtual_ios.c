@@ -4151,7 +4151,18 @@ static const UINT_PTR host_page_mask = 0xfff;
 #if defined(__i386__) || defined(__x86_64__)
 static void *address_space_start = (void *)0x110000; /* keep DOS area clear */
 #elif defined(WINE_IOS)
-static void *address_space_start = (void *)0x100010000; /* above iOS 4GB __PAGEZERO */
+/* Wine's own allocations still start above 4GB, where the usable window is.
+ *
+ * The app links with -pagezero_size,0x4000 (see Madeira.xcodeproj), so the low
+ * 4GB is NOT reserved by __PAGEZERO any more and a below-2GB request can
+ * actually be served. That matters for exactly one kind of guest: non-GC64
+ * LuaJIT (shipped as lua51.dll by every LOVE game, Balatro included) calls
+ * NtAllocateVirtualMemory with ZeroBits=1 because it packs GCrefs into 32
+ * bits. With the default 4GB pagezero every address in that window is refused
+ * by the kernel, lua_newstate() returns NULL, and the game faults on the first
+ * NULL lua_State deref. Leave the start here: only the limited path needs the
+ * low window, and moving general allocations down buys nothing. */
+static void *address_space_start = (void *)0x100010000;
 #else
 static void *address_space_start = (void *)0x10000;
 #endif

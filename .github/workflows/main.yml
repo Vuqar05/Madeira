@@ -645,6 +645,30 @@ jobs:
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
             build
 
+      # The app links with -pagezero_size,0x4000 so the low 4GB stays mappable
+      # for guests that demand below-2GB memory (non-GC64 LuaJIT). ld can warn
+      # and ignore that flag rather than failing, so a green build proves
+      # nothing on its own — read the segment back and fail loudly if the
+      # default 4GB __PAGEZERO survived.
+      - name: Verify __PAGEZERO was shrunk
+        run: |
+          set -euo pipefail
+          otool -l out/Madeira.app/Madeira | grep -A4 '__PAGEZERO' || true
+          VMSIZE="$(otool -l out/Madeira.app/Madeira \
+            | awk '/segname __PAGEZERO/{f=1} f&&/vmsize/{print $2; exit}')"
+          echo "__PAGEZERO vmsize = ${VMSIZE:-<none>}"
+          if [ -z "$VMSIZE" ]; then
+            echo "No __PAGEZERO segment at all — low VA is fully mappable."
+            exit 0
+          fi
+          if [ "$((VMSIZE))" -ge $((0x100000000)) ]; then
+            echo "FATAL: __PAGEZERO is still $((VMSIZE)) bytes (4GB default)."
+            echo "The -pagezero_size flag did not take effect; the low 2GB"
+            echo "stays unmappable and LuaJIT-based games will still fault."
+            exit 1
+          fi
+          echo "OK: __PAGEZERO shrunk to $((VMSIZE)) bytes."
+
       - name: Package IPA
         run: |
           set -euxo pipefail
