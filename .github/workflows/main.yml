@@ -256,6 +256,12 @@ jobs:
           bash build/freetype-ios/build.sh
           test -f build/freetype-ios/build/libfreetype.a
 
+      # The key is keyed on the wine submodule commit, but these libs are built
+      # from build/{ntdll,win32u}-unix/*.c in THIS repo — editing those left the
+      # key unchanged, so the cache hit and the stale archive shipped while the
+      # edit appeared to build fine. Hash the sources too. (The wineserver and
+      # DXMT caches below have the same shape; left alone until something needs
+      # them, but the trap is identical.)
       - name: Cache Wine unix libs
         id: wineunix
         uses: actions/cache@v4
@@ -265,7 +271,7 @@ jobs:
             build/win32u-unix/obj
             app/Madeira/libntdll_unix.a
             app/Madeira/libwin32u_unix.a
-          key: wineunix-7817e22-${{ env.CACHE_V }}
+          key: wineunix-7817e22-${{ env.CACHE_V }}-${{ hashFiles('build/ntdll-unix/**', 'build/win32u-unix/**') }}
 
       - name: Wine unix libs (ntdll, win32u)
         if: steps.wineunix.outputs.cache-hit != 'true'
