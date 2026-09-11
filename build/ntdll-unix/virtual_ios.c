@@ -2486,6 +2486,74 @@ void ios_jit_add_mapping(void *pe_base, void *jit_base, size_t size)
                                   (unsigned long long)size);
 }
 
+/* ml758: the inverse of ios_jit_add_mapping's overlap purge, for the one case
+ * that purge cannot see — a module UNLOADED and then re-mapped at the SAME base.
+ *
+ * mprotect_exec's "already copied to JIT pool" early-out validates a candidate
+ * entry (ml352) by reading MZ, e_lfanew and SizeOfImage at the recorded pe_base
+ * and comparing SizeOfImage against the entry's size. That proves *a* valid PE
+ * of the right size is mapped there — it does NOT prove it is the same INSTANCE
+ * we copied. FreeLibrary followed by LoadLibrary of the same DLL lands a
+ * pristine image at the same base with byte-identical headers, so every field
+ * matches, the early-out fires, and the fresh image is never copied. The guest
+ * keeps executing the DEAD instance's pool copy — crucially including its
+ * .data, whose globals hold whatever the destroyed instance left behind.
+ *
+ * Observed (Balatro/LÖVE, 2026-09-12): LÖVE creates its window, ANGLE brings up
+ * a D3D11 device, then LÖVE destroys and recreates the window. d3d11.dll and
+ * libEGL.dll are unmapped and re-mapped at the same bases, and no second
+ * "[jit-pool] image ..." line is emitted for either. The re-created device then
+ * read a d3d11 global out of the stale .data (d3d11.dll+0x3dd880), got the NULL
+ * the dead instance had left there, and dereferenced +8:
+ *
+ *     ldr x8,[x0] ; ldr x8,[x8,x9,lsl #3]      x0 = d3d11.dll+0x3dd880, x9 = 1
+ *     wine: Unhandled page fault on read access to 0000000000000008
+ *           at address 0000000FB8D53608        (d3d11.dll+0x113608)
+ *
+ * The ml352 comment's rsaenh/windows.ui case is the same disease with a
+ * DIFFERENT module landing in the range; that one the header check catches,
+ * because SizeOfImage disagrees. Same-module reload defeats it entirely, so the
+ * only moment we can know the instance died is the unmap itself.
+ *
+ * The dead copy's POOL RANGE is deliberately NOT freed here. Freeing needs the
+ * ledger + freelist grace window (ios_jit_reclaim_process), and a laggard thread
+ * still unwinding out of the old copy during that window would execute pages we
+ * had already handed back — the ml74 "iOS zero-harvests executing code" failure.
+ * The range is reclaimed with the rest of the process's at exit; until then a
+ * reload costs one image's worth of pool (d3d11 ≈ 4.5MB of 896MB) for the
+ * handful of unload/reload cycles a game startup performs.
+ *
+ * Tombstone write order matches ios_jit_add_mapping and ios_jit_reclaim_process:
+ * size=0 first (a zero-size entry matches no query), barrier, then pe_base=NULL
+ * (the free-slot marker), so the lock-free readers — translate and the Mach
+ * fault handler — never see a half-dead entry. No ios_pool_lock: this touches
+ * only ios_jit_mappings, exactly like add_mapping's purge. */
+void ios_jit_purge_image_mapping( void *pe_base, size_t size )
+{
+    int i;
+
+    if (!pe_base || !size) return;
+
+    for (i = 0; i < ios_jit_mapping_count; i++)
+    {
+        uintptr_t eb = (uintptr_t)ios_jit_mappings[i].pe_base;
+        uintptr_t nb = (uintptr_t)pe_base;
+
+        if (!ios_jit_mappings[i].pe_base) continue;
+        if (eb < nb + size && nb < eb + ios_jit_mappings[i].size)
+        {
+            dprintf(2, "[jit-pool] image mapping TOMBSTONED on unmap rev=ml758: pe=%p+0x%lx "
+                    "jit=%p owner=%p (view %p+0x%lx went away; next load re-copies)\n",
+                    (void *)eb, (unsigned long)ios_jit_mappings[i].size,
+                    ios_jit_mappings[i].jit_base, ios_jit_mappings[i].owner_peb,
+                    pe_base, (unsigned long)size);
+            ios_jit_mappings[i].size = 0;
+            __sync_synchronize();
+            ios_jit_mappings[i].pe_base = NULL;
+        }
+    }
+}
+
 /* unix_ios_push_jit_aliases handler. Called from PE-side ntdll's
  * arm64ec_process_init_dispatchers after binding xtajit64's
  * BTCpu64IosAddAliasMapping. Stores the callback, then pushes all
@@ -17038,7 +17106,17 @@ static NTSTATUS unmap_view_of_section( HANDLE process, PVOID addr, ULONG flags )
     SERVER_END_REQ;
     if (!status)
     {
-        if (view->protect & SEC_IMAGE) release_builtin_module( view->base );
+        if (view->protect & SEC_IMAGE)
+        {
+            /* ml758: drop this image's JIT-pool mapping entry BEFORE the view
+             * goes away. Once a fresh image lands at the same base — which the
+             * very next LoadLibrary of the same DLL does — nothing downstream
+             * can tell the stale entry from a live one, and mprotect_exec's
+             * early-out will keep routing the new instance at the dead copy
+             * (stale .data → NULL globals). See ios_jit_purge_image_mapping. */
+            ios_jit_purge_image_mapping( view->base, view->size );
+            release_builtin_module( view->base );
+        }
         if (flags & MEM_PRESERVE_PLACEHOLDER) free_pages_preserve_placeholder( view, view->base, view->size );
         else delete_view( view );
     }
