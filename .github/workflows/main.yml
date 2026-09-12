@@ -427,7 +427,6 @@ jobs:
             -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
             -DCMAKE_C_FLAGS="-DFEX_IOS_HOST=1" \
             -DCMAKE_CXX_FLAGS="-DFEX_IOS_HOST=1" \
-            -DCMAKE_ASM_FLAGS="-DFEX_IOS_HOST=1" \
             -DBUILD_TESTING=OFF \
             -DBUILD_TESTS=False \
             -DBUILD_THUNKS=OFF \
@@ -510,6 +509,7 @@ jobs:
             -DFEX_IOS_HOST_BUILD=ON \
             -DCMAKE_C_FLAGS="-DFEX_IOS_HOST=1" \
             -DCMAKE_CXX_FLAGS="-DFEX_IOS_HOST=1" \
+            -DCMAKE_ASM_FLAGS="-DFEX_IOS_HOST=1" \
             -DBUILD_TESTING=OFF \
             -DBUILD_TESTS=False \
             -DBUILD_THUNKS=OFF \
