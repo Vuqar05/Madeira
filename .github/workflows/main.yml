@@ -241,10 +241,20 @@ jobs:
       # C:\windows\sysx64 to arm64ec-windows, so an x86-64 guest loads ONLY
       # that copy. build-macos cannot produce it: it passes no --enable-archs,
       # and wine's configure.ac then defaults cross_archs to $HOST_ARCH
-      # (aarch64 on this runner). Note --enable-archs=...,arm64ec also implies
-      # extra_arch=x86_64 inside configure, which is why the x86_64 cross
-      # compiler has to be present too -- but only the two named sechost
-      # targets are actually built, not those trees.
+      # (aarch64 on this runner). --enable-archs=...,arm64ec also implies
+      # extra_arch=x86_64 inside configure, hence the x86_64 compiler check.
+      #
+      # ONE ARCH PER TREE, and that is not a style choice. tools/makedep.c
+      # ("check for ARM64X setup") pairs arm64ec with aarch64 whenever BOTH
+      # are in PE_ARCHS: arm64ec becomes a native_arch alias of aarch64, the
+      # link lands in aarch64-windows as a -marm64x hybrid, and
+      # dlls/<mod>/arm64ec-windows/<mod>.dll stops existing as a target at
+      # all. Run #12 died on exactly that ("No rule to make target
+      # dlls/sechost/arm64ec-windows/sechost.dll") while happily compiling
+      # arm64ec objects, which is what makes it confusing. Configured alone,
+      # the two stay unpaired and arm64ec yields the standalone pure-ARM64EC
+      # image (Machine=0x8664) that the bundle's arm64ec slot holds today; a
+      # hybrid would be 0xaa64 and is not what ships.
       #
       # This step is placed early ON PURPOSE: if the arm64ec assumption is
       # wrong it fails in ~30 min rather than after the LLVM and DXMT builds.
@@ -271,22 +281,29 @@ jobs:
           arm64ec-w64-mingw32-clang --version
 
           cd wine
-          git apply "$GITHUB_WORKSPACE/patches/wine-sechost-no-plugplay-ios.patch"
+          if ! grep -q plugplay_endpoint_present dlls/sechost/service.c; then
+            git apply "$GITHUB_WORKSPACE/patches/wine-sechost-no-plugplay-ios.patch"
+          fi
           # prove the hunk landed rather than trusting apply's exit code
           grep -q plugplay_endpoint_present dlls/sechost/service.c
 
-          mkdir -p build-sechost && cd build-sechost
-          ../configure --enable-archs=aarch64,arm64ec \
-            --disable-tests --without-x --without-freetype
-          test -f include/config.h
-          make -j"$(sysctl -n hw.ncpu)" \
-            dlls/sechost/aarch64-windows/sechost.dll \
-            dlls/sechost/arm64ec-windows/sechost.dll
-
+          NCPU="$(sysctl -n hw.ncpu)"
           OUT="$GITHUB_WORKSPACE/build/sechost-out"
           mkdir -p "$OUT"
-          cp dlls/sechost/aarch64-windows/sechost.dll "$OUT/sechost-aarch64.dll"
-          cp dlls/sechost/arm64ec-windows/sechost.dll "$OUT/sechost-arm64ec.dll"
+
+          # one arch per tree -- see the ARM64X note above
+          for arch in aarch64 arm64ec; do
+            rm -rf "build-sechost-$arch"
+            mkdir -p "build-sechost-$arch"
+            (
+              cd "build-sechost-$arch"
+              ../configure --enable-archs="$arch" \
+                --disable-tests --without-x --without-freetype
+              test -f include/config.h
+              make -j"$NCPU" "dlls/sechost/$arch-windows/sechost.dll"
+              cp "dlls/sechost/$arch-windows/sechost.dll" "$OUT/sechost-$arch.dll"
+            )
+          done
           ls -l "$OUT"
 
       - name: Stage patched sechost into the bundle
