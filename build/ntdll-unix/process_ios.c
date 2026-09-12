@@ -1334,6 +1334,41 @@ NTSTATUS WINAPI NtCreateUserProcess( HANDLE *process_handle_ptr, HANDLE *thread_
         }
         goto done;
     }
+#ifdef WINE_IOS
+    /* iOS-Madeira ml791: refuse a 32-bit image HERE, in the parent, before
+     * anything exists to wedge.
+     *
+     * ml790 already rejects one in the child (env_ios.c
+     * ios_reject_32bit_image), but by then the pseudo-process, its server
+     * socket and its thread are all live, and the parent is committed to the
+     * NtCreateUserProcess startup_info wait -- the wait that froze the whole
+     * desktop when a child died without telling wineserver. Checking the
+     * machine the moment get_pe_file_info reports it means no child is ever
+     * created, the parent never waits, and CreateProcess fails the way
+     * Windows fails it: ERROR_BAD_EXE_FORMAT, straight into the caller's own
+     * error path (explorer's Run dialog puts up a message box).
+     *
+     * Why every 32-bit image and not just some: WOW64 needs the guest in the
+     * low 2GB and iOS maps nothing below 4GB, so the reservation fails on a
+     * range with nothing in it at all (va-scan "views=0 stop=no-views-in-range
+     * ... errno=12"). Not a capacity problem, so no device or prefix makes it
+     * work. The prefix still advertises i386 in supported_machines because its
+     * syswow64 directories exist, which is what lets these spawns get this far.
+     *
+     * Seen twice now with stock indie builds -- Inscryption.exe and itch.io's
+     * AShortHike.exe both report Machine=0x14c -- so this is the common case
+     * for a user pointing the launcher at a game, not an edge case. */
+    if (!is_machine_64bit( pe_info.machine ))
+    {
+        ERR( "%s is a 32-bit program (machine %04x). iOS has no address space below 4GB, "
+             "so wow64 cannot be set up and it cannot be started; use a 64-bit build.\n",
+             debugstr_us(&path), pe_info.machine );
+        dprintf( 2, "[proc-gate] REJECTED 32-bit image machine=%04x before spawn rev=ml791\n",
+                 pe_info.machine );
+        status = STATUS_INVALID_IMAGE_FORMAT;
+        goto done;
+    }
+#endif
     if (!machine)
     {
         /* Owner-aware (X3): the SPAWNER's identity decides hybrid-image

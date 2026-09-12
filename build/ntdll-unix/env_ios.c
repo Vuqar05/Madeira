@@ -1889,6 +1889,63 @@ static void load_global_options( const UNICODE_STRING *image )
 }
 
 
+#ifdef WINE_IOS
+/*************************************************************************
+ *		ios_reject_32bit_image
+ *
+ * iOS-Madeira ml790: refuse a 32-bit main image here, while this thread can
+ * still tell the server it died.
+ *
+ * WOW64 wants every guest view -- the 32-bit process parameters, the PEB32,
+ * each module -- inside the low 2GB, and iOS hands out nothing below 4GB.
+ * The va-scan for the parameter block says so on a completely EMPTY range:
+ *
+ *   [va-scan] FAILED window=0x10000..0x80000000 size=0x3000 ... views=0
+ *             stop=no-views-in-range firstfail=0x10000 errno=12
+ *
+ * views=0 means we are not full; the kernel refuses the addresses. No device
+ * and no amount of free memory changes that, so no 32-bit exe can ever boot.
+ *
+ * What the old assert( !status ) in build_wow64_parameters actually produced,
+ * launching a 32-bit Inscryption.exe from the desktop's Run dialog:
+ *
+ *   Assertion failed: (!status), function build_wow64_parameters
+ *   [exc-disp] raise tid=007c code=80000101 ...
+ *   no-teb:err:seh:ios_lookup_thread [reg-miss] port=0x1423f not in registry
+ *                                    -> slot-0 fallback teb=0xfbffe0000
+ *
+ * abort() reached abrt_handler, which turned it into a guest exception on a
+ * thread the SEH port registry had no entry for, so the dispatcher ran
+ * against explorer's TEB and the child thread simply stopped. It never
+ * terminated its pseudo-process, so wineserver never signalled the
+ * startup_info object -- and the PARENT, explorer's single UI thread, was
+ * parked in NtCreateUserProcess:
+ *
+ *   [srv-stuck] tid=0024 age=74666ms op=1 timeout=9223372036854775807
+ *               h[0]=00000100 ... Startup info
+ *
+ * with an infinite timeout. Every window in the tree belongs to tid 0024, so
+ * the desktop froze solid; only the cursor kept moving, because the cursor is
+ * drawn host-side and never touches that thread.
+ *
+ * exit_process() closes this pseudo-process's master socket, which is exactly
+ * how wineserver learns a pseudo-process died: it signals the startup_info,
+ * the parent's CreateProcess returns a failure, and the desktop stays live to
+ * report it.
+ */
+static DECLSPEC_NORETURN void ios_reject_32bit_image( const UNICODE_STRING *image, USHORT machine )
+{
+    MESSAGE( "wine: %s is a 32-bit Windows program (machine %04x).\n",
+             debugstr_us(image), machine );
+    MESSAGE( "wine: Madeira can only run 64-bit programs -- iOS gives out no address space "
+             "below 4GB, so WOW64 cannot be set up. Install the 64-bit build of the game.\n" );
+    dprintf( 2, "[main-exe] REJECTED machine=%04x: 32-bit, and iOS has no low-2GB "
+                "address space for wow64 rev=ml790\n", machine );
+    exit_process( STATUS_INVALID_IMAGE_FORMAT );
+}
+#endif
+
+
 /*************************************************************************
  *		build_wow64_parameters
  */
@@ -1914,7 +1971,19 @@ static void *build_wow64_parameters( const RTL_USER_PROCESS_PARAMETERS *params )
 
     status = NtAllocateVirtualMemory( NtCurrentProcess(), (void **)&wow64_params, limit_2g - 1, &size,
                                       MEM_COMMIT, PAGE_READWRITE );
+#ifdef WINE_IOS
+    /* ml790: the low-2GB reservation is unsatisfiable on iOS (see
+     * ios_reject_32bit_image). Hand the failure back instead of abort()ing on
+     * a child thread whose death nobody is watching. */
+    if (status)
+    {
+        dprintf( 2, "[wow64] process parameters: no low-2GB reservation (%08x) rev=ml790\n",
+                 (unsigned)status );
+        return NULL;
+    }
+#else
     assert( !status );
+#endif
 
     wow64_params->AllocationSize  = size;
     wow64_params->Size            = size;
@@ -2000,6 +2069,14 @@ static void init_peb( RTL_USER_PROCESS_PARAMETERS *params, void *module )
     {
         void *wow64_params = build_wow64_parameters( params );
 
+#ifdef WINE_IOS
+        /* ml790: last line of defence. unix_init_startup_info rejects 32-bit
+         * images before we get here, so reaching this means some other path
+         * (a machine we mis-classified) built a wow_peb we cannot fill in --
+         * still better to fail the process than to run with a NULL
+         * ProcessParameters. */
+        if (!wow64_params) ios_reject_32bit_image( &params->ImagePathName, main_image_info.Machine );
+#endif
         wow_peb->ImageBaseAddress                = PtrToUlong( peb->ImageBaseAddress );
         wow_peb->ProcessParameters               = PtrToUlong( wow64_params );
         wow_peb->NumberOfProcessors              = peb->NumberOfProcessors;
@@ -2334,6 +2411,14 @@ void unix_init_startup_info(void)
         MESSAGE( "wine: failed to start %s: %x\n", debugstr_us(&params->ImagePathName), status );
         NtTerminateProcess( GetCurrentProcess(), status );
     }
+#ifdef WINE_IOS
+    /* ml790: the image maps fine -- it is the wow64 environment init_peb would
+     * go on to build that cannot exist on iOS. Say so now, from a thread that
+     * can still reach the server, rather than asserting inside init_peb and
+     * leaving the parent's CreateProcess wait to hang the desktop for good. */
+    if (!is_machine_64bit( main_image_info.Machine ))
+        ios_reject_32bit_image( &params->ImagePathName, main_image_info.Machine );
+#endif
     rebuild_argv();
     main_wargv = build_wargv( params->ImagePathName.Buffer );
     free( nt_name.Buffer );

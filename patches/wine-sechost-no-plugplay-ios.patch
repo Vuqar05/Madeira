@@ -1,0 +1,45 @@
+diff --git a/dlls/sechost/service.c b/dlls/sechost/service.c
+index 218d314..fe29f56 100644
+--- a/dlls/sechost/service.c
++++ b/dlls/sechost/service.c
+@@ -2029,6 +2029,31 @@ static BOOL notification_filter_matches( DEV_BROADCAST_HDR *filter, const WCHAR
+     return TRUE;
+ }
+ 
++/* The listener thread's first act is to bind to \pipe\wine_plugplay and call
++ * plugplay_register_listener(). Where nothing serves that endpoint the bind
++ * fails, the thread logs "failed to open RPC handle" and returns immediately --
++ * so the thread never had a job to do, and starting it only buys a guaranteed
++ * thread creation and teardown.
++ *
++ * That teardown is not free. On Madeira/iOS there is no winedevice.exe and no
++ * plugplay service at all, so the endpoint NEVER exists; the thread is created
++ * and destroyed on every RegisterDeviceNotification, and its exit runs
++ * DLL_THREAD_DETACH with the ntdll loader lock held. A thread that dies in
++ * there orphans the loader lock, and every other thread that touches the loader
++ * blocks forever -- observed with Mewgenics, which deadlocked during renderer
++ * init with "loader_section wait timed out in thread 006c, blocked by 0068"
++ * where 0068 was this thread.
++ *
++ * Probing first costs one WaitNamedPipe and changes nothing where a plugplay
++ * service is actually running. Anything other than a definite "no such pipe"
++ * is treated as present, so a busy or slow server still gets the listener.
++ */
++static BOOL plugplay_endpoint_present(void)
++{
++    if (WaitNamedPipeW( L"\\\\.\\pipe\\wine_plugplay", 1 )) return TRUE;
++    return GetLastError() != ERROR_FILE_NOT_FOUND;
++}
++
+ static DWORD WINAPI device_notify_proc( void *arg )
+ {
+     WCHAR endpoint[] = L"\\pipe\\wine_plugplay";
+@@ -2169,7 +2194,7 @@ HDEVNOTIFY WINAPI I_ScRegisterDeviceNotification( HANDLE handle, DEV_BROADCAST_H
+     EnterCriticalSection( &service_cs );
+     list_add_tail( &device_notify_list, &notify->entry );
+ 
+-    if (!device_notify_thread)
++    if (!device_notify_thread && plugplay_endpoint_present())
+         device_notify_thread = CreateThread( NULL, 0, device_notify_proc, NULL, 0, NULL );
+ 
+     LeaveCriticalSection( &service_cs );
