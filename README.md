@@ -23,6 +23,9 @@ breaking changes.
 - An Apple ID for signing. A free account works; its provisioning profiles
   expire after 7 days, so the app must be rebuilt and reinstalled weekly. The
   app's container survives reinstall, so prefixes and saves are preserved.
+- **64-bit games only.** WOW64 needs the guest mapped into the low 2GB, and iOS
+  hands out no address space below 4GB at all, so a 32-bit exe cannot be
+  started. Wine now refuses one with a message instead of wedging.
 
 Because JIT requires debugger attach, this app cannot be distributed through the
 App Store. It is installed by sideloading.
