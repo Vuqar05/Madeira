@@ -431,6 +431,40 @@ static void *wine_process_thread(void *arg) {
          * so the next log proves it arrived rather than leaving us to infer it. */
         setenv("FNA3D_FORCE_DRIVER", "D3D11", 0);
 
+        /* iOS-Madeira: route SDL's GL path through ANGLE (GLES2 -> D3D11 -> DXMT).
+         *
+         * Same policy as FNA3D above, for engines that have no D3D backend to be
+         * redirected to. LOVE (Balatro and every other LOVE title) is GL-only, so
+         * it dies at window creation with "Could not initialize OpenGL / GLES
+         * library" -- there is no GL on this stack at all, and opengl32's unixlib
+         * is a stub (see virtual_ios.c ml-notes).
+         *
+         * ANGLE is the route ARCHITECTURE_ANALYSIS.md already names for OpenGL
+         * titles. Its Windows x64 build translates GLES2 to D3D11, which is
+         * exactly what DXMT already serves for Thumper.
+         *
+         * INERT until libEGL.dll + libGLESv2.dll are present next to the game exe
+         * (or in the prefix): if they are missing SDL fails its GL init exactly as
+         * it does today, so this cannot regress a title that works now. Nothing in
+         * this repo builds or ships those two files yet -- they have to be placed
+         * by hand for now, next to the target game's own exe.
+         *
+         * SDL_OPENGL_ES_DRIVER makes SDL take its EGL/GLES path instead of WGL;
+         * the two driver names are SDL's defaults, set explicitly so a failure
+         * names the library it could not load. LOVE reads
+         * LOVE_GRAPHICS_USE_OPENGLES as an SDL hint and will then ask for a GLES
+         * context rather than desktop GL. A title that asks for desktop OpenGL
+         * directly, with no GLES entry point of its own, is NOT covered by this --
+         * ANGLE only ever speaks GLES.
+         *
+         * None of these are filtered on the way into the guest -- env_ios.c's
+         * ignore list only covers the exact SDL_VIDEODRIVER / SDL_AUDIODRIVER
+         * names, not SDL_VIDEO_*_DRIVER. overwrite=0 so an explicit setting wins. */
+        setenv("SDL_OPENGL_ES_DRIVER", "1", 0);
+        setenv("SDL_VIDEO_GL_DRIVER", "libGLESv2.dll", 0);
+        setenv("SDL_VIDEO_EGL_DRIVER", "libEGL.dll", 0);
+        setenv("LOVE_GRAPHICS_USE_OPENGLES", "1", 0);
+
         /* ml720: make Mono report unhandled exceptions and assembly-load failures.
          *
          * DIAGNOSTIC — revisit before shipping; this is chatty and costs startup time.
