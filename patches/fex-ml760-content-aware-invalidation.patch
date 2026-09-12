@@ -1,41 +1,46 @@
 diff --git a/Source/Windows/Common/InvalidationTracker.cpp b/Source/Windows/Common/InvalidationTracker.cpp
-index 003dc35..273f4af 100644
+index 003dc35..2956c23 100644
 --- a/Source/Windows/Common/InvalidationTracker.cpp
 +++ b/Source/Windows/Common/InvalidationTracker.cpp
-@@ -10,6 +10,7 @@
- #include <FEXCore/Config/Config.h>
- #include <FEXCore/Debug/InternalThreadState.h>
+@@ -12,6 +12,9 @@
  #include "InvalidationTracker.h"
-+#include "MadeiraCodeSnapshot.h"
  #include <windef.h>
  #include <winternl.h>
++/* ml761: included AFTER windef/winternl -- it calls VirtualQuery and uses
++ * MEMORY_BASIC_INFORMATION, exactly as the tracker constructor below does. */
++#include "MadeiraCodeSnapshot.h"
  
-@@ -61,7 +62,13 @@ void InvalidationTracker::HandleMemoryProtectionNotification(uint64_t Address, u
+ /* ml623: targeted IR capture target (defined in FEXCore PassManager.cpp). File scope on
+  * purpose -- an extern "C" at block scope is a compile error and cost a build earlier. */
+@@ -61,7 +64,14 @@ void InvalidationTracker::HandleMemoryProtectionNotification(uint64_t Address, u
    const auto AlignedBase = Address & FEXCore::Utils::FEX_PAGE_MASK;
    const auto AlignedSize = (Address - AlignedBase + Size + FEXCore::Utils::FEX_PAGE_SIZE - 1) & FEXCore::Utils::FEX_PAGE_MASK;
  
 -  const bool NeedsInvalidate = [&]() {
-+  /* iOS-Madeira ml760: this used to answer a yes/no question ("flush the whole
-+   * range?"). It now answers "flush WHICH PART of it?", because a guest JIT
-+   * flipping its arena RW->RX around every single trace made the yes/no answer
-+   * "all of it", twice per trace. See MadeiraCodeSnapshot.h for the measurement
-+   * and the argument that a content hash is sufficient. */
++  /* iOS-Madeira ml760/ml761: this used to answer a yes/no question ("flush the
++   * whole range?"). It now answers "flush WHICH PART of it?", because a guest
++   * JIT flipping its arena RW->RX around every single trace made the yes/no
++   * answer "all of it", twice per trace. See MadeiraCodeSnapshot.h for the
++   * measurement, the argument that a content hash is sufficient, and the three
++   * guards that keep this off the allocation path it first crashed on. */
 +  uint64_t InvBase = 0, InvSize = 0;
 +  {
      std::unique_lock Lock(IntervalsLock);
  
      FEXCore::IntervalList<uint64_t>::Interval ProtInterval {AlignedBase, AlignedBase + AlignedSize};
-@@ -79,7 +86,8 @@ void InvalidationTracker::HandleMemoryProtectionNotification(uint64_t Address, u
+@@ -79,7 +89,10 @@ void InvalidationTracker::HandleMemoryProtectionNotification(uint64_t Address, u
        if (DEPDisabled && !HasExec) {
          DEPPromotedIntervals.Insert(ProtInterval);
        }
 -      return true;
-+      /* ml760 part 2: only the pages whose bytes actually moved. */
-+      Madeira::CodeSnapshot::BoundChangedPages(AlignedBase, AlignedSize, ProtIsReadable(Prot), InvBase, InvSize);
++      /* Only the pages whose bytes actually moved -- when the ml761 guards
++       * agree that narrowing is safe here. Otherwise this flushes the whole
++       * range, exactly as it always did. */
++      Madeira::CodeSnapshot::BoundChangedPages(AlignedBase, AlignedSize, Prot, InvBase, InvSize);
      } else if (XIntervals.Intersect(ProtInterval)) {
        /* iOS-Madeira ml208 ROOT-CAUSE FIX.
         *
-@@ -101,24 +109,30 @@ void InvalidationTracker::HandleMemoryProtectionNotification(uint64_t Address, u
+@@ -101,24 +114,30 @@ void InvalidationTracker::HandleMemoryProtectionNotification(uint64_t Address, u
        if (AlignedSize >= (1ull << 30)) {
          LogMan::Msg::EFmt("[iOS-xrem] SUPPRESSED bulk non-exec {:#x}-{:#x} ({} MB) prot={:#x}", ProtInterval.Offset,
                            ProtInterval.End, AlignedSize >> 20, Prot);
@@ -55,9 +60,9 @@ index 003dc35..273f4af 100644
  
 -    return false;
 -  }();
-+      /* ml760 part 1: becoming non-executable cannot change the bytes, and
-+       * nothing can run here until it is made executable again — which
-+       * re-checks the contents. So there is nothing to flush. */
++      /* Becoming non-executable cannot change the bytes, and nothing can run
++       * here until it is made executable again -- which re-checks the
++       * contents. So there is nothing to flush. */
 +      if (!Madeira::CodeSnapshot::SkipNonExecFlush(AlignedSize)) {
 +        LogMan::Msg::EFmt("[iOS-xrem] via=protect tracker={} {:#x}-{:#x}", static_cast<void*>(this), ProtInterval.Offset,
 +                          ProtInterval.End);
@@ -77,28 +82,28 @@ index 003dc35..273f4af 100644
  
 diff --git a/Source/Windows/Common/MadeiraCodeSnapshot.h b/Source/Windows/Common/MadeiraCodeSnapshot.h
 new file mode 100644
-index 0000000..8070a3b
+index 0000000..7402d55
 --- /dev/null
 +++ b/Source/Windows/Common/MadeiraCodeSnapshot.h
-@@ -0,0 +1,194 @@
+@@ -0,0 +1,292 @@
 +// SPDX-License-Identifier: MIT
 +#pragma once
 +
 +/* iOS-Madeira ml760: CONTENT-AWARE CODE INVALIDATION.
 + *
-+ * WHY. A guest JIT that follows the W^X dance — VirtualProtect(arena, RW),
-+ * write one trace, VirtualProtect(arena, RX) — made FEX throw away every
++ * WHY. A guest JIT that follows the W^X dance -- VirtualProtect(arena, RW),
++ * write one trace, VirtualProtect(arena, RX) -- made FEX throw away every
 + * translation in the whole arena, twice per trace. Balatro (LOVE/LuaJIT,
 + * lua51.dll) does this constantly while the player interacts, and the run
 + * log measured the result:
 + *
 + *   - 6106 `[iOS-xrem] via=protect` events, EVERY one exactly 0x20000 wide,
-+ *     across 71 distinct bases — and all 71 are `[jit-pool] anon RWX` bases,
++ *     across 71 distinct bases -- and all 71 are `[jit-pool] anon RWX` bases,
 + *     i.e. the guest's own executable arenas.
 + *   - The insert branch invalidates too and logs nothing, so the real figure
 + *     is ~12200 full-arena flushes.
 + *   - real_compiles=169254. Cumulative hit rate reads 94%, but late in the
-+ *     run each 16384 lookups cost 3700-5600 fresh compiles — a 22-34%
++ *     run each 16384 lookups cost 3700-5600 fresh compiles -- a 22-34%
 + *     MARGINAL miss rate. The cache was not warming up; it was being emptied.
 + *   - 61% of all log lines adjacent to a LONG DT frame were this one event.
 + *     336 such frames, median 91ms (~11fps) against 60fps while idle.
@@ -107,8 +112,8 @@ index 0000000..8070a3b
 + *
 + *   1. Becoming NON-executable no longer flushes. Making memory writable
 + *      cannot change its contents, and the range cannot be executed while
-+ *      non-executable — the transition back to executable is what matters,
-+ *      and that still flushes. Free 2x, no correctness loss.
++ *      non-executable -- the transition back to executable is what matters,
++ *      and that still flushes.
 + *
 + *   2. Becoming executable flushes only the pages whose bytes actually
 + *      CHANGED, found by comparing a per-page hash against the baseline
@@ -117,12 +122,52 @@ index 0000000..8070a3b
 + *
 + * WHY THE HASH IS SUFFICIENT. The check is pure content. Equal hash means
 + * equal bytes, and equal bytes at the same guest address means the existing
-+ * translation is still correct — no matter what happened to the mapping in
++ * translation is still correct -- no matter what happened to the mapping in
 + * between (freed, reallocated, rewritten and restored). So this needs no
 + * free-tracking to stay sound: a recycled range with different content
 + * hashes differently and gets invalidated. A page with NO baseline is
 + * always treated as changed. Every failure mode here is conservative
 + * (invalidate more than needed), never stale.
++ *
++ * ============================================================
++ * ml761: THREE GUARDS, ADDED AFTER THIS CRASHED THE FIRST BUILD.
++ * ============================================================
++ *
++ * The first version read the range unconditionally to hash it, and died
++ * during startup -- before the game ever ran -- with a jump to pc=0 out of
++ * an ARM64EC dispatcher, then a fault storm the handler could not unwind
++ * (x18=0, "no TEB owns sp"). The two logs diverge on exactly one line. The
++ * WORKING log's next line after the last common one is:
++ *
++ *     E N Failed to mprotect last page of code buffer.
++ *
++ * That is FEX allocating its OWN CodeBuffer, and it says outright that one
++ * page of it is in a protection state FEX could not set. Allocating it
++ * fires NotifyMemoryAlloc -> HandleMemoryProtectionNotification with an
++ * executable protection, and the old code then read every page of it. The
++ * read faulted inside the notification path on a thread mid-allocation.
++ *
++ * So:
++ *
++ *   G1. Narrow ONLY for executable-and-NOT-writable transitions. That is
++ *       the W^X pattern this exists for, and it excludes FEX's own RWX
++ *       code buffers -- the thing that crashed -- by construction. The
++ *       evidence that this keeps the win: the working log has 6106
++ *       `via=protect` removals but only 6 `Add SMC interval` lines, and
++ *       the latter is logged exactly when a range goes executable AND
++ *       writable. The guest's arenas therefore become PAGE_EXECUTE_READ,
++ *       not RWX, so G1 still catches all 6106.
++ *
++ *   G2. Never read memory without VirtualQuery confirming every page of
++ *       the range is MEM_COMMIT and readable first. PAGE_EXECUTE alone is
++ *       execute-only and is NOT readable; PAGE_GUARD and PAGE_NOACCESS are
++ *       out too. Anything unconfirmed means no narrowing at all, which is
++ *       the original full flush. NotifyMemoryAlloc fires on MEM_RESERVE
++ *       with no commit, so this is not a hypothetical.
++ *
++ *   G3. Off by default. Documents/madeira-invtrack.txt == "1" turns it on,
++ *       so it can be enabled and disabled on device with no rebuild and a
++ *       bad build can never brick a working one again.
 + *
 + * Residual risks, stated plainly:
 + *   - A 64-bit FNV-1a collision over a 4KB page would keep a stale
@@ -131,9 +176,13 @@ index 0000000..8070a3b
 + *   - A guest thread writing to the arena CONCURRENTLY with the protect
 + *     notification could be snapshotted mid-write. The range is
 + *     non-executable at that moment and the guest is already racing itself.
++ *   - VirtualQuery says committed-and-readable, then another thread
++ *     decommits before the hash reads. G2 narrows the window to that race;
++ *     it does not close it.
 + *
-+ * Set MADEIRA_INVTRACK=0 to restore the original behaviour exactly,
-+ * including the `[iOS-xrem] via=protect` line, for an on-device A/B.
++ * This header is included AFTER <windef.h>/<winternl.h> on purpose: it uses
++ * VirtualQuery and MEMORY_BASIC_INFORMATION, the same way the tracker's own
++ * constructor does.
 + */
 +
 +#include <FEXCore/Utils/LogManager.h>
@@ -147,18 +196,19 @@ index 0000000..8070a3b
 +
 +/* Hashing is linear in the range, so a pathological notification (an
 + * allocator handing out a multi-GB executable reservation) must not be
-+ * allowed to walk it. Past that width, behave exactly as before. */
++ * allowed to walk it. Past this width, behave exactly as before. */
 +inline constexpr uint64_t MaxHashBytes = 64ull << 20;
 +
-+/* ~16k pages = 64MB of tracked code, comfortably above the ~20k pages of PE
-+ * .text plus JIT arenas a real session touches. Past it, stop recording
-+ * rather than grow without bound; unknown pages simply read as changed. */
++/* ~16k pages = 64MB of tracked code, comfortably above the PE .text plus
++ * JIT arenas a real session touches. Past it, stop recording rather than
++ * grow without bound; unknown pages simply read as changed. */
 +inline constexpr size_t MaxTrackedPages = 1u << 16;
 +
 +struct State {
 +  std::unordered_map<uint64_t, uint64_t> PageHash;
-+  uint64_t ExecTransitions {0};  /* insert-branch notifications seen */
-+  uint64_t SkippedFlushes {0};   /* removal-branch flushes NOT performed (part 1) */
++  uint64_t ExecTransitions {0};  /* exec-and-not-writable notifications seen */
++  uint64_t SkippedFlushes {0};   /* non-exec flushes NOT performed */
++  uint64_t Unverified {0};       /* ranges G2 refused to read */
 +  uint64_t PagesCompared {0};
 +  uint64_t PagesChanged {0};
 +  uint64_t BytesInvalidated {0}; /* what we actually flushed */
@@ -166,22 +216,63 @@ index 0000000..8070a3b
 +  int Mode {-1};
 +};
 +
-+/* All entry points are called with InvalidationTracker::IntervalsLock held,
++/* Every entry point is called with InvalidationTracker::IntervalsLock held,
 + * which is what serialises this state. */
 +inline State& Get() {
 +  static State S;
 +  return S;
 +}
 +
++/* G3: opt-in. */
 +inline bool Enabled() {
 +  State& S = Get();
 +  if (S.Mode < 0) {
 +    const char* Env = getenv("MADEIRA_INVTRACK");
-+    S.Mode = (Env && Env[0] == '0') ? 0 : 1;
-+    LogMan::Msg::EFmt("[invtrack] ml760 MADEIRA_INVTRACK={} -> content-aware invalidation {}", Env ? Env : "(unset)",
-+                      S.Mode ? "ENABLED" : "DISABLED (original behaviour)");
++    S.Mode = (Env && Env[0] == '1') ? 1 : 0;
++    LogMan::Msg::EFmt("[invtrack] ml761 MADEIRA_INVTRACK={} -> content-aware invalidation {}", Env ? Env : "(unset)",
++                      S.Mode ? "ENABLED" : "DISABLED (original behaviour; set Documents/madeira-invtrack.txt to 1)");
 +  }
 +  return S.Mode != 0;
++}
++
++/* G1: the W^X run transition, and nothing else. Writable-and-executable is
++ * FEX's own code buffers and guest RWX regions, which the SMC machinery
++ * owns; leaving them on the original path is what keeps this out of the
++ * allocation path that crashed. */
++inline bool NarrowingApplies(ULONG Prot) {
++  const bool Exec = (Prot & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) != 0;
++  const bool Writable = (Prot & (PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) != 0;
++  const bool Readable = (Prot & (PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE |
++                                 PAGE_EXECUTE_WRITECOPY)) != 0;
++  return Exec && !Writable && Readable;
++}
++
++/* G2: prove every page is committed and readable before touching one. */
++inline bool RangeReadable(uint64_t Base, uint64_t Size) {
++  uint64_t A = Base;
++  while (A < Base + Size) {
++    MEMORY_BASIC_INFORMATION Info;
++    if (!VirtualQuery(reinterpret_cast<LPCVOID>(A), &Info, sizeof(Info))) {
++      return false;
++    }
++    if (Info.State != MEM_COMMIT) {
++      return false;
++    }
++    if (Info.Protect & (PAGE_NOACCESS | PAGE_GUARD)) {
++      return false;
++    }
++    /* PAGE_EXECUTE on its own is execute-only, so it is deliberately absent. */
++    if (!(Info.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE |
++                          PAGE_EXECUTE_WRITECOPY))) {
++      return false;
++    }
++    const uint64_t RegionEnd = reinterpret_cast<uint64_t>(Info.BaseAddress) + Info.RegionSize;
++    if (RegionEnd <= A) {
++      return false; /* no forward progress -- refuse rather than spin */
++    }
++    A = RegionEnd;
++  }
++  return true;
 +}
 +
 +inline uint64_t HashPage(uint64_t Address) {
@@ -199,15 +290,15 @@ index 0000000..8070a3b
 +    return;
 +  }
 +  const uint64_t Saved = S.BytesNaive > S.BytesInvalidated ? S.BytesNaive - S.BytesInvalidated : 0;
-+  LogMan::Msg::EFmt("[invtrack] ml760 exec_transitions={} skipped_rw_flushes={} pages_cmp={} pages_changed={} ({}%) "
++  LogMan::Msg::EFmt("[invtrack] ml761 exec_transitions={} skipped_flushes={} unverified={} pages_cmp={} pages_changed={} ({}%) "
 +                    "flushed={} KB naive={} KB saved={} KB tracked_pages={}",
-+                    S.ExecTransitions, S.SkippedFlushes, S.PagesCompared, S.PagesChanged,
++                    S.ExecTransitions, S.SkippedFlushes, S.Unverified, S.PagesCompared, S.PagesChanged,
 +                    S.PagesCompared ? (S.PagesChanged * 100 / S.PagesCompared) : 0, S.BytesInvalidated >> 10, S.BytesNaive >> 10,
 +                    Saved >> 10, S.PageHash.size());
 +}
 +
 +/* Removal branch: the range is becoming non-executable. Returns true if the
-+ * caller should skip the flush entirely (part 1). */
++ * caller should skip the flush entirely. */
 +inline bool SkipNonExecFlush(uint64_t Size) {
 +  if (!Enabled()) {
 +    return false;
@@ -221,27 +312,39 @@ index 0000000..8070a3b
 +/* Insert branch: the range is becoming executable. Narrows the flush to the
 + * bounding range of pages whose contents actually changed since they were
 + * last made executable. Writes {0,0} when nothing changed. */
-+inline void BoundChangedPages(uint64_t Base, uint64_t Size, bool Readable, uint64_t& InvBase, uint64_t& InvSize) {
-+  State& S = Get();
-+  const bool Narrow = Enabled() && Readable && Size <= MaxHashBytes;
-+
-+  S.ExecTransitions++;
-+  S.BytesNaive += Size;
-+
-+  if (!Narrow) {
-+    /* Unreadable (exec-only), absurdly wide, or switched off: flush it all,
-+     * exactly as the original code did. Drop any baselines we hold for the
-+     * range — they would be unverifiable from here on. */
-+    if (Enabled()) {
-+      for (uint64_t A = Base; A < Base + Size; A += FEXCore::Utils::FEX_PAGE_SIZE) {
-+        S.PageHash.erase(A);
-+      }
-+    }
++inline void BoundChangedPages(uint64_t Base, uint64_t Size, ULONG Prot, uint64_t& InvBase, uint64_t& InvSize) {
++  const auto FlushEverything = [&]() {
 +    InvBase = Base;
 +    InvSize = Size;
++  };
++
++  if (!Enabled()) {
++    FlushEverything();
++    return;
++  }
++
++  State& S = Get();
++  S.BytesNaive += Size;
++
++  if (!NarrowingApplies(Prot) || Size > MaxHashBytes) {
++    FlushEverything();
 +    S.BytesInvalidated += Size;
 +    return;
 +  }
++
++  if (!RangeReadable(Base, Size)) {
++    /* Cannot prove it is safe to read, so do not read it. Drop any
++     * baselines held for the range: they are unverifiable from here. */
++    S.Unverified++;
++    for (uint64_t A = Base; A < Base + Size; A += FEXCore::Utils::FEX_PAGE_SIZE) {
++      S.PageHash.erase(A);
++    }
++    FlushEverything();
++    S.BytesInvalidated += Size;
++    return;
++  }
++
++  S.ExecTransitions++;
 +
 +  const bool CanRecord = S.PageHash.size() + (Size / FEXCore::Utils::FEX_PAGE_SIZE) <= MaxTrackedPages;
 +  uint64_t Lo = ~0ull, Hi = 0;

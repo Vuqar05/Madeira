@@ -2045,6 +2045,27 @@ struct ContentView: View {
                 }
             }
 
+            // ml761: content-aware code invalidation A/B. Documents/madeira-invtrack.txt
+            // == "1" makes FEX flush only the code pages a guest JIT actually rewrote,
+            // instead of every translation in the whole arena on each W^X flip.
+            //
+            // Off by default, and a file rather than a rebuild, because the first
+            // version of this shipped broken: it read the range to hash it and died
+            // during startup on FEX's own code buffer -- the one whose last page FEX
+            // itself reports it could not mprotect. The guards for that are in
+            // MadeiraCodeSnapshot.h; this switch exists so the next mistake in here
+            // costs a text file rather than a working build, and so the same IPA can
+            // answer "did the fix help?" and "did the rebuilt xtajit64.dll break
+            // something on its own?" without swapping binaries.
+            if let d = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first,
+               let txt = try? String(contentsOf: d.appendingPathComponent("madeira-invtrack.txt"), encoding: .utf8) {
+                let v = txt.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !v.isEmpty {
+                    setenv("MADEIRA_INVTRACK", v, 1)
+                    logStore.log("Code invalidation: MADEIRA_INVTRACK=\(v) via madeira-invtrack.txt")
+                }
+            }
+
             winios_phase("pool-alloc-begin")
             logStore.log("Allocating \(poolSizeMB)MB JIT pool (BRK will suspend process)...")
             let t0 = CFAbsoluteTimeGetCurrent()
