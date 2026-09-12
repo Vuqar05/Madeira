@@ -2,6 +2,15 @@ name: Build Madeira IPA
 
 on:
   workflow_dispatch:
+    inputs:
+      rebuild_fex_ec:
+        description: >-
+          Rebuild xtajit64.dll (the FEX ARM64EC module) from source with the
+          ml760 content-aware invalidation patch, instead of shipping the
+          committed prebuilt one. Off by default: the committed DLL is the
+          known-good runtime and this stage has no cache.
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -448,6 +457,93 @@ jobs:
             test -n "$f" || { echo "MISSING $n"; exit 1; }
             lipo -info "$f"
           done
+
+      # ==============================================================
+      # FEX ARM64EC MODULE (xtajit64.dll) — OPT-IN.
+      #
+      # app/Madeira/arm64ec-windows/xtajit64.dll is a COMMITTED prebuilt
+      # binary (the log stamps it `[build-id] xtajit64 rev=ml755 compiled
+      # Aug 27 2026`). Nothing above builds it: the iOS FEX stage builds
+      # FEXCore/FEXCore_Base/JemallocLibs, which the app links directly,
+      # while InvalidationTracker.cpp lives in CommonWindows and reaches
+      # the device only through this DLL. So a FEX source change is
+      # INVISIBLE to the default pipeline — it produces a green build
+      # containing none of it.
+      #
+      # This is a second, independent FEX configure: mingw toolchain,
+      # arm64ec triple, nothing shared with build-ios. It needs no wine
+      # tree — ntdll_ex is generated from FEX's own Defs/ntdll.def via
+      # dlltool, and patch_library_wine is a `dd` that stamps the Wine
+      # builtin marker into the PE header.
+      #
+      # Wine loads this module as xtajit64.dll; FEX's own logging calls it
+      # libarm64ecfex.dll. Same file, same base (0xfbf6c0000 in the run
+      # log) — hence the rename on install.
+      # ==============================================================
+
+      - name: Patch FEX invalidation tracker (ml760)
+        if: inputs.rebuild_fex_ec
+        run: |
+          set -euxo pipefail
+          cd FEX
+          git apply --check ../patches/fex-ml760-content-aware-invalidation.patch
+          git apply ../patches/fex-ml760-content-aware-invalidation.patch
+          test -f Source/Windows/Common/MadeiraCodeSnapshot.h
+          grep -n "ml760" Source/Windows/Common/InvalidationTracker.cpp | head
+
+      - name: Build FEX ARM64EC module (xtajit64.dll)
+        if: inputs.rebuild_fex_ec
+        run: |
+          set -uxo pipefail
+          export PATH="$PWD/toolchains/$MINGW/bin:$PATH"
+          command -v arm64ec-w64-mingw32-clang++ || {
+            echo "FATAL: llvm-mingw has no arm64ec triple; available targets:"
+            ls "toolchains/$MINGW/bin" | grep -o '^[a-z0-9_]*-w64-mingw32' | sort -u
+            exit 1
+          }
+          set -e
+          cmake -S FEX -B FEX/build-arm64ec -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$PWD/FEX/Data/CMake/toolchain_mingw.cmake" \
+            -DMINGW_TRIPLE=arm64ec-w64-mingw32 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DFEX_IOS_HOST_BUILD=ON \
+            -DCMAKE_C_FLAGS="-DFEX_IOS_HOST=1" \
+            -DCMAKE_CXX_FLAGS="-DFEX_IOS_HOST=1" \
+            -DBUILD_TESTING=OFF \
+            -DBUILD_TESTS=False \
+            -DBUILD_THUNKS=OFF \
+            -DENABLE_VIXL_DISASSEMBLER=OFF \
+            -DENABLE_VIXL_SIMULATOR=OFF \
+            -DENABLE_CCACHE=OFF \
+            -DENABLE_LTO=False \
+            -DTUNE_CPU=none \
+            -DTUNE_ARCH=generic
+          set +e
+          cmake --build FEX/build-arm64ec --target arm64ecfex \
+            --parallel "$(sysctl -n hw.ncpu)" 2>&1 | tee /tmp/fexec.log
+          rc=${PIPESTATUS[0]}
+          if [ "$rc" -ne 0 ]; then
+            echo "=== first errors ==="
+            grep -n "error:" /tmp/fexec.log | head -40
+            exit "$rc"
+          fi
+
+      - name: Install rebuilt xtajit64.dll
+        if: inputs.rebuild_fex_ec
+        run: |
+          set -euxo pipefail
+          DLL="$(find FEX/build-arm64ec -name 'libarm64ecfex.dll' -type f -print -quit)"
+          test -n "$DLL" || { echo "FATAL: arm64ecfex built but no DLL found"; \
+            find FEX/build-arm64ec -name '*.dll' | head -20; exit 1; }
+          DEST=app/Madeira/arm64ec-windows/xtajit64.dll
+          echo "committed: $(stat -f %z "$DEST") bytes"
+          echo "rebuilt:   $(stat -f %z "$DLL") bytes"
+          # The Wine builtin marker patch_library_wine stamps in is what makes
+          # the loader accept this as a builtin rather than a native DLL.
+          head -c 96 "$DLL" | strings | grep -i "wine" || \
+            echo "WARNING: no Wine builtin marker in the first 96 bytes"
+          cp "$DLL" "$DEST"
+          ls -l "$DEST"
 
       # ==============================================================
       # LLVM 15 for iOS — LAST of the heavy stages, because everything
