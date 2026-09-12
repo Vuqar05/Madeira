@@ -4,8 +4,10 @@ Source-of-record for changes that live in the **`wine` submodule**
 ([`willfaust/wine`](https://github.com/willfaust/wine)), kept here so they are
 reviewable from this repository.
 
-**Nothing in this directory is applied by the build.** No `build/*/build.sh` and
-no step in `.github/workflows/main.yml` references it. A patch here is a record
+**Nothing in this directory is applied by the build, with one exception.** No
+`build/*/build.sh` references it, and the only workflow step that does is the
+`Rebuild sechost.dll with the plugplay patch` pair added for
+`wine-sechost-no-plugplay-ios.patch` (see below). A patch here is a record
 of a change that has already been made in the fork, or one that still needs to
 be — it does not become part of an IPA on its own.
 
@@ -36,12 +38,20 @@ the arm64ec PE DLLs needs `--enable-archs=aarch64,arm64ec` and an
 `arm64ec-w64-mingw32-clang` in the toolchain, which also invalidates the
 `wine-<sha>` build cache and adds a full Wine rebuild to the job.
 
-So landing one of these is three steps:
+Landing one of these is normally three manual steps:
 
 1. Apply the patch to the `wine` submodule and push it to the fork.
 2. Rebuild the affected DLL for **both** `aarch64-windows` and
    `arm64ec-windows`.
 3. Commit the rebuilt binaries, and bump the submodule pointer.
+
+`wine-sechost-no-plugplay-ios.patch` takes a different route: CI applies it to
+the submodule checkout and rebuilds `sechost.dll` itself, in a `build-sechost`
+tree kept separate from `build-macos` so the cached Wine build that feeds DXMT
+is untouched. That build passes `--enable-archs=aarch64,arm64ec` and makes only
+the two `dlls/sechost/<arch>-windows/sechost.dll` targets, then overwrites both
+committed copies before packaging. Nothing is pushed to the fork and the
+submodule pointer does not move.
 
 ## Contents
 
@@ -58,4 +68,4 @@ Statuses below are against the pinned submodule commit (`7817e22`), checked with
 | `wine-ios-ml489-ml504.patch` | as above |
 | `wine-ios-ml505-ml518.patch` | as above |
 | `wine-ntdll-ios-xlate-rev.patch` | as above |
-| `wine-sechost-no-plugplay-ios.patch` | **applies cleanly — NOT in the fork, and not in any shipped `sechost.dll`** |
+| `wine-sechost-no-plugplay-ios.patch` | not in the fork; **applied by CI at build time** and compiled into the shipped `sechost.dll` for both arch slots |

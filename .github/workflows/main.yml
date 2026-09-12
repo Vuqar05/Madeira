@@ -223,6 +223,107 @@ jobs:
           echo "build-arm64ec -> $(readlink wine/build-arm64ec)"
 
       # ==============================================================
+      # PATCHED sechost.dll — the one PE DLL this repo rebuilds itself.
+      #
+      # Every other Windows DLL under app/Madeira/{aarch64,arm64ec}-windows
+      # ships as a committed prebuilt, so a source fix in the wine fork can
+      # never reach a device on its own. This rebuilds just sechost.dll with
+      # patches/wine-sechost-no-plugplay-ios.patch applied and overwrites both
+      # committed copies before xcodebuild packages them.
+      #
+      # Why an ENTIRELY SEPARATE build dir rather than adding archs to the
+      # build-macos step above: that step is cached on wine-<sha>, feeds DXMT's
+      # meson (winecrt0) and the widl headers, and is known to work. Touching
+      # its configure line would invalidate that cache and put a working build
+      # behind an untested one. build-sechost shares nothing with it.
+      #
+      # arm64ec is what actually matters here. WineProcessBridge maps
+      # C:\windows\sysx64 to arm64ec-windows, so an x86-64 guest loads ONLY
+      # that copy. build-macos cannot produce it: it passes no --enable-archs,
+      # and wine's configure.ac then defaults cross_archs to $HOST_ARCH
+      # (aarch64 on this runner). Note --enable-archs=...,arm64ec also implies
+      # extra_arch=x86_64 inside configure, which is why the x86_64 cross
+      # compiler has to be present too -- but only the two named sechost
+      # targets are actually built, not those trees.
+      #
+      # This step is placed early ON PURPOSE: if the arm64ec assumption is
+      # wrong it fails in ~30 min rather than after the LLVM and DXMT builds.
+      # ==============================================================
+
+      - name: Cache patched sechost
+        id: sechost
+        uses: actions/cache@v4
+        with:
+          path: build/sechost-out
+          key: sechost-7817e22-${{ hashFiles('patches/wine-sechost-no-plugplay-ios.patch') }}-${{ env.CACHE_V }}
+
+      - name: Rebuild sechost.dll with the plugplay patch
+        if: steps.sechost.outputs.cache-hit != 'true'
+        run: |
+          set -euxo pipefail
+          export PATH="$PWD/toolchains/$MINGW/bin:$PATH"
+
+          # configure falls back to plain `clang` when no arm64ec driver is
+          # found (configure.ac AC_CHECK_PROGS arm64ec_CC) and would then build
+          # something that is not ARM64EC at all. Demand the real one.
+          command -v arm64ec-w64-mingw32-clang
+          command -v x86_64-w64-mingw32-clang
+          arm64ec-w64-mingw32-clang --version
+
+          cd wine
+          git apply "$GITHUB_WORKSPACE/patches/wine-sechost-no-plugplay-ios.patch"
+          # prove the hunk landed rather than trusting apply's exit code
+          grep -q plugplay_endpoint_present dlls/sechost/service.c
+
+          mkdir -p build-sechost && cd build-sechost
+          ../configure --enable-archs=aarch64,arm64ec \
+            --disable-tests --without-x --without-freetype
+          test -f include/config.h
+          make -j"$(sysctl -n hw.ncpu)" \
+            dlls/sechost/aarch64-windows/sechost.dll \
+            dlls/sechost/arm64ec-windows/sechost.dll
+
+          OUT="$GITHUB_WORKSPACE/build/sechost-out"
+          mkdir -p "$OUT"
+          cp dlls/sechost/aarch64-windows/sechost.dll "$OUT/sechost-aarch64.dll"
+          cp dlls/sechost/arm64ec-windows/sechost.dll "$OUT/sechost-arm64ec.dll"
+          ls -l "$OUT"
+
+      - name: Stage patched sechost into the bundle
+        run: |
+          set -euxo pipefail
+          OUT="$PWD/build/sechost-out"
+          test -f "$OUT/sechost-aarch64.dll"
+          test -f "$OUT/sechost-arm64ec.dll"
+
+          # An ARM64EC image reports Machine=0x8664 (AMD64) so x64 code can call
+          # into it; the committed arm64ec-windows/sechost.dll does. aarch64 is
+          # 0xaa64. A mismatch means configure picked the wrong compiler and the
+          # DLL would fail to load on device rather than here.
+          python3 - "$OUT/sechost-aarch64.dll" 0xaa64 <<'PY'
+          import struct, sys
+          d = open(sys.argv[1], 'rb').read()
+          off = struct.unpack_from('<I', d, 0x3c)[0]
+          got = struct.unpack_from('<H', d, off + 4)[0]
+          want = int(sys.argv[2], 16)
+          print(f"{sys.argv[1]}: Machine=0x{got:04x} (want 0x{want:04x})")
+          sys.exit(0 if got == want else 1)
+          PY
+          python3 - "$OUT/sechost-arm64ec.dll" 0x8664 <<'PY'
+          import struct, sys
+          d = open(sys.argv[1], 'rb').read()
+          off = struct.unpack_from('<I', d, 0x3c)[0]
+          got = struct.unpack_from('<H', d, off + 4)[0]
+          want = int(sys.argv[2], 16)
+          print(f"{sys.argv[1]}: Machine=0x{got:04x} (want 0x{want:04x})")
+          sys.exit(0 if got == want else 1)
+          PY
+
+          cp "$OUT/sechost-aarch64.dll" app/Madeira/aarch64-windows/sechost.dll
+          cp "$OUT/sechost-arm64ec.dll" app/Madeira/arm64ec-windows/sechost.dll
+          ls -l app/Madeira/aarch64-windows/sechost.dll app/Madeira/arm64ec-windows/sechost.dll
+
+      # ==============================================================
       # NATIVE LIBS — GnuTLS must precede ntdll-unix: bcrypt, secur32
       # and crypt32 include $REPO_ROOT/toolchains/gnutls-ios/include.
       # Source tarballs are committed under build/gnutls-ios/src.
