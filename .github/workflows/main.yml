@@ -427,6 +427,7 @@ jobs:
             -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
             -DCMAKE_C_FLAGS="-DFEX_IOS_HOST=1" \
             -DCMAKE_CXX_FLAGS="-DFEX_IOS_HOST=1" \
+            -DCMAKE_ASM_FLAGS="-DFEX_IOS_HOST=1" \
             -DBUILD_TESTING=OFF \
             -DBUILD_TESTS=False \
             -DBUILD_THUNKS=OFF \
@@ -527,6 +528,54 @@ jobs:
             grep -n "error:" /tmp/fexec.log | head -40
             exit "$rc"
           fi
+
+      # ml762: THE ONE CHECK THAT WOULD HAVE CAUGHT THE LAST TWO BAD BUILDS.
+      #
+      # Module.S wraps its iOS TEB read in `#ifdef FEX_IOS_HOST`:
+      #
+      #     mrs \reg, TPIDRRO_EL0
+      #     and \reg, \reg, #~7
+      #     ldr \reg, [\reg, #0x898]     // placeholder slot
+      #
+      # CMake assembles .S with CMAKE_ASM_FLAGS, NOT CMAKE_C_FLAGS, so the
+      # first cut of this stage never gave the assembler the define. The file
+      # built fine on its non-iOS path -- which trusts x18 directly, and iOS
+      # clobbers x18 across context switches. virtual_ios.c's retarget pass
+      # then found zero triplets to rewrite, x18 stayed 0, and the ARM64EC
+      # dispatcher jumped to pc=0 before the game window ever appeared.
+      #
+      # The DLL was still the right size, linked clean, and CI was green
+      # twice. Only the device log showed it, by the ABSENCE of one line:
+      # "[teb-tsd] .text ...: found 6 static TSD read(s)". So assert the
+      # triplets are really in the binary, here, before it is installed.
+      - name: Verify iOS TEB reads were assembled
+        if: inputs.rebuild_fex_ec
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import struct, sys, pathlib
+          p = pathlib.Path("FEX/build-arm64ec/Bin/libarm64ecfex.dll")
+          d = p.read_bytes()
+          n = len(d) // 4
+          w = struct.unpack_from("<%dI" % n, d, 0)
+          hits = []
+          for i in range(n - 2):
+              if (w[i] & 0xffffffe0) != 0xd53bd060:            # mrs xN, TPIDRRO_EL0
+                  continue
+              reg = w[i] & 0x1f
+              if w[i + 1] != (0x927df000 | (reg << 5) | reg):  # and xN, xN, #~7
+                  continue
+              if (w[i + 2] & 0xffc003ff) != (0xf9400000 | (reg << 5) | reg):
+                  continue                                      # ldr xN, [xN, #imm]
+              hits.append((i * 4, reg, ((w[i + 2] & 0x003ffc00) >> 10) * 8))
+          for off, reg, slot in hits:
+              print("  file+0x%x  x%d  slot 0x%x" % (off, reg, slot))
+          print("TSD triplets:", len(hits))
+          if len(hits) < 6:
+              sys.exit("FATAL: expected >=6 iOS TEB-from-TSD triplets, found %d.\n"
+                       "FEX_IOS_HOST did not reach the assembler -- Module.S built its\n"
+                       "non-iOS path and the result WILL fault with x18=0 on device." % len(hits))
+          PY
 
       - name: Install rebuilt xtajit64.dll
         if: inputs.rebuild_fex_ec
