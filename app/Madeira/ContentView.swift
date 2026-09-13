@@ -3110,6 +3110,7 @@ struct TouchControlButton: View {
     @ObservedObject private var m = TouchControlsModel.shared
     @State private var isDown = false
     @State private var dragBase: CGPoint?
+    @State private var sizeBase: Double?     // ml793: corner-grip resize, base scale
     @State private var stickDir: Int = -1
 
     private var diameter: CGFloat { TouchControlsModel.baseDiameter * CGFloat(control.scale) }
@@ -3135,6 +3136,15 @@ struct TouchControlButton: View {
             }
         }
         .frame(width: diameter, height: diameter)
+        // ml793: WITHOUT this, a tap only registers over whatever is actually
+        // drawn — and GlassShape's iOS 26 variant is `Circle().fill(.clear)`
+        // under the glass effect, which SwiftUI does not treat as tappable
+        // (a fully transparent fill is the classic "Color.clear eats no
+        // touches" trap). That left only the small label Text hit-testable,
+        // so a tap anywhere in the ring around it — still well inside the
+        // drawn circle — silently missed. Pin the hit area to the full circle
+        // this view is drawn at, independent of what happens to be opaque.
+        .contentShape(Circle())
         .overlay(Circle().stroke(.white.opacity(isSelected ? 0.95
                                                 : (isStick ? 0 : 0.28)),
                                  lineWidth: isSelected ? 2 : 1))
@@ -3160,11 +3170,23 @@ struct TouchControlButton: View {
                 .offset(x: 8, y: -8)
             }
         }
+        .overlay(alignment: .bottomTrailing) {
+            // ml793: every control gets the same corner grip the look box
+            // has, not just a global two-finger pinch — a pinch needs a
+            // second finger free, which a phone held one-handed does not
+            // always have, and a small dedicated handle is easier to land on
+            // than the whole control besides.
+            if isSelected { resizeHandle }
+        }
         .position(x: CGFloat(control.nx) * screen.width,
                   y: CGFloat(control.ny) * screen.height)
         .gesture(
             DragGesture(minimumDistance: 0)
                 .onChanged { v in
+                    // ml793: a resize in progress owns the control; do not also
+                    // read this as a move, tap, or stick push while the grip is
+                    // held (same cross-guard TouchLookArea uses).
+                    guard sizeBase == nil else { return }
                     if m.editing {
                         m.selected = control.id
                         guard let i = m.index(of: control.id) else { return }
@@ -3191,6 +3213,41 @@ struct TouchControlButton: View {
                     }
                 }
         )
+        // Leaving edit mode mid-drag must not strand sizeBase/dragBase and
+        // block this control from ever moving or resizing again.
+        .onChange(of: m.editing) { _, _ in dragBase = nil; sizeBase = nil }
+    }
+
+    /// Corner grip — same idea as TouchLookArea's, collapsed to one scale
+    /// factor because a round control only has one extent to grow.
+    ///
+    /// Dragging the handle away from the control's centre (down-right) grows
+    /// it; dragging back toward the centre shrinks it. Project the raw
+    /// translation onto that down-right diagonal so a drag along either axis
+    /// alone still resizes at full rate, not at 70% of it.
+    private var resizeHandle: some View {
+        Image(systemName: "arrow.up.left.and.arrow.down.right")
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(.white.opacity(0.9))
+            .frame(width: 26, height: 26)
+            .background(Circle().fill(.white.opacity(0.22)))
+            .overlay(Circle().stroke(.white.opacity(0.5), lineWidth: 1))
+            .offset(x: 6, y: 6)
+            // A gesture on a SUBVIEW outranks the container's, so this claims
+            // touches that land on the grip before the button's own drag ever
+            // sees them.
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { v in
+                        guard dragBase == nil, let i = m.index(of: control.id) else { return }
+                        let base = sizeBase ?? control.scale
+                        if sizeBase == nil { sizeBase = base }
+                        let proj = (v.translation.width + v.translation.height) / CGFloat(2).squareRoot()
+                        let baseRadius = TouchControlsModel.baseDiameter * CGFloat(base) / 2
+                        m.controls[i].scale = min(max(base + Double(proj / baseRadius), 0.5), 3.0)
+                    }
+                    .onEnded { _ in sizeBase = nil }
+            )
     }
 
     /// 8-way snap. Screen y grows downward, so measure clockwise from "up".
