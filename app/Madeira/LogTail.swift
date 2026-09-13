@@ -11,6 +11,9 @@ final class LogTail {
     private var pollTimer: DispatchSourceTimer?
     private let queue = DispatchQueue(label: "com.madeira.logtail", qos: .utility)
     private var lineBuffer = Data()
+    /// Reused read staging buffer — reallocating 64 KB per readAvailable()
+    /// call was pure garbage for the allocator to chase.
+    private var readBuf = [UInt8](repeating: 0, count: 64 * 1024)
     private var lastSize: off_t = 0
 
     init(path: String, onLine: @escaping (String) -> Void) {
@@ -86,25 +89,47 @@ final class LogTail {
 
     private func readAvailable() {
         guard fd >= 0 else { return }
-        var buf = [UInt8](repeating: 0, count: 64 * 1024)
-        while true {
-            let n = buf.withUnsafeMutableBytes { ptr in
-                read(fd, ptr.baseAddress, ptr.count)
+        readBuf.withUnsafeMutableBytes { ptr in
+            while true {
+                let n = read(fd, ptr.baseAddress, ptr.count)
+                if n <= 0 { break }
+                // ml810: append the raw bytes in one memcpy. `append(
+                // contentsOf: buf[0..<n])` went through the Sequence
+                // overload, which walks the slice element by element.
+                lineBuffer.append(ptr.baseAddress!.assumingMemoryBound(to: UInt8.self),
+                                  count: n)
+                flushLines()
             }
-            if n <= 0 { break }
-            lineBuffer.append(contentsOf: buf[0..<n])
-            flushLines()
         }
     }
 
+    /// ml810: this used to call `lineBuffer.removeSubrange(0...nlIdx)` once
+    /// PER LINE. Each of those shifts the whole remaining buffer down, so
+    /// draining a 64 KB read of ~600 log lines cost ~600 memmoves averaging
+    /// 32 KB — quadratic in the chunk size, on the queue that feeds every
+    /// line the Wine/FEX/DXMT stack emits.
+    ///
+    /// Now the buffer is scanned once, each line is handed off from a slice
+    /// in place, and exactly one removal compacts whatever partial line is
+    /// left at the end.
     private func flushLines() {
-        while let nlIdx = lineBuffer.firstIndex(of: 0x0A) {
-            let lineData = lineBuffer.prefix(nlIdx)
-            lineBuffer.removeSubrange(0...nlIdx)
-            if let line = String(data: Data(lineData), encoding: .utf8),
+        var lineStart = lineBuffer.startIndex
+        let end = lineBuffer.endIndex
+        var i = lineStart
+
+        while i < end {
+            guard let nl = lineBuffer[i..<end].firstIndex(of: 0x0A) else { break }
+            if nl > lineStart,
+               let line = String(data: lineBuffer[lineStart..<nl], encoding: .utf8),
                !line.isEmpty {
                 onLine(line)
             }
+            lineStart = nl + 1
+            i = lineStart
+        }
+
+        if lineStart > lineBuffer.startIndex {
+            lineBuffer.removeSubrange(lineBuffer.startIndex..<lineStart)
         }
         // Don't let the buffer grow unbounded if a single "line" is huge
         if lineBuffer.count > 1024 * 1024 {

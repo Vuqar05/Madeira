@@ -3384,23 +3384,32 @@ static BOOL process_driver_events( UINT events_mask, UINT wake_mask, UINT change
          * queue access) never triggers for poll-only phases. */
         if (!drained && !wake_mask && !changed_mask)
         {
-            static LONGLONG last_heartbeat; /* process-wide; benign race */
+            /* ml810: this is the kHz path (see the note above), so it pays
+             * for whatever it does here on every single input poll. It used
+             * to do a 64-bit divide by the QPC frequency to get a seconds
+             * value, plus two global counter bumps and a periodic dprintf
+             * to the log fd.
+             *
+             * The frequency is fixed for the life of the process, so the
+             * divide only has to happen when the heartbeat actually fires:
+             * keep the NEXT heartbeat as a raw counter deadline and compare
+             * against it directly. Steady state is one QPC read and one
+             * 64-bit compare. The divide (now on the once-a-second path)
+             * establishes the next deadline.
+             *
+             * The [queue-mask] counters are gone. They measured the skip
+             * ratio this code was added to produce, which is now a settled
+             * result, and they measured it by writing to the log fd from
+             * the one path that must not do I/O. */
+            static LONGLONG next_heartbeat; /* process-wide; benign race */
+            static LONGLONG qpc_freq;       /* constant after first read */
             LARGE_INTEGER counter, freq;
-            LONGLONG now;
-            NtQueryPerformanceCounter( &counter, &freq );
-            now = counter.QuadPart / freq.QuadPart; /* seconds */
-            if (now == last_heartbeat) skip_server = TRUE;
-            else last_heartbeat = now;
 
-            {
-                extern int dprintf( int fd, const char *fmt, ... );
-                static unsigned int poll_total, poll_skipped;
-                poll_total++;
-                if (skip_server) poll_skipped++;
-                if ((poll_total & 0x3FFF) == 0)
-                    dprintf( 2, "[queue-mask] polls=%u skipped=%u\n",
-                             poll_total, poll_skipped );
-            }
+            NtQueryPerformanceCounter( &counter, &freq );
+            if (!qpc_freq) qpc_freq = freq.QuadPart ? freq.QuadPart : 1;
+
+            if (counter.QuadPart < next_heartbeat) skip_server = TRUE;
+            else next_heartbeat = (counter.QuadPart / qpc_freq + 1) * qpc_freq;
         }
 #endif
         if (!skip_server) SERVER_START_REQ( set_queue_mask )
@@ -3440,11 +3449,18 @@ static inline LONGLONG get_driver_check_time(void)
 /* check for driver events if we detect that the app is not properly consuming messages */
 static inline void check_for_driver_events(void)
 {
-    if (get_user_thread_info()->last_driver_time != get_driver_check_time())
+    /* ml810: NtUserPeekMessage calls this on entry, so it runs at the
+     * game's poll rate. Read the thread info and the tick once for the
+     * test instead of once per mention. The second get_driver_check_time()
+     * is deliberate and stays: it records the time the check FINISHED, so
+     * work that outlasts a 125us tick doesn't re-arm itself immediately. */
+    struct user_thread_info *thread_info = get_user_thread_info();
+
+    if (thread_info->last_driver_time != get_driver_check_time())
     {
         flush_window_surfaces( FALSE );
         process_driver_events( QS_ALLINPUT, 0, 0 );
-        get_user_thread_info()->last_driver_time = get_driver_check_time();
+        thread_info->last_driver_time = get_driver_check_time();
     }
 }
 

@@ -54,7 +54,20 @@ struct FPSOverlay: View {
     /// mailbox — game unthrottled, panel shows ≤ display rate).
     @State private var vsyncMode: Int32 = 1
     /// Ring buffer of (timestamp, count) pairs, 100ms cadence, 5s window.
-    @State private var samples: [(t: CFAbsoluteTime, c: UInt64)] = []
+    ///
+    /// ml810: this was `@State`, and so was the present counter below. Both
+    /// are written by the 100ms sampling tick, so SwiftUI invalidated and
+    /// re-evaluated the overlay ten times a second on the main thread —
+    /// while the game is running, for a readout that only changes on the
+    /// 250ms display tick. `samples` is never read from `body` at all, so
+    /// it does not belong in view state; it lives in a reference box that
+    /// SwiftUI does not observe, and the displayed values are published on
+    /// the display tick alone. Main-thread invalidations: 10/s -> 4/s.
+    private final class SampleRing {
+        var samples: [(t: CFAbsoluteTime, c: UInt64)] = []
+        var latestCount: UInt64 = 0
+    }
+    @State private var ring = SampleRing()
     private let bufferCapacity = 50  // 5s @ 100ms
     /// ml606: live phys_footprint in MB, refreshed on the 250ms display tick.
     @State private var memMB: Int = 0
@@ -189,24 +202,29 @@ struct FPSOverlay: View {
         stopTimers()
         let now = CFAbsoluteTimeGetCurrent()
         let c = madeira_get_present_count()
-        samples = [(now, c)]
+        ring.samples = [(now, c)]
+        ring.samples.reserveCapacity(bufferCapacity + 1)
+        ring.latestCount = c
         presentCount = c
         vsyncMode = madeira_get_vsync_locked()
         ProMotionIntent.shared.setActive(vsyncMode != 1)
 
-        // 100ms sampling — keeps the buffer fresh
+        // 100ms sampling — keeps the buffer fresh. Touches no @State, so it
+        // costs one present-counter read and no SwiftUI work.
         timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
             let t = CFAbsoluteTimeGetCurrent()
             let cur = madeira_get_present_count()
-            samples.append((t, cur))
-            if samples.count > bufferCapacity { samples.removeFirst() }
-            presentCount = cur
+            ring.samples.append((t, cur))
+            if ring.samples.count > bufferCapacity { ring.samples.removeFirst() }
+            ring.latestCount = cur
         }
 
-        // 250ms display refresh — computes adaptive-window FPS
+        // 250ms display refresh — computes adaptive-window FPS, and is now
+        // the only thing that writes @State.
         memMB = readFootprintMB()
         displayTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { _ in
             fps = computeAdaptiveFPS()
+            presentCount = ring.latestCount
             // ml606: piggybacks on the existing tick, so it costs one extra
             // task_info per 250ms and no additional SwiftUI invalidation.
             memMB = readFootprintMB()
@@ -229,6 +247,7 @@ struct FPSOverlay: View {
     /// (2026-07-04, cost a day of pacing-hunt confusion). ≥1s gives 1-FPS
     /// resolution; still responsive for a debug readout.
     private func computeAdaptiveFPS() -> Double {
+        let samples = ring.samples
         guard samples.count >= 2 else { return 0 }
         let latest = samples.last!
         // Walk backwards

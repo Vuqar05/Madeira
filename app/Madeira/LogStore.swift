@@ -8,11 +8,10 @@ final class LogStore: ObservableObject {
     @Published var entries: [LogEntry] = []
 
     private let logFileURL: URL
-    private let dateFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.dateFormat = "HH:mm:ss.SSS"
-        return f
-    }()
+    // O_APPEND fd for `appendToFile`, opened lazily and held open.
+    // Guarded by fileLock: Wine threads log through here too.
+    private var logFD: Int32 = -1
+    private let fileLock = NSLock()
 
     // Tail-file reader (background)
     private var tail: LogTail?
@@ -149,22 +148,55 @@ final class LogStore: ObservableObject {
         stateLock.unlock()
     }
 
-    /// Filter rules for raw lines. Anything that returns true is dropped
-    /// before signature canonicalization.
-    private func shouldDropLine(_ raw: String) -> Bool {
-        // Drop Wine's `trace:file:WriteFile` / `NtWriteFile` / `SysCall` chatter
+    /// Needles for `shouldDropLine`, as UTF-8 bytes. ml810: these were eight
+    /// `String.contains` calls, each a Unicode-correct substring search over
+    /// the whole line, run before anything else on every line the stack
+    /// emits — including the high-rate lines they exist to throw away.
+    /// Byte search over the UTF-8 view is exact here because every needle is
+    /// pure ASCII, and it allocates nothing.
+    private static let dropNeedles: [[UInt8]] = [
+        // Wine's `trace:file:WriteFile` / `NtWriteFile` / `SysCall` chatter
         // — these are amplified by our own logging path (every dprintf is
         // dup2'd to the log fd, which then goes through Wine's file trace).
         // The signal lives in the original log lines, not these wrappers.
-        if raw.contains("trace:file:WriteFile") { return true }
-        if raw.contains("trace:file:NtWriteFile") { return true }
-        if raw.contains("SysCall  NtWriteFile") { return true }
-        if raw.contains("SysCall  NtQueryPerformanceCounter") { return true }
-        if raw.contains("SysRet   NtWriteFile") { return true }
-        if raw.contains("SysRet   NtQueryPerformanceCounter") { return true }
-        // Drop verbose IR dispatch (already silenced in FEX, but defensive)
-        if raw.contains("[iOS] Arm64JIT: Dispatching Op") { return true }
-        if raw.contains("[iOS] Decoder:") { return true }
+        Array("trace:file:WriteFile".utf8),
+        Array("trace:file:NtWriteFile".utf8),
+        Array("SysCall  NtWriteFile".utf8),
+        Array("SysCall  NtQueryPerformanceCounter".utf8),
+        Array("SysRet   NtWriteFile".utf8),
+        Array("SysRet   NtQueryPerformanceCounter".utf8),
+        // Verbose IR dispatch (already silenced in FEX, but defensive)
+        Array("[iOS] Arm64JIT: Dispatching Op".utf8),
+        Array("[iOS] Decoder:".utf8),
+    ]
+
+    /// Filter rules for raw lines. Anything that returns true is dropped
+    /// before signature canonicalization.
+    private func shouldDropLine(_ raw: String) -> Bool {
+        if let hit = raw.utf8.withContiguousStorageIfAvailable({ LogStore.anyNeedleMatches($0) }) {
+            return hit
+        }
+        // Non-contiguous (a bridged NSString) — copy once, then scan.
+        return Array(raw.utf8).withUnsafeBufferPointer { LogStore.anyNeedleMatches($0) }
+    }
+
+    private static func anyNeedleMatches(_ hay: UnsafeBufferPointer<UInt8>) -> Bool {
+        let n = hay.count
+        for needle in dropNeedles {
+            let m = needle.count
+            if n < m { continue }
+            let first = needle[0]
+            var p = 0
+            let limit = n - m
+            while p <= limit {
+                if hay[p] == first {
+                    var k = 1
+                    while k < m && hay[p + k] == needle[k] { k += 1 }
+                    if k == m { return true }
+                }
+                p += 1
+            }
+        }
         return false
     }
 
@@ -205,16 +237,26 @@ final class LogStore: ObservableObject {
 
         // Apply news: dedup against in-batch sigs (so if 5 same-sig lines
         // arrived in one batch, we get one entry with count=5)
+        //
+        // ml810: the live-entries check was `entries.firstIndex(where:)`, a
+        // linear scan with a String compare per element, run once per new
+        // entry in the batch — O(batch x entries) with the list pinned at
+        // maxEntries. `entries` is already keyed by signature in
+        // sigToIndex, so build the reverse map once and look up in O(1).
+        var liveSigToIndex: [String: Int] = [:]
+        liveSigToIndex.reserveCapacity(entries.count)
+        for (i, e) in entries.enumerated() { liveSigToIndex[e.signature] = i }
+
         var batchSigToBatchIdx: [String: Int] = [:]
         var collapsedNew: [LogEntry] = []
-        for var entry in newBatch {
+        for entry in newBatch {
             if let i = batchSigToBatchIdx[entry.signature] {
                 collapsedNew[i].count += 1
                 collapsedNew[i].lastTimestamp = entry.lastTimestamp
                 collapsedNew[i].lastRaw = entry.lastRaw
             } else {
                 // Or against the live entries list (race with this same flush)
-                if let existing = entries.firstIndex(where: { $0.signature == entry.signature }) {
+                if let existing = liveSigToIndex[entry.signature] {
                     entries[existing].count += 1
                     entries[existing].lastTimestamp = entry.lastTimestamp
                     entries[existing].lastRaw = entry.lastRaw
@@ -237,19 +279,40 @@ final class LogStore: ObservableObject {
         }
 
         // Reindex if we evicted
+        //
+        // ml810: this ran two full sorts and THREE dictionary rebuilds of
+        // sigToIndex, the first two of which were thrown away by the next
+        // line. Once the list is at maxEntries this fires on every flush
+        // that adds an entry, i.e. up to 5x a second. Now: one partial
+        // selection to find the eviction cutoff, one filter, one rebuild.
         if entries.count > maxEntries {
-            // Drop oldest by lastTimestamp
-            entries.sort { $0.lastTimestamp < $1.lastTimestamp }
             let drop = entries.count - maxEntries
-            let removed = entries.prefix(drop).map { $0.signature }
-            entries.removeFirst(drop)
-            for sig in removed { sigToIndex.removeValue(forKey: sig) }
-            // Reindex remaining
-            sigToIndex.removeAll()
-            for (i, e) in entries.enumerated() { sigToIndex[e.signature] = i }
-            // Sort back to insertion order (by firstTimestamp)
-            entries.sort { $0.firstTimestamp < $1.firstTimestamp }
-            sigToIndex.removeAll()
+            // The `drop` oldest by lastTimestamp are evicted. Sorting the
+            // timestamps alone gives the cutoff without sorting (and copying)
+            // the entries themselves.
+            let cutoff = entries.map { $0.lastTimestamp }.sorted()[drop - 1]
+            // Everything strictly below the cutoff goes; the rest of the
+            // quota comes from the entries sitting exactly ON it, taken in
+            // list order. Doing this with one `<=` counter instead would let
+            // a strictly-older entry survive whenever ties filled the quota
+            // ahead of it.
+            var atCutoffToDrop = drop - entries.reduce(0) {
+                $0 + ($1.lastTimestamp < cutoff ? 1 : 0)
+            }
+            var kept: [LogEntry] = []
+            kept.reserveCapacity(maxEntries)
+            for e in entries {
+                if e.lastTimestamp < cutoff { continue }
+                if e.lastTimestamp == cutoff, atCutoffToDrop > 0 {
+                    atCutoffToDrop -= 1
+                    continue
+                }
+                kept.append(e)
+            }
+            // `entries` is already in insertion order (by firstTimestamp)
+            // and the filter above preserves it, so no re-sort is needed.
+            entries = kept
+            sigToIndex.removeAll(keepingCapacity: true)
             for (i, e) in entries.enumerated() { sigToIndex[e.signature] = i }
         }
         stateLock.unlock()
@@ -263,20 +326,68 @@ final class LogStore: ObservableObject {
         pendingUpdates.removeAll()
         stateLock.unlock()
         entries.removeAll()
+        // Drop the append fd before replacing the file: `write(to:
+        // atomically:)` swaps in a new inode, and the old fd would keep
+        // appending to the orphaned one.
+        fileLock.lock()
+        if logFD >= 0 { close(logFD); logFD = -1 }
+        fileLock.unlock()
         try? "".write(to: logFileURL, atomically: true, encoding: .utf8)
     }
 
     /// Write to file (called from `log()` for Swift-side messages so they
     /// land in the file alongside Wine/FEX output, picked up by the tail
     /// reader).
+    ///
+    /// ml810: this used to open a FileHandle, seek to end, write and close
+    /// on EVERY message — four syscalls per line, and the jit log callback
+    /// routes through here. It is now one held-open fd and one write().
+    ///
+    /// The fd is O_APPEND, which is also a correctness fix: the Wine side
+    /// has stderr and stdout dup2'd onto this same file with O_APPEND (see
+    /// WineProcessBridge/WineServerBridge), so the old seek-then-write was
+    /// racing it — a C-side write landing between the seek and the write
+    /// was silently overwritten. O_APPEND makes each write land at the
+    /// file's end atomically, so the two writers interleave safely and no
+    /// seek is needed at all. `clear()` closes it, since that replaces the
+    /// file underneath us.
+    ///
+    /// `dateFormatter` went too: DateFormatter is not thread-safe and this
+    /// is called from Wine threads as well as the main one, so the shared
+    /// instance was a latent race as well as the most expensive part of
+    /// building the line.
     private func appendToFile(_ message: String, level: LogEntry.Level = .info) {
-        let line = "[\(dateFormatter.string(from: Date()))] [\(level.rawValue)] \(message)\n"
-        if let data = line.data(using: .utf8) {
-            if let handle = try? FileHandle(forWritingTo: logFileURL) {
-                handle.seekToEndOfFile()
-                handle.write(data)
-                handle.closeFile()
+        let line = "[\(LogStore.timestampNow())] [\(level.rawValue)] \(message)\n"
+        let bytes = Array(line.utf8)
+        if bytes.isEmpty { return }
+        fileLock.lock()
+        defer { fileLock.unlock() }
+        if logFD < 0 {
+            logFD = open(logFileURL.path, O_WRONLY | O_CREAT | O_APPEND, 0o644)
+        }
+        guard logFD >= 0 else { return }
+        bytes.withUnsafeBufferPointer { buf in
+            var off = 0
+            while off < buf.count {
+                let n = write(logFD, buf.baseAddress! + off, buf.count - off)
+                if n <= 0 { break }
+                off += n
             }
         }
+    }
+
+    /// `HH:mm:ss.SSS` for the current time, without DateFormatter.
+    private static func timestampNow() -> String {
+        var tv = timeval()
+        gettimeofday(&tv, nil)
+        var t = time_t(tv.tv_sec)
+        var tmv = tm()
+        localtime_r(&t, &tmv)
+        let ms = Int(tv.tv_usec) / 1000
+        func pad2(_ v: Int32) -> String { v < 10 ? "0\(v)" : "\(v)" }
+        func pad3(_ v: Int) -> String {
+            v < 10 ? "00\(v)" : (v < 100 ? "0\(v)" : "\(v)")
+        }
+        return "\(pad2(tmv.tm_hour)):\(pad2(tmv.tm_min)):\(pad2(tmv.tm_sec)).\(pad3(ms))"
     }
 }

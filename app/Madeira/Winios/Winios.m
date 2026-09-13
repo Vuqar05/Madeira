@@ -479,12 +479,18 @@ static struct {
     pthread_mutex_t lock;
 } g_input_q = { .lock = PTHREAD_MUTEX_INITIALIZER };
 
+/* ml810: head is published with a release store and read in the drain's
+ * fast path with an acquire load, so pProcessEvents can rule out "queue
+ * empty" without taking the lock at all. The lock still serialises the
+ * actual push/pop; this only removes the uncontended lock+unlock pair
+ * from the overwhelmingly common empty case. See winios_pProcessEvents
+ * for why that case is on the game's critical path. */
 static void winios_q_push_ev(unsigned int type, int x, int y, unsigned int flags, unsigned int data) {
     pthread_mutex_lock(&g_input_q.lock);
     unsigned int next = (g_input_q.head + 1) % WINIOS_RING_SIZE;
     if (next != g_input_q.tail) {
         g_input_q.buf[g_input_q.head] = (winios_input_event_t){type, x, y, flags, data};
-        g_input_q.head = next;
+        __atomic_store_n(&g_input_q.head, next, __ATOMIC_RELEASE);
     }
     /* If buffer is full we drop the oldest event by simply not advancing —
      * better than blocking the UI thread on a Wine event drain. */
@@ -520,13 +526,29 @@ void winios_post_key(int vk, int down) {
     winios_q_push_ev(WINIOS_EV_KEY, vk, 0, down ? 0 : KEYEVENTF_KEYUP, 0);
 }
 
+/* ml810: EMPTY-QUEUE FAST PATH.
+ *
+ * On iOS this is called unconditionally from process_driver_events on
+ * every PeekMessage poll — see the WINE_IOS branch in message_ios.c,
+ * which explains why it cannot be gated on QS_DRIVER. Thumper polls
+ * input at kHz, so this function runs thousands of times a second on
+ * the game thread and the queue is empty on nearly all of them.
+ *
+ * What that cost before: a pthread mutex lock+unlock pair, a 32-bit
+ * modulo, and — every 240th call, so ~30 times a second at kHz — an
+ * fprintf to stderr plus an fflush. stderr is dup2'd to the log file,
+ * so each of those was a write syscall that then went back through the
+ * app's log tail and signature machinery.
+ *
+ * Now: one acquire load of head compared against tail. If they match
+ * there is nothing to drain and we return without touching the lock.
+ * The lock is still taken for real pops, so the push/pop protocol is
+ * unchanged; the release store in winios_q_push_ev pairs with the load
+ * here so an event's payload is visible before the head that publishes
+ * it. The periodic call-count line is gone — it reported nothing the
+ * per-event drain lines below don't, and it reported it from the one
+ * path that cannot afford a syscall. */
 BOOL winios_pProcessEvents(DWORD mask) {
-    static unsigned int cnt;
-    static int quiet = -1;
-    if (quiet < 0) quiet = getenv("MADEIRA_QUIET") != NULL;
-    if ((cnt++ % 240) == 0 && !quiet) {
-        fprintf(stderr, "[winios] pProcessEvents called n=%u\n", cnt); fflush(stderr);
-    }
     /* Desktop debugging: dump the full window tree every ~5s. Runs on
      * this wine thread (valid TEB — the dump walks win32u internals). */
     static int desk = -1;
@@ -539,6 +561,11 @@ BOOL winios_pProcessEvents(DWORD mask) {
             winios_dump_window_tree();
         }
     }
+
+    /* Fast path: nothing queued, no lock, no syscall. */
+    if (__atomic_load_n(&g_input_q.head, __ATOMIC_ACQUIRE) == g_input_q.tail)
+        return FALSE;
+
     BOOL drained = FALSE;
     for (;;) {
         winios_input_event_t e;

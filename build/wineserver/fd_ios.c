@@ -40,9 +40,34 @@
  * right after writing a request; the loop sleeps in semaphore_timedwait
  * and wakes instantly. Extra signals just cause cheap extra scans. */
 semaphore_t ios_srv_wake_sem = 0;
+
+/* ml810: COALESCE the wake. semaphore_signal() counts, and this fired on
+ * every client request with nothing draining the surplus — so once the
+ * request rate passed the loop rate the count never returned to zero,
+ * semaphore_timedwait() returned instantly forever and the loop stopped
+ * sleeping at all (ml584 measured 2,935 iter/s against a 1 ms floor that
+ * caps it at ~1,000/s). Three times the intended wakeups, each a full
+ * poll scan, on a core the game is competing for.
+ *
+ * ios_srv_wake_pending is the fix: only the 0->1 transition signals, so
+ * the count is bounded by one regardless of how many requests land in a
+ * single work phase. The loop clears the flag immediately after the wait
+ * returns and BEFORE it does its poll/dispatch work (see main_loop), so
+ * a request written during that work re-arms the signal and the next
+ * wait still returns immediately — no wakeup is lost and pickup latency
+ * is unchanged. Requests written before the clear are picked up by the
+ * poll that directly follows it.
+ *
+ * The client side wins too: server_call_unlocked calls this on EVERY
+ * wineserver request, and semaphore_signal() is a Mach trap. Coalescing
+ * turns the common case into one uncontended atomic exchange. */
+volatile int ios_srv_wake_pending = 0;
+
 void ios_wineserver_wake(void)
 {
-    if (ios_srv_wake_sem) semaphore_signal( ios_srv_wake_sem );
+    if (!ios_srv_wake_sem) return;
+    if (!__atomic_exchange_n( &ios_srv_wake_pending, 1, __ATOMIC_SEQ_CST ))
+        semaphore_signal( ios_srv_wake_sem );
 }
 
 /* __WINESRC__ must be defined via -D flag so unicode_fix.h can see it */
@@ -1424,6 +1449,14 @@ void main_loop(void)
                     if (late_us > ios_late_max_us) ios_late_max_us = late_us;
                 }
             }
+
+            /* ml810: re-arm the coalesced wake (see ios_wineserver_wake).
+             * This MUST happen after the wait and before the poll/dispatch
+             * below: a request written after this store signals and makes
+             * the next wait return immediately, and one written before it
+             * is picked up by the very poll that follows. */
+            __atomic_store_n( &ios_srv_wake_pending, 0, __ATOMIC_SEQ_CST );
+
             set_current_time();
 
             /* Real sockets first: zero-timeout poll() gives true INET
