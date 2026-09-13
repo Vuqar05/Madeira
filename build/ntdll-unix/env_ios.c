@@ -897,6 +897,7 @@ static WCHAR *get_initial_environment( SIZE_T *pos, SIZE_T *size )
         if (STARTS_WITH(str, "Steam") || STARTS_WITH(str, "SteamAppPath") ||
             STARTS_WITH(str, "SteamGameId") || STARTS_WITH(str, "SteamAppId") ||
             STARTS_WITH(str, "FNA3D_") || STARTS_WITH(str, "MONO_") ||
+            STARTS_WITH(str, "FEX_") ||
             STARTS_WITH(str, "MADEIRA_JIT_WRITE_OFFSET"))
             fprintf(stderr, "[iOS env] processing: %s\n", str);
 
@@ -928,7 +929,14 @@ static WCHAR *get_initial_environment( SIZE_T *pos, SIZE_T *size )
         }
 
         ptr += ntdll_umbstowcs( str, strlen(str) + 1, ptr, end - ptr );
+        /* FEX_ joins the beacon list so that "did the knob reach the guest?"
+         * is answerable from the log instead of inferred. FEX's own config is
+         * read from the WINDOWS environment this function builds, so an
+         * FEX_TSOENABLED that never gets an INCLUDED line here never reached
+         * the JIT at all -- and a relaxed-TSO A/B whose two arms were secretly
+         * identical would otherwise look exactly like "no measurable effect". */
         if (STARTS_WITH(str, "Steam") || STARTS_WITH(str, "FNA3D_") || STARTS_WITH(str, "MONO_") ||
+            STARTS_WITH(str, "FEX_") ||
             STARTS_WITH(str, "MADEIRA_JIT_WRITE_OFFSET"))
             fprintf(stderr, "[iOS env] INCLUDED: %s\n", str);
     }
