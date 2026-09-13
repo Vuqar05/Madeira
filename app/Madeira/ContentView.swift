@@ -919,8 +919,21 @@ struct ContentView: View {
                 jit_install_trap_handler()
                 entitlements = EntitlementStatus.check()
                 logEntitlementStatus()
+                updateJoystickPadVisibility()
             }
+            .onChange(of: vSizeClass) { _, _ in updateJoystickPadVisibility() }
+            .onChange(of: showingSettings) { _, _ in updateJoystickPadVisibility() }
         }
+    }
+
+    /// The joystick pad's face lives in its own window-level overlay (see
+    /// JoystickPadHost) so it can float above the Metal game surface — which
+    /// also means it does NOT disappear just because the portrait key row
+    /// that owns it leaves the SwiftUI hierarchy. Landscape mode and the
+    /// Settings sheet both do that, so both have to fade the pad explicitly
+    /// the same way the pointer panel already did.
+    private func updateJoystickPadVisibility() {
+        JoystickPadState.shared.hidden = pointerPanel || showingSettings || vSizeClass == .compact
     }
 
     /// Portrait: classic tooling layout — header, badges, 240pt game strip,
@@ -1034,7 +1047,7 @@ struct ContentView: View {
         Button {
             withAnimation(.easeInOut(duration: 0.28)) { pointerPanel.toggle() }
             // The window-level pad fades itself; see JoystickPadState.hidden.
-            JoystickPadState.shared.hidden = pointerPanel
+            updateJoystickPadVisibility()
         } label: {
             Image(systemName: pointerPanel ? "xmark" : "cursorarrow")
                 .font(.system(size: 17, weight: .medium))
