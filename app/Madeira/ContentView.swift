@@ -2650,6 +2650,13 @@ final class TouchControlsModel: ObservableObject {
 
     @Published var controls: [TouchControl] = [] { didSet { save() } }
     @Published var visible = true               { didSet { save() } }
+    /// ml794: when on, a tap that lands on nothing — no button, no look box —
+    /// is swallowed instead of falling through to MetalBackedView, which is
+    /// what turns an idle tap into a left click wherever the finger landed
+    /// (see winios_post_touch_down). Off by default: that click-through is the
+    /// existing, expected behaviour, and this is an opt-in for a layout that
+    /// relies on a look box and wants nothing else reachable by accident.
+    @Published var blockBackgroundTouches = false { didSet { save() } }
     @Published var editing = false              // transient, never persisted
     @Published var selected: UUID?              // transient
 
@@ -2659,7 +2666,14 @@ final class TouchControlsModel: ObservableObject {
             .appendingPathComponent("madeira-controls.json")
     }
 
-    private struct Saved: Codable { var controls: [TouchControl]; var visible: Bool }
+    private struct Saved: Codable {
+        var controls: [TouchControl]
+        var visible: Bool
+        // ml794: Optional, for the same reason TouchControl's box fields are —
+        // a plain Bool here would throw decoding a layout saved before this
+        // flag existed (missing key), which wipes the user's whole layout.
+        var blockBackgroundTouches: Bool? = nil
+    }
 
     private init() {
         loading = true
@@ -2667,13 +2681,15 @@ final class TouchControlsModel: ObservableObject {
            let s = try? JSONDecoder().decode(Saved.self, from: d) {
             controls = s.controls
             visible  = s.visible
+            blockBackgroundTouches = s.blockBackgroundTouches ?? false
         }
         loading = false
     }
 
     private func save() {
         guard !loading else { return }
-        guard let d = try? JSONEncoder().encode(Saved(controls: controls, visible: visible))
+        guard let d = try? JSONEncoder().encode(Saved(controls: controls, visible: visible,
+                                                       blockBackgroundTouches: blockBackgroundTouches))
         else { return }
         try? d.write(to: Self.url, options: .atomic)
     }
@@ -2693,10 +2709,13 @@ final class TouchControlsModel: ObservableObject {
     /// touch in the window. Nothing responded, and edit mode — whose branch
     /// captured everything — could never be entered to mask it.
     func hitsInteractive(_ p: CGPoint, in bounds: CGRect) -> Bool {
-        // Top bar: two 44pt buttons 10pt apart in play mode, centred, 10pt down.
-        // Padded generously; a few points of slop costs nothing and a missed tap
-        // costs a build.
-        let barW: CGFloat = 2 * 44 + 10
+        // Top bar: three 44pt buttons 10pt apart in play mode (gamecontroller,
+        // pencil, ml794's block-touches toggle), centred, 10pt down. Padded
+        // generously; a few points of slop costs nothing and a missed tap
+        // costs a build. (Edit mode's extra "+" button never needs to be
+        // counted here — editing already claims the whole screen in
+        // ControlsWindow.hitTest, before this function is ever consulted.)
+        let barW: CGFloat = 3 * 44 + 2 * 10
         if CGRect(x: bounds.midX - barW / 2 - 10, y: 0,
                   width: barW + 20, height: 68).contains(p) { return true }
         guard visible else { return false }
@@ -2743,6 +2762,11 @@ final class ControlsWindow: UIWindow {
         if m.editing { return super.hitTest(point, with: event) }
         // Portrait draws nothing here, so it must consume nothing.
         guard bounds.width > bounds.height else { return nil }
+        // ml794: the switch widens "claimed" to the entire screen, the same
+        // way editing does — an empty-space tap is swallowed right here
+        // instead of reaching MetalBackedView, which is what turns it into a
+        // left click wherever the finger landed.
+        if m.blockBackgroundTouches { return super.hitTest(point, with: event) }
         guard m.hitsInteractive(point, in: bounds) else { return nil }
         return super.hitTest(point, with: event)
     }
@@ -2823,6 +2847,11 @@ struct TouchControlsOverlay: View {
     private var topBar: some View {
         HStack(spacing: 10) {
             glassButton("gamecontroller", dim: !m.visible) { m.visible.toggle() }
+            // ml794: lit when background taps are BLOCKED — matches the
+            // gamecontroller button's convention of dim = the passive state.
+            glassButton("hand.raised.slash", dim: !m.blockBackgroundTouches) {
+                m.blockBackgroundTouches.toggle()
+            }
             glassButton(m.editing ? "checkmark" : "pencil") {
                 m.editing.toggle()
                 if !m.editing { m.selected = nil }
