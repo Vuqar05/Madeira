@@ -448,30 +448,98 @@ unsigned long long ios_get_real_usd(void)
  * livelock). The pathological stale pointers fault thousands of times per
  * second; a threshold cleanly separates the two populations. */
 #define IOS_STALE_VA_HEAL_THRESHOLD 256
+/* ml811: how many times one VA may be queued for heal before it is written
+ * off. A heal that works stops the faults outright, so a VA that climbs to
+ * the threshold again is one the patcher could not reach (the value lives
+ * somewhere neither the IAT pass nor the .data escalation scans). Re-running
+ * the patcher for it costs a full pool scan and fixes nothing, so stop. */
+#define IOS_STALE_VA_MAX_HEALS 3
 static uint64_t ios_stale_va_seen[IOS_STALE_VA_MAX];
 static uint32_t ios_stale_va_hits[IOS_STALE_VA_MAX];
+static uint32_t ios_stale_va_heals[IOS_STALE_VA_MAX];
 static volatile int ios_stale_va_seen_count = 0;
 static uint64_t ios_stale_va_queue[IOS_STALE_VA_MAX];
 static volatile int ios_stale_va_head = 0;   /* written by scanner */
 static volatile int ios_stale_va_tail = 0;   /* written by exc handler */
 
+/* ml811: direct-mapped index over `seen`, so the repeatedly-faulting VA —
+ * the only case that runs at fault rate — costs one probe instead of a scan
+ * of up to 256 entries. 0 = empty, otherwise slot+1. Entries are rewritten
+ * in place on eviction, so a mapping can go stale; every hit is verified
+ * against `seen` and a miss falls back to the linear scan, which re-points
+ * it. That makes the index self-correcting and never authoritative. */
+#define IOS_STALE_VA_IDX_BITS 10
+#define IOS_STALE_VA_IDX_SIZE (1 << IOS_STALE_VA_IDX_BITS)
+static uint16_t ios_stale_va_idx[IOS_STALE_VA_IDX_SIZE];
+
+static inline unsigned ios_stale_va_hash( uint64_t va )
+{
+    /* VAs are page-ish aligned and cluster hard in the low bits, so fold the
+     * whole value before masking. */
+    va ^= va >> 33; va *= 0xff51afd7ed558ccdULL; va ^= va >> 29;
+    return (unsigned)(va & (IOS_STALE_VA_IDX_SIZE - 1));
+}
+
+/* Woken by the exception handler when it queues work; the scanner also wakes
+ * on a timeout so a missed signal can only ever cost latency, never a heal. */
+static pthread_mutex_t ios_stale_va_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  ios_stale_va_cond = PTHREAD_COND_INITIALIZER;
+
 static void ios_stale_va_enqueue( uint64_t va )
 {
     int i, n = ios_stale_va_seen_count;
-    for (i = 0; i < n; i++)
+    unsigned h = ios_stale_va_hash( va );
+    int slot = -1;
+    unsigned cached = ios_stale_va_idx[h];
+
+    if (cached && cached <= (unsigned)n && ios_stale_va_seen[cached - 1] == va)
+        slot = (int)cached - 1;
+    else
     {
-        if (ios_stale_va_seen[i] == va)
-        {
-            if (++ios_stale_va_hits[i] == IOS_STALE_VA_HEAL_THRESHOLD)
-            {
-                ios_stale_va_queue[ios_stale_va_tail % IOS_STALE_VA_MAX] = va;
-                ios_stale_va_tail++;
-                fprintf( stderr, "[stale-heal] 0x%llx crossed %d faults — queued for heal\n",
-                         (unsigned long long)va, IOS_STALE_VA_HEAL_THRESHOLD );
-            }
-            return;
-        }
+        for (i = 0; i < n; i++)
+            if (ios_stale_va_seen[i] == va) { slot = i; break; }
+        if (slot >= 0) ios_stale_va_idx[h] = (uint16_t)(slot + 1);
     }
+
+    if (slot >= 0)
+    {
+        if (++ios_stale_va_hits[slot] < IOS_STALE_VA_HEAL_THRESHOLD) return;
+        /* ml811: RETIRE the entry at the threshold instead of leaving it
+         * pinned at a hot count forever.
+         *
+         * The counter used to stay >= the threshold for the rest of the
+         * session, and nothing ever removed an entry. A healed VA stops
+         * faulting, so its count froze there — and the eviction path below
+         * refuses to evict anything at or above the threshold. Once 256 VAs
+         * had been healed, every slot was permanently "hot", every NEW stale
+         * VA hit the `everything hot — drop` return, and self-healing
+         * switched itself off for the rest of the run. Each dropped VA then
+         * faulted forever, at one Mach exception (~33us, serialised through
+         * the single handler thread) per call through it. That is the same
+         * failure the 64 -> 256 bump was meant to fix; the cap was raised but
+         * entries were still never retired, so it only postponed it.
+         *
+         * Dropping the count back to zero makes a healed entry the COLDEST
+         * thing in the table, so the existing evict-coldest policy reclaims
+         * its slot naturally, and a VA the heal actually fixed never comes
+         * back to claim another. */
+        ios_stale_va_hits[slot] = 0;
+        if (ios_stale_va_heals[slot] >= IOS_STALE_VA_MAX_HEALS) return;
+        ios_stale_va_heals[slot]++;
+        ios_stale_va_queue[ios_stale_va_tail % IOS_STALE_VA_MAX] = va;
+        ios_stale_va_tail++;
+        /* Signalled WITHOUT holding ios_stale_va_lock on purpose: this runs on
+         * the one Mach exception handler thread that every faulting thread in
+         * the process is blocked behind, so it must never wait on a lock the
+         * scanner could be holding. The scanner's timed wait bounds the cost
+         * of the wakeup this can lose. */
+        pthread_cond_signal( &ios_stale_va_cond );
+        fprintf( stderr, "[stale-heal] 0x%llx crossed %d faults — queued for heal (attempt %u)\n",
+                 (unsigned long long)va, IOS_STALE_VA_HEAL_THRESHOLD,
+                 ios_stale_va_heals[slot] );
+        return;
+    }
+
     if (n >= IOS_STALE_VA_MAX)
     {
         /* Table full: evict the coldest entry (boot one-shots sit at a
@@ -485,10 +553,14 @@ static void ios_stale_va_enqueue( uint64_t va )
         if (min_h >= IOS_STALE_VA_HEAL_THRESHOLD) return;  /* everything hot — drop */
         ios_stale_va_seen[min_i] = va;
         ios_stale_va_hits[min_i] = 1;
+        ios_stale_va_heals[min_i] = 0;
+        ios_stale_va_idx[h] = (uint16_t)(min_i + 1);
         return;
     }
     ios_stale_va_seen[n] = va;
     ios_stale_va_hits[n] = 1;
+    ios_stale_va_heals[n] = 0;
+    ios_stale_va_idx[h] = (uint16_t)(n + 1);
     ios_stale_va_seen_count = n + 1;
 }
 
@@ -506,7 +578,24 @@ static void *ios_stale_va_scanner( void *arg )
     pthread_setname_np( "wine-stale-heal" );
     for (;;)
     {
-        usleep( 100000 );
+        /* ml811: this was an unconditional 100ms sleep, so a VA that crossed
+         * the threshold kept faulting for up to another 100ms before anything
+         * looked at the queue — at the observed fault rate, thousands more
+         * Mach round trips per VA, all of them avoidable. Wait on the queue
+         * instead, with a timeout so a lost signal costs latency and nothing
+         * else — the handler signals without holding this lock on purpose, so
+         * it can never block the thread every faulting thread waits behind. */
+        pthread_mutex_lock( &ios_stale_va_lock );
+        while (ios_stale_va_head == ios_stale_va_tail)
+        {
+            /* Relative wait: the absolute-deadline form would need
+             * clock_gettime from <time.h>, which this TU does not include. */
+            struct timespec ts = { 0, 100000000L };   /* 100ms */
+            pthread_cond_timedwait_relative_np( &ios_stale_va_cond,
+                                                &ios_stale_va_lock, &ts );
+        }
+        pthread_mutex_unlock( &ios_stale_va_lock );
+
         while (ios_stale_va_head != ios_stale_va_tail)
         {
             uint64_t va = ios_stale_va_queue[ios_stale_va_head % IOS_STALE_VA_MAX];
@@ -519,6 +608,23 @@ static void *ios_stale_va_scanner( void *arg )
         }
     }
     return NULL;
+}
+
+/* ml811: on-demand NEON fetch for the Mach exception handler — see the
+ * NEON_AVAIL() definition in the handler for why this is not eager. Returns
+ * whether the state is usable; the fetch is attempted at most once per
+ * exception, so a failure is not retried mid-handler. */
+static int ios_neon_ensure( thread_t thread, arm_neon_state64_t *ns,
+                            mach_msg_type_number_t *nc, int *tried, int *ok )
+{
+    if (!*tried)
+    {
+        *tried = 1;
+        *nc = ARM_NEON_STATE64_COUNT;
+        *ok = (thread_get_state( thread, ARM_NEON_STATE64,
+                                 (thread_state_t)ns, nc ) == KERN_SUCCESS);
+    }
+    return *ok;
 }
 
 /* Per-thread trampoline for signal handlers (runs on faulting thread) */
@@ -1671,11 +1777,24 @@ static void *ios_mach_exception_thread( void *arg )
         mach_msg_type_number_t count = ARM_THREAD_STATE64_COUNT;
         kr = thread_get_state( thread, ARM_THREAD_STATE64,
                                (thread_state_t)&state, &count );
-        /* Also fetch NEON (SIMD/FP) state for STR/STP-q emulation */
+        /* NEON (SIMD/FP) state, for STR/STP-q emulation and for the CONTEXT
+         * handed to a guest exception handler.
+         *
+         * ml811: this was fetched unconditionally, right here, on EVERY
+         * exception. It is a second full kernel RPC carrying 528 bytes, and
+         * only a handful of rare SIMD cases and the guest-delivery path ever
+         * read it — while this handler runs tens of thousands of times a
+         * second (measured 33,733/s in gameplay at ~33us each, one thread
+         * serving the whole app). Fetch it on first use instead.
+         *
+         * Deferring is safe because Mach holds the faulting thread suspended
+         * until we reply, so its registers cannot change mid-handler: a read
+         * taken later in the handler sees exactly what a read here would. */
         arm_neon_state64_t neon_state;
         mach_msg_type_number_t neon_count = ARM_NEON_STATE64_COUNT;
-        int have_neon = (thread_get_state(thread, ARM_NEON_STATE64,
-                                          (thread_state_t)&neon_state, &neon_count) == KERN_SUCCESS);
+        int neon_tried = 0, neon_ok = 0;
+#define NEON_AVAIL() ios_neon_ensure( thread, &neon_state, &neon_count, \
+                                      &neon_tried, &neon_ok )
         if (kr == KERN_SUCCESS)
         {
             uintptr_t fault_addr = (uintptr_t)req->code[1];
@@ -2092,7 +2211,7 @@ static void *ios_mach_exception_thread( void *arg )
                          * 0=store. Loads write neon_state.__v[rt] (zeroing
                          * the upper lanes) and push it back immediately;
                          * stores read from it. */
-                        if (!emulated && have_neon &&
+                        if (!emulated && NEON_AVAIL() &&
                             ((insn & 0x3f200c00) == 0x3c200800 ||   /* SIMD register offset */
                              (insn & 0x3f000000) == 0x3d000000))    /* SIMD unsigned-offset imm */
                         {
@@ -2607,7 +2726,7 @@ static void *ios_mach_exception_thread( void *arg )
                      *
                      * STP Q is not architecturally one atomic 32-byte transaction, so two
                      * 16-byte copies are correct. Rn==31 is SP, never __x[31]. */
-                    if (have_neon && (insn & 0xFE400000) == 0xAC000000)
+                    if (NEON_AVAIL() && (insn & 0xFE400000) == 0xAC000000)
                     {
                         const int mode = (insn >> 23) & 0x3; /* 0 stnp, 1 post, 2 offset, 3 pre */
                         const int rt   = insn & 0x1f;
@@ -2833,7 +2952,7 @@ static void *ios_mach_exception_thread( void *arg )
                     else if ((insn & 0xffe00000) == 0xfc000000 && (insn & 0xc00) != 0)
                     {
                         int rt = insn & 0x1f;
-                        if (have_neon)
+                        if (NEON_AVAIL())
                         {
                             /* Low 64 bits of the 128-bit Q-reg = D-reg. */
                             memcpy((void *)rw_addr, &neon_state.__v[rt], 8);
@@ -2853,7 +2972,7 @@ static void *ios_mach_exception_thread( void *arg )
                     else if ((insn & 0xffe00000) == 0xbc000000 && (insn & 0xc00) != 0)
                     {
                         int rt = insn & 0x1f;
-                        if (have_neon)
+                        if (NEON_AVAIL())
                         {
                             memcpy((void *)rw_addr, &neon_state.__v[rt], 4);
                             emulated = 1;
@@ -2872,7 +2991,7 @@ static void *ios_mach_exception_thread( void *arg )
                     else if ((insn & 0xffe00000) == 0x3c800000 && (insn & 0xc00) != 0)
                     {
                         int rt = insn & 0x1f;
-                        if (have_neon)
+                        if (NEON_AVAIL())
                         {
                             memcpy((void *)rw_addr, &neon_state.__v[rt], 16);
                             emulated = 1;
@@ -2896,7 +3015,7 @@ static void *ios_mach_exception_thread( void *arg )
                     else if ((insn & 0xffe00c00) == 0x3c800000)
                     {
                         int rt = insn & 0x1f;
-                        if (have_neon)
+                        if (NEON_AVAIL())
                         {
                             memcpy((void *)rw_addr, &neon_state.__v[rt], 16);
                             emulated = 1;
@@ -2928,7 +3047,7 @@ static void *ios_mach_exception_thread( void *arg )
                     else if ((insn & 0xffc00000) == 0xfd000000)
                     {
                         int rt = insn & 0x1f;
-                        if (have_neon)
+                        if (NEON_AVAIL())
                         {
                             memcpy((void *)rw_addr, &neon_state.__v[rt], 8);
                             emulated = 1;
@@ -2938,7 +3057,7 @@ static void *ios_mach_exception_thread( void *arg )
                     else if ((insn & 0xffc00000) == 0xbd000000)
                     {
                         int rt = insn & 0x1f;
-                        if (have_neon)
+                        if (NEON_AVAIL())
                         {
                             memcpy((void *)rw_addr, &neon_state.__v[rt], 4);
                             emulated = 1;
@@ -2948,7 +3067,7 @@ static void *ios_mach_exception_thread( void *arg )
                     else if ((insn & 0xffc00000) == 0x3d800000)
                     {
                         int rt = insn & 0x1f;
-                        if (have_neon)
+                        if (NEON_AVAIL())
                         {
                             memcpy((void *)rw_addr, &neon_state.__v[rt], 16);
                             emulated = 1;
@@ -3730,7 +3849,7 @@ skip_reclaim_band: ;
                              req->exception == EXC_BAD_INSTRUCTION))
             {
                 if (ios_mach_deliver_guest_exception( thread, &state,
-                        &neon_state, have_neon, req->exception,
+                        &neon_state, NEON_AVAIL(), req->exception,
                         fault_addr, thread_teb ))
                     handled = 1;
             }
@@ -5121,6 +5240,7 @@ skip_reclaim_band: ;
     }
     return NULL;
 }
+#undef NEON_AVAIL
 
 /* ml522 (#67): claim the TASK-level exception port for the fault masks we
  * already own per-thread.
