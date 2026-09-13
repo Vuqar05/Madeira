@@ -855,6 +855,15 @@ struct ContentView: View {
     // -- the game itself must already be copied into drive_c (Files app or devicectl).
     @AppStorage("madeira.customExePath") private var customExePath = ""
     @AppStorage("madeira.customArgs") private var customArgs = ""
+    // Settings menu. Off by default: relaxed TSO is an unvalidated,
+    // opt-in experiment (see docs/fex-relaxed-tso.md) and must never be
+    // the thing that regresses a title that currently works. Persisted
+    // via @AppStorage like the fields above, so the choice survives an
+    // app relaunch -- which is exactly why the toggle's own label and the
+    // Settings sheet's footer both say plainly that it stays on until
+    // turned off again.
+    @AppStorage("madeira.tsoRelaxed") private var tsoRelaxedEnabled = false
+    @State private var showingSettings = false
     @Namespace private var pointerNS
     /// .compact = iPhone landscape: game surface expands, arrow keys appear.
     @Environment(\.verticalSizeClass) private var vSizeClass
@@ -890,6 +899,22 @@ struct ContentView: View {
             .navigationTitle("Madeira")
             .navigationBarTitleDisplayMode(.inline)
             .navigationBarHidden(vSizeClass == .compact)
+            .toolbar {
+                // Nav bar is hidden in landscape (.compact) along with this
+                // button, same as the game-launch controls below it — both
+                // are portrait/setup concerns, not something you reach for
+                // mid-game.
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button {
+                        showingSettings = true
+                    } label: {
+                        Image(systemName: "gearshape")
+                    }
+                }
+            }
+            .sheet(isPresented: $showingSettings) {
+                SettingsView(tsoRelaxedEnabled: $tsoRelaxedEnabled)
+            }
             .onAppear {
                 jit_install_trap_handler()
                 entitlements = EntitlementStatus.check()
@@ -1971,6 +1996,30 @@ struct ContentView: View {
                 }
             }
 
+            // Relaxed TSO mode (Settings toggle, see docs/fex-relaxed-tso.md).
+            // Off by default. ON forces FEX_TSOENABLED=0 for the title this
+            // sequence is about to launch, taking priority over both
+            // Documents/madeira-tso.txt and the per-title table in
+            // WineProcessBridge.m's madeira_apply_tso_profile() -- so the
+            // Settings switch is a fast global override for whatever gets
+            // launched next, while the file/table still govern per-title
+            // defaults when the switch is left off. Always sets or clears
+            // the env var explicitly (never leaves it to a stale value from
+            // an earlier launch in this host process), matching every other
+            // setenv/unsetenv pair in this function.
+            //
+            // UNVALIDATED: turning this on trades x86 memory-ordering
+            // correctness for an unmeasured, possibly nonexistent frame-time
+            // win. Expect rare silent corruption rather than a prompt crash
+            // if a title actually needs the ordering -- see the doc for the
+            // full test procedure before trusting a session with it on.
+            if tsoRelaxedEnabled {
+                setenv("MADEIRA_TSO_UI_OVERRIDE", "relaxed", 1)
+                logStore.log("TSO: relaxed mode forced via Settings toggle (UNVALIDATED, see docs/fex-relaxed-tso.md)")
+            } else {
+                unsetenv("MADEIRA_TSO_UI_OVERRIDE")
+            }
+
             // ml734: Theorafile call tracer. Documents/madeira-tf-trace.txt == "1"
             // redirects libtheorafile's tf_* exports through wrappers in
             // tftrace-x64.dll that call the original and report the RETURN
@@ -2433,6 +2482,49 @@ struct ContentView: View {
 
         jit_region_destroy(region)
         logStore.log("Region destroyed. Dual mapping test complete.")
+    }
+}
+
+/// Reached via the gear icon in the main toolbar (portrait only, same as
+/// the launch controls it configures). Currently holds one switch; grows
+/// here as more of the file-based A/B knobs above graduate to something
+/// you don't need the Files app to flip.
+struct SettingsView: View {
+    @Environment(\.dismiss) private var dismiss
+    @Binding var tsoRelaxedEnabled: Bool
+
+    var body: some View {
+        NavigationStack {   /* ml658: see the note on the main body */
+            List {
+                Section {
+                    Toggle("Relaxed Memory Ordering (TSO)", isOn: $tsoRelaxedEnabled)
+                } header: {
+                    Text("Experimental")
+                } footer: {
+                    // Keep this footer honest even as the switch's own risk
+                    // profile stays unchanged: it exists so nobody enables
+                    // this from the toggle label alone.
+                    Text("Skips FEX's software emulation of x86's strict memory " +
+                         "ordering, which iOS cannot do in hardware. May reduce " +
+                         "CPU-bound frame time; may do nothing measurable. " +
+                         "UNTESTED for both performance and correctness -- a " +
+                         "title that depends on strict ordering can corrupt " +
+                         "silently rather than crash, so a short clean session " +
+                         "is not proof it's safe. Applies to whatever launches " +
+                         "next and stays on until you turn it off again. " +
+                         "See docs/fex-relaxed-tso.md for the full test " +
+                         "procedure. Off is the correct default for every " +
+                         "title until you've verified both on your device.")
+                }
+            }
+            .navigationTitle("Settings")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
     }
 }
 

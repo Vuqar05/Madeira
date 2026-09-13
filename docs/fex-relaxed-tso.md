@@ -1,8 +1,10 @@
 # Relaxed TSO mode (per title)
 
-An **opt-in, per-title** switch that turns off FEX's software emulation of
-x86's memory ordering. It is off for every title. Nothing about it has been
-measured or validated on device — see [Status](#status).
+An **opt-in** switch that turns off FEX's software emulation of x86's memory
+ordering — a Settings toggle in the app for a quick global override, plus a
+`Documents/madeira-tso.txt` file for per-title control. Off by default, for
+every title, on both paths. Nothing about it has been measured or validated
+on device — see [Status](#status).
 
 ## Why it exists
 
@@ -70,19 +72,33 @@ launch, process-wide *is* per-title here.
 
 ## How it is wired
 
-`app/Madeira/WineProcessBridge.m` → `madeira_apply_tso_profile()`, called from
-`wine_process_thread()` just after the target exe is resolved and before Wine
-snapshots the environment. It resolves a mode for the exe and always writes
-`FEX_TSOENABLED` explicitly (`1` = strict, `0` = relaxed), with
+There are two ways to set it: a **Settings toggle** in the app (gear icon,
+top-right, portrait) for a quick global override, and a **file** for
+per-title control that survives without touching the toggle. Both end up at
+the same place: `app/Madeira/WineProcessBridge.m` → `madeira_apply_tso_profile()`,
+called from `wine_process_thread()` just after the target exe is resolved and
+before Wine snapshots the environment. It resolves a mode for the exe and
+always writes `FEX_TSOENABLED` explicitly (`1` = strict, `0` = relaxed), with
 `overwrite=1`, so a value left behind by an earlier launch in the same host
 process cannot decide the current one.
 
 Resolution order:
 
-1. `Documents/madeira-tso.txt`, if present and it says something applicable.
-2. The built-in per-title table in `WineProcessBridge.m` (every entry
+1. **The Settings toggle**, if ON. `ContentView.swift`'s `runWineFullSequence()`
+   sets `MADEIRA_TSO_UI_OVERRIDE=relaxed` when the switch is on and clears it
+   when off — clears, not "leaves alone", so leaving the switch off is exactly
+   as if it didn't exist and falls through to the next tier. This is a
+   **global** override: it applies to whatever launches next regardless of
+   title, and it stays set (persisted via `@AppStorage`) until you turn it
+   off again — it does not reset itself after one launch.
+2. `Documents/madeira-tso.txt`, if present and it says something applicable.
+3. The built-in per-title table in `WineProcessBridge.m` (every entry
    `MADEIRA_TSO_STRICT`).
-3. Strict.
+4. Strict.
+
+Use the toggle for a quick global A/B on whatever you're about to launch; use
+the file when you want one title relaxed and everything else to stay on the
+strict default without having to remember to flip a switch back off.
 
 The override file takes one directive per line; `#` begins a comment:
 
@@ -132,7 +148,15 @@ you just lose one of the three verification checkpoints.
 
 ### 2. Select the arm
 
-On device, in the app's Documents folder (Files app, or `devicectl`):
+**Easiest: the Settings toggle.** Tap the gear icon (top-right, portrait) →
+"Relaxed Memory Ordering (TSO)". This overrides every title, so it's the
+fastest way to run the A/B on whatever you're about to launch — no file
+editing, no rebuild. Remember it stays ON across launches until you switch it
+back off; it is not a one-shot.
+
+**Or, for a per-title setup that doesn't require remembering to flip the
+toggle back:** in the app's Documents folder (Files app, or `devicectl`),
+leave the Settings toggle OFF and instead:
 
 - **Strict arm (control):** delete `madeira-tso.txt`, or write
   `default = strict`.
@@ -142,8 +166,9 @@ On device, in the app's Documents folder (Files app, or `devicectl`):
   Lethal Company.exe = relaxed
   ```
 
-Force-quit the app between arms. The environment is snapshotted once per Wine
-process, so changing the file while a game is running does nothing.
+Either way, force-quit the app between arms. The environment is snapshotted
+once per Wine process, so changing the toggle or the file while a game is
+running does nothing until the next launch.
 
 ### 3. Verify the arm actually took effect — do this every run
 
@@ -157,6 +182,12 @@ effect", which is the specific way this experiment fails silently.
 | 1 | `[tso]` | `-> strict (FEX_TSOENABLED=1, ...)` | `-> relaxed (FEX_TSOENABLED=0, ...)` |
 | 2 | `[iOS env] INCLUDED: FEX_TSOENABLED` | `=1` | `=0` |
 | 3 | `FEX: TSO config` | `tso=1` | `tso=0` |
+
+Checkpoint 1's `from ...` suffix names which tier decided the mode —
+`Settings toggle`, `madeira-tso.txt (...)`, or `built-in table`/`built-in
+default`. If you used the Settings toggle and it says anything else, the
+toggle didn't take (e.g. the app was still running from before you flipped
+it) — force-quit and relaunch.
 
 Checkpoint 3 is FEX itself reporting what the JIT is doing, and it is the one
 that matters. Checkpoint 2 is absent unless you rebuilt `libntdll_unix.a`.

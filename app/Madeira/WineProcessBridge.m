@@ -221,8 +221,24 @@ static int madeira_tso_from_file(const char *docs_dir, const char *exe_base, cha
 static void madeira_apply_tso_profile(const char *madeira_exe) {
     const char *exe_base = madeira_exe_basename(madeira_exe);
     char source[160];
+    int mode = -1;
 
-    int mode = madeira_tso_from_file(getenv("MADEIRA_DOCS_DIR"), exe_base, source, sizeof(source));
+    /* Settings toggle (ContentView.swift) beats everything else: it is the
+     * most explicit, most recent action a person can take, one tap away and
+     * with no file to remember. It sets this ONLY when ON and unsets it when
+     * OFF, so leaving the switch off falls through to the file/table below
+     * exactly as if the switch didn't exist -- an existing per-title table
+     * entry or a madeira-tso.txt override still works for anyone who prefers
+     * that. */
+    const char *ui_override = getenv("MADEIRA_TSO_UI_OVERRIDE");
+    if (ui_override && !strcasecmp(ui_override, "relaxed")) {
+        mode = MADEIRA_TSO_RELAXED;
+        snprintf(source, sizeof(source), "Settings toggle");
+    }
+
+    if (mode < 0) {
+        mode = madeira_tso_from_file(getenv("MADEIRA_DOCS_DIR"), exe_base, source, sizeof(source));
+    }
     if (mode < 0) {
         mode = MADEIRA_TSO_STRICT;
         snprintf(source, sizeof(source), "built-in default");
