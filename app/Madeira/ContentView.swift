@@ -2536,6 +2536,10 @@ enum ControlAction: Codable, Equatable, Hashable {
     case joystickArrows      // renders as a stick, posts the arrow keys
     case keyboardToggle      // raises the iOS keyboard, as in portrait
     case pad(String)         // ml645: Xbox button. NOT WIRED — see the panel.
+    /// ml792: a resizable rectangle that steers the camera. Dragging inside it
+    /// posts RELATIVE mouse motion — the view turns by as far as the finger
+    /// travelled, the way a mobile FPS look zone does — and never a click.
+    case mouseLook
 
     /// The four keys a stick drives, up/right/down/left. nil for non-sticks.
     var stickKeys: [Int32]? {
@@ -2546,6 +2550,7 @@ enum ControlAction: Codable, Equatable, Hashable {
         }
     }
     var isPad: Bool { if case .pad = self { return true }; return false }
+    var isLookArea: Bool { if case .mouseLook = self { return true }; return false }
 
     var label: String {
         switch self {
@@ -2556,6 +2561,7 @@ enum ControlAction: Codable, Equatable, Hashable {
         case .joystickWASD:    return "WASD"
         case .joystickArrows:  return "↕"
         case .pad(let n):      return n
+        case .mouseLook:       return "Look"
         case .key(let vk):     return ControlAction.keyLabel(vk)
         }
     }
@@ -2594,6 +2600,48 @@ struct TouchControl: Codable, Identifiable, Equatable {
     var ny: Double = 0.5
     var scale: Double = 1.0
     var action: ControlAction = .mouseLeft   // usable the moment it is created
+
+    // ---- ml792: .mouseLook extras --------------------------------------
+    //
+    // Every one of these is an Optional, and that is load-bearing rather than
+    // stylistic: the synthesized Codable initialiser only tolerates a MISSING
+    // key for an Optional property — a non-optional with a default value still
+    // throws keyNotFound — so declaring them plainly would make every layout
+    // saved before look areas existed fail to decode, silently wiping the
+    // user's controls on update.
+
+    /// Box size, normalised to the screen exactly like nx/ny, for the same
+    /// reason: a layout in points scatters the first time the device rotates.
+    /// nil = the default box.
+    var bw: Double? = nil
+    var bh: Double? = nil
+    /// Mouse counts per point of finger travel. nil = follow the global
+    /// InputSettings.sensRel, so the one calibration the user has already done
+    /// still applies to an area nobody has tuned by hand.
+    var lookSens: Double? = nil
+    /// Draw a faint border while playing. nil/false = invisible, as in the
+    /// mobile games this imitates.
+    var lookOutline: Bool? = nil
+
+    /// Two thirds of the screen height and a bit under half its width — a
+    /// right-thumb aim zone, the shape these controls have in every mobile
+    /// shooter. Deliberately NOT full-screen: empty space outside the box
+    /// keeps its existing click-through behaviour.
+    static let defaultBoxW = 0.46
+    static let defaultBoxH = 0.66
+    static let minBox = 0.10
+
+    var boxW: Double { bw ?? Self.defaultBoxW }
+    var boxH: Double { bh ?? Self.defaultBoxH }
+
+    /// The look box in the coordinates of a screen of this size.
+    func boxRect(in screen: CGSize) -> CGRect {
+        let w = CGFloat(boxW) * screen.width
+        let h = CGFloat(boxH) * screen.height
+        return CGRect(x: CGFloat(nx) * screen.width - w / 2,
+                      y: CGFloat(ny) * screen.height - h / 2,
+                      width: w, height: h)
+    }
 }
 
 final class TouchControlsModel: ObservableObject {
@@ -2653,12 +2701,31 @@ final class TouchControlsModel: ObservableObject {
                   width: barW + 20, height: 68).contains(p) { return true }
         guard visible else { return false }
         for c in controls {
+            // ml792: a look area is a RECTANGLE, and it has to claim its entire
+            // interior — that is the whole point of it. Everything it swallows
+            // stops reaching MetalBackedView, which is exactly what keeps an aim
+            // drag from left-clicking the game underneath.
+            if c.action.isLookArea {
+                if c.boxRect(in: bounds.size).contains(p) { return true }
+                continue
+            }
             let r = Self.baseDiameter * CGFloat(c.scale) / 2
             let cx = CGFloat(c.nx) * bounds.width
             let cy = CGFloat(c.ny) * bounds.height
             if hypot(p.x - cx, p.y - cy) <= r { return true }
         }
         return false
+    }
+
+    /// ml792: keep a look box's centre somewhere the whole box still fits on
+    /// screen. Sizes are fractions of the screen, so this needs no screen size
+    /// and stays correct across a rotation. A box exactly as wide as the screen
+    /// pins to the middle, which is the only place it can be.
+    func clampLookCentre(at i: Int) {
+        guard controls.indices.contains(i), controls[i].action.isLookArea else { return }
+        let hw = controls[i].boxW / 2, hh = controls[i].boxH / 2
+        controls[i].nx = min(max(controls[i].nx, min(hw, 0.5)), max(1 - hw, 0.5))
+        controls[i].ny = min(max(controls[i].ny, min(hh, 0.5)), max(1 - hh, 0.5))
     }
 }
 
@@ -2713,6 +2780,7 @@ enum TouchControlsHost {
 struct TouchControlsOverlay: View {
     @ObservedObject private var m = TouchControlsModel.shared
     @State private var pinchBase: Double?
+    @State private var pinchBoxBase: CGSize?     // ml792: look boxes scale in 2D
 
     var body: some View {
         GeometryReader { geo in
@@ -2721,7 +2789,16 @@ struct TouchControlsOverlay: View {
             ZStack(alignment: .top) {
                 if landscape {
                     if m.visible || m.editing {
-                        ForEach(m.controls) { c in
+                        // ml792: look areas FIRST, so every button and stick
+                        // draws over them. SwiftUI routes a touch to the
+                        // topmost view that wants it, so a fire button placed
+                        // inside the aim zone keeps working — but only while
+                        // the zone is behind it, whatever order the layout
+                        // happened to be built in.
+                        ForEach(m.controls.filter { $0.action.isLookArea }) { c in
+                            TouchLookArea(control: c, screen: geo.size)
+                        }
+                        ForEach(m.controls.filter { !$0.action.isLookArea }) { c in
                             TouchControlButton(control: c, screen: geo.size)
                         }
                     }
@@ -2733,7 +2810,12 @@ struct TouchControlsOverlay: View {
             }
             .frame(width: geo.size.width, height: geo.size.height, alignment: .top)
             .contentShape(Rectangle())
-            .gesture(scalePinch)
+            // ml792: arm the pinch in EDIT MODE ONLY. It could never do
+            // anything while playing (the handler bails unless editing), but an
+            // armed MagnificationGesture spanning the whole overlay is still a
+            // second claimant on every touch — and an aim drag plus a thumb on
+            // the fire button is precisely the two-finger shape it waits for.
+            .gesture(scalePinch, including: m.editing ? .all : .subviews)
         }
         .ignoresSafeArea()
     }
@@ -2767,10 +2849,22 @@ struct TouchControlsOverlay: View {
         MagnificationGesture()
             .onChanged { v in
                 guard m.editing, let i = m.index(of: m.selected) else { return }
+                // ml792: `scale` means nothing to a look box — it has two
+                // extents. Pinch grows both in proportion; the corner handle is
+                // what changes the aspect ratio.
+                if m.controls[i].action.isLookArea {
+                    let b = pinchBoxBase ?? CGSize(width: m.controls[i].boxW,
+                                                   height: m.controls[i].boxH)
+                    if pinchBoxBase == nil { pinchBoxBase = b }
+                    m.controls[i].bw = min(max(Double(b.width) * Double(v), TouchControl.minBox), 1.0)
+                    m.controls[i].bh = min(max(Double(b.height) * Double(v), TouchControl.minBox), 1.0)
+                    m.clampLookCentre(at: i)
+                    return
+                }
                 if pinchBase == nil { pinchBase = m.controls[i].scale }
                 m.controls[i].scale = min(max((pinchBase ?? 1) * Double(v), 0.5), 3.0)
             }
-            .onEnded { _ in pinchBase = nil }
+            .onEnded { _ in pinchBase = nil; pinchBoxBase = nil }
     }
 
     private func glassButton(_ system: String, dim: Bool = false,
@@ -2802,6 +2896,211 @@ struct GlassShape: View {
             if circle { Circle().fill(.ultraThinMaterial) }
             else { RoundedRectangle(cornerRadius: 18).fill(.ultraThinMaterial) }
         }
+    }
+}
+
+/// ml792 — the mouse-look box.
+///
+/// A resizable region that steers the camera instead of clicking through to the
+/// game: put a finger down anywhere inside it and the view turns by as far as
+/// the finger travels, which is how aiming works in every mobile shooter. It is
+/// drawn behind all the other controls (see TouchControlsOverlay), so a fire
+/// button can sit on top of the aim zone the way it does on a phone.
+///
+/// Never synthesises a click. An aim adjustment must not fire the weapon — the
+/// same conclusion ml643 reached for the trackpad's tap-to-click in relative
+/// mode. Left and right click stay on their own buttons.
+struct TouchLookArea: View {
+    let control: TouchControl
+    let screen: CGSize
+    @ObservedObject private var m = TouchControlsModel.shared
+    @ObservedObject private var input = InputSettings.shared
+
+    // DragGesture reports translation cumulatively from the touch-down, so the
+    // per-event delta is the difference from the previous report.
+    @State private var lastTranslation: CGSize = .zero
+    // ml641's fractional carry, here for exactly the reason it exists there: the
+    // integer handed to wine loses a fraction on every event, and at low
+    // sensitivity that truncation is the entire signal.
+    @State private var carryX: CGFloat = 0
+    @State private var carryY: CGFloat = 0
+    @State private var looking = false
+    @State private var dragBase: CGPoint?        // edit mode: move
+    @State private var sizeBase: CGSize?         // edit mode: corner resize
+
+    private let F_MOVE: UInt32 = 0x1
+
+    private var w: CGFloat { CGFloat(control.boxW) * screen.width }
+    private var h: CGFloat { CGFloat(control.boxH) * screen.height }
+    private var isSelected: Bool { m.editing && m.selected == control.id }
+    private var sens: CGFloat { CGFloat(control.lookSens ?? input.sensRel) }
+    private var showsEdge: Bool { m.editing || (control.lookOutline ?? false) }
+    private var edgeOpacity: Double {
+        if isSelected { return 0.95 }
+        if m.editing   { return 0.45 }
+        return looking ? 0.32 : 0.16
+    }
+
+    var body: some View {
+        ZStack {
+            // Invisible while playing unless the user asked for a border: this
+            // sits over the game, and an aim zone you can see is an aim zone in
+            // the way. Edit mode tints it so there is something to grab.
+            Color.white.opacity(m.editing ? 0.06 : 0.0)
+            if showsEdge {
+                RoundedRectangle(cornerRadius: 14)
+                    .strokeBorder(Color.white.opacity(edgeOpacity),
+                                  style: StrokeStyle(lineWidth: isSelected ? 2 : 1,
+                                                     dash: m.editing ? [6, 5] : []))
+            }
+            if m.editing { badge }
+        }
+        .frame(width: w, height: h)
+        // An empty rectangle takes no touches at all without this, and taking
+        // every touch inside itself is the box's entire job.
+        .contentShape(Rectangle())
+        .animation(.easeOut(duration: 0.12), value: looking)
+        .overlay(alignment: .topTrailing) { if isSelected { deleteButton } }
+        .overlay(alignment: .bottomTrailing) { if isSelected { resizeHandle } }
+        .position(x: CGFloat(control.nx) * screen.width,
+                  y: CGFloat(control.ny) * screen.height)
+        .gesture(bodyDrag)
+        // Tapping "done" mid-drag ends edit mode without ending the gesture, and
+        // a stranded sizeBase would then block moving the box for good.
+        .onChange(of: m.editing) { _, _ in dragBase = nil; sizeBase = nil }
+    }
+
+    /// Only in edit mode — it says what this otherwise invisible rectangle is.
+    private var badge: some View {
+        VStack(spacing: 3) {
+            Image(systemName: "eye")                      // stroke, not filled
+                .font(.system(size: max(9, min(28, min(w, h) * 0.18)), weight: .regular))
+            Text("Look")
+                .font(.system(size: max(8, min(13, min(w, h) * 0.11)), weight: .medium))
+        }
+        .foregroundStyle(.white.opacity(0.5))
+    }
+
+    /// Inside the corner, not outside it like the round controls' delete: a box
+    /// can be clamped flush against the screen edge, where an outward offset
+    /// would put the button half off the display.
+    private var deleteButton: some View {
+        Button {
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            m.controls.removeAll { $0.id == control.id }
+            m.selected = nil
+        } label: {
+            Image(systemName: "xmark")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 22, height: 22)
+                .background(Circle().fill(.red.opacity(0.85)))
+        }
+        .buttonStyle(.plain)
+        .offset(x: -6, y: 6)
+    }
+
+    /// Corner grip — independent width and height, which a pinch cannot give.
+    ///
+    /// The centre stays put while the box resizes, so each half-extent grows by
+    /// only half of the finger's travel. Pass 2x through and the corner tracks
+    /// the finger exactly instead of trailing at half speed.
+    private var resizeHandle: some View {
+        Image(systemName: "arrow.up.left.and.arrow.down.right")
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(.white.opacity(0.9))
+            .frame(width: 30, height: 30)
+            .background(Circle().fill(.white.opacity(0.22)))
+            .overlay(Circle().stroke(.white.opacity(0.5), lineWidth: 1))
+            .offset(x: -6, y: -6)
+            // A gesture on a SUBVIEW outranks one attached to its container, so
+            // this beats bodyDrag for touches on the grip. The sizeBase/dragBase
+            // cross-guards make that belt and braces: whichever drag starts
+            // first owns the box until it ends.
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { v in
+                        guard screen.width > 0, screen.height > 0, dragBase == nil,
+                              let i = m.index(of: control.id) else { return }
+                        let b = sizeBase ?? CGSize(width: control.boxW, height: control.boxH)
+                        if sizeBase == nil { sizeBase = b }
+                        m.controls[i].bw = min(max(Double(b.width)
+                            + 2 * Double(v.translation.width / screen.width),
+                            TouchControl.minBox), 1.0)
+                        m.controls[i].bh = min(max(Double(b.height)
+                            + 2 * Double(v.translation.height / screen.height),
+                            TouchControl.minBox), 1.0)
+                        m.clampLookCentre(at: i)
+                    }
+                    .onEnded { _ in sizeBase = nil }
+            )
+    }
+
+    private var bodyDrag: some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { v in
+                guard screen.width > 0, screen.height > 0 else { return }
+                if m.editing {
+                    m.selected = control.id
+                    guard sizeBase == nil, let i = m.index(of: control.id) else { return }
+                    if dragBase == nil { dragBase = CGPoint(x: control.nx, y: control.ny) }
+                    let b = dragBase ?? CGPoint(x: 0.5, y: 0.5)
+                    m.controls[i].nx = b.x + Double(v.translation.width  / screen.width)
+                    m.controls[i].ny = b.y + Double(v.translation.height / screen.height)
+                    m.clampLookCentre(at: i)        // clamps, so no 0.03/0.97 fudge
+                    return
+                }
+                look(v.translation)
+            }
+            .onEnded { _ in
+                dragBase = nil
+                // ml641: never carry motion across a lift, and never let the
+                // next touch-down be read as a jump from the last one's travel.
+                lastTranslation = .zero
+                carryX = 0
+                carryY = 0
+                looking = false
+            }
+    }
+
+    /// The aim itself: post the change since the last report as RELATIVE mouse
+    /// motion.
+    ///
+    /// Relative rather than absolute is the whole feature. The trackpad path
+    /// posts a POSITION and lets wine derive the delta by subtracting its own
+    /// cursor, which collapses as soon as a game calls ClipCursor: wine pins its
+    /// cursor inside that rect while ours keeps wandering, so the difference
+    /// never converges and the camera spins on its own. ml641 documents the same
+    /// trap at length in MetalBackedView.touchesMoved. MOUSEEVENTF_MOVE *without*
+    /// ABSOLUTE hands wine the delta directly (it computes cursor + dx), so the
+    /// view turns by exactly as far as the finger moved no matter what the game
+    /// has done to the cursor.
+    ///
+    /// Sign is a mouse's, same as ml641 chose: drag right, the view turns right,
+    /// and a target to the right of the crosshair is pulled onto it.
+    private func look(_ t: CGSize) {
+        // First report of a drag: anchor here and post nothing. With
+        // minimumDistance 0 that report arrives at touch-DOWN carrying a zero
+        // translation, so no motion is lost — and anchoring rather than
+        // differencing means a drag whose onEnded never arrived cannot make the
+        // next touch-down snap the camera by the whole of the old drag's travel.
+        if !looking {
+            looking = true
+            lastTranslation = t
+            carryX = 0
+            carryY = 0
+            return
+        }
+        let dx = t.width  - lastTranslation.width
+        let dy = t.height - lastTranslation.height
+        lastTranslation = t
+        carryX += dx * sens
+        carryY += dy * sens
+        let ix = Int32(max(-30000, min(30000, carryX)))
+        let iy = Int32(max(-30000, min(30000, carryY)))
+        carryX -= CGFloat(ix)
+        carryY -= CGFloat(iy)
+        if ix != 0 || iy != 0 { winios_pointer(ix, iy, F_MOVE, 0) }
     }
 }
 
@@ -2942,8 +3241,8 @@ struct TouchControlButton: View {
             winios_pointer(0, 0, down ? 0x0008 : 0x0010, 0)   // RIGHTDOWN / RIGHTUP
         case .keyboardToggle:
             if down { MetalBackedView.toggleKeyboard() }
-        case .none, .joystickWASD, .joystickArrows:
-            break                                              // sticks drive themselves
+        case .none, .joystickWASD, .joystickArrows, .mouseLook:
+            break                        // sticks and look boxes drive themselves
         case .pad:
             break     // ml645: no XInput yet — deliberately inert, and labelled so
         }
@@ -2955,6 +3254,7 @@ struct MappingPanel: View {
     let control: TouchControl
     let screen: CGSize
     @ObservedObject private var m = TouchControlsModel.shared
+    @ObservedObject private var input = InputSettings.shared   // ml792 sens default
     @State private var tab = 0                    // 0 keyboard, 1 controller
 
 
@@ -2993,7 +3293,17 @@ struct MappingPanel: View {
     private var layout: Placement {
         let cx = CGFloat(control.nx) * screen.width
         let cy = CGFloat(control.ny) * screen.height
-        let r  = TouchControlsModel.baseDiameter * CGFloat(control.scale) / 2
+        // ml792: a look box is not round, so it needs its own two half-extents.
+        // With a single radius the panel would happily sit on top of a box that
+        // is wide and short, or miss a tall narrow one by a mile.
+        let rx: CGFloat, ry: CGFloat
+        if control.action.isLookArea {
+            rx = CGFloat(control.boxW) * screen.width  / 2
+            ry = CGFloat(control.boxH) * screen.height / 2
+        } else {
+            let r = TouchControlsModel.baseDiameter * CGFloat(control.scale) / 2
+            rx = r; ry = r
+        }
         let gap: CGFloat = 14, edge: CGFloat = 8
 
         for size in [CGSize(width: 340, height: 236),
@@ -3001,17 +3311,17 @@ struct MappingPanel: View {
                      CGSize(width: 264, height: 164)] {
             let clampX = min(max(cx, size.width  / 2 + edge), screen.width  - size.width  / 2 - edge)
             let clampY = min(max(cy, size.height / 2 + edge), screen.height - size.height / 2 - edge)
-            if cy + r + gap + size.height <= screen.height - edge {
-                return Placement(center: CGPoint(x: clampX, y: cy + r + gap + size.height / 2), size: size)
+            if cy + ry + gap + size.height <= screen.height - edge {
+                return Placement(center: CGPoint(x: clampX, y: cy + ry + gap + size.height / 2), size: size)
             }
-            if cy - r - gap - size.height >= edge {
-                return Placement(center: CGPoint(x: clampX, y: cy - r - gap - size.height / 2), size: size)
+            if cy - ry - gap - size.height >= edge {
+                return Placement(center: CGPoint(x: clampX, y: cy - ry - gap - size.height / 2), size: size)
             }
-            if cx + r + gap + size.width <= screen.width - edge {
-                return Placement(center: CGPoint(x: cx + r + gap + size.width / 2, y: clampY), size: size)
+            if cx + rx + gap + size.width <= screen.width - edge {
+                return Placement(center: CGPoint(x: cx + rx + gap + size.width / 2, y: clampY), size: size)
             }
-            if cx - r - gap - size.width >= edge {
-                return Placement(center: CGPoint(x: cx - r - gap - size.width / 2, y: clampY), size: size)
+            if cx - rx - gap - size.width >= edge {
+                return Placement(center: CGPoint(x: cx - rx - gap - size.width / 2, y: clampY), size: size)
             }
         }
         // Nothing fits alongside — smallest panel, corner furthest from the
@@ -3053,9 +3363,11 @@ struct MappingPanel: View {
 
     private var keyboardTab: some View {
         VStack(alignment: .leading, spacing: 12) {
+            if control.action.isLookArea { lookSection }
             section("Pointer, sticks & special", [
                 ("L click", .mouseLeft), ("R click", .mouseRight),
                 ("WASD", .joystickWASD), ("Arrows", .joystickArrows),
+                ("Look box", .mouseLook),
                 ("Keyboard", .keyboardToggle), ("None", .none),
             ])
             section("Letters", letters)
@@ -3100,6 +3412,61 @@ struct MappingPanel: View {
         }
     }
 
+    /// ml792 — the two things about a look box that cannot be guessed for the
+    /// user: how far the camera turns per point of finger travel (that depends
+    /// on the GAME's own sensitivity and FOV, which we cannot see), and whether
+    /// the region is drawn while playing.
+    ///
+    /// It has to live HERE rather than in the portrait pointer row, because the
+    /// row is part of the portrait tooling layout — unreachable in the landscape
+    /// orientation where these controls exist at all, and therefore unreachable
+    /// while a game is running.
+    private var lookSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("LOOK AREA")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.45))
+            HStack(spacing: 8) {
+                Text("Sens")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.white.opacity(0.8))
+                Slider(value: lookSensBinding, in: 0.10...8.0)
+                Text(String(format: "%.2f", control.lookSens ?? input.sensRel))
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.8))
+                    .frame(width: 34, alignment: .trailing)
+            }
+            Toggle(isOn: lookOutlineBinding) {
+                Text("Show border while playing")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.white.opacity(0.8))
+            }
+            Text("Drag inside the box to aim — it never clicks. Drag the corner "
+                 + "grip to resize it, or pinch to scale both sides.")
+                .font(.system(size: 10))
+                .foregroundStyle(.white.opacity(0.45))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// nil means "follow the global relative sensitivity", so the slider shows
+    /// that value until the user moves it and pins one to this area.
+    private var lookSensBinding: Binding<Double> {
+        Binding(get: { control.lookSens ?? input.sensRel },
+                set: { v in
+                    guard let i = m.index(of: control.id) else { return }
+                    m.controls[i].lookSens = v
+                })
+    }
+
+    private var lookOutlineBinding: Binding<Bool> {
+        Binding(get: { control.lookOutline ?? false },
+                set: { v in
+                    guard let i = m.index(of: control.id) else { return }
+                    m.controls[i].lookOutline = v
+                })
+    }
+
     private func section(_ title: String, _ items: [(String, ControlAction)]) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title)
@@ -3117,7 +3484,13 @@ struct MappingPanel: View {
         let on = control.action == action
         return Button {
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
-            if let i = m.index(of: control.id) { m.controls[i].action = action }
+            if let i = m.index(of: control.id) {
+                m.controls[i].action = action
+                // ml792: a look box is sized in fractions of the SCREEN, so a
+                // centre that was fine for a 64pt button can put most of the box
+                // off the display. Pull it in the moment it becomes one.
+                if action.isLookArea { m.clampLookCentre(at: i) }
+            }
         } label: {
             Text(label)
                 .font(.system(size: 12, weight: .medium))
