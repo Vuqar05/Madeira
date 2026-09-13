@@ -20,6 +20,8 @@
 #include <sys/stat.h>
 #include <limits.h>
 #include <string.h>
+#include <strings.h>
+#include <stdio.h>
 
 #include "WineProcessBridge.h"
 #include "WineServerBridge.h"
@@ -42,6 +44,217 @@ static os_log_t wine_proc_log(void) {
 }
 
 #define LOG(fmt, ...) os_log(wine_proc_log(), "[WineProc] " fmt, ##__VA_ARGS__)
+
+/* ---- FEX relaxed-TSO profile, per title, default OFF --------------------
+ *
+ * iOS does not expose the ACTLR_EL1 hardware-TSO bit to apps, so
+ * FEX::Windows::UnixLib::TryEnableHardwareTSO() returns false unconditionally
+ * under FEX_IOS_HOST and FEX falls back to emulating x86's memory ordering in
+ * software. That emulation is not free, and Madeira is CPU-bound rather than
+ * GPU-bound on the titles that matter, so it is worth being able to ask -- per
+ * title, and only per title -- what the ordering actually costs.
+ *
+ * FEX ALREADY OWNS THE KNOB; nothing in FEX changes for this.
+ * FEXCore/Source/Interface/Config/Config.json.in defines "TSOEnabled"
+ * (default true). ARM64EC ProcessInit calls
+ *   FEX::Config::LoadConfig(ExecutableName, _environ, ...)
+ *     -> FEX::Config::CreateEnvironmentLayer(_environ)   (Source/Common/Config.cpp)
+ * which reads the option from the environment variable FEX_TSOENABLED, and
+ * ContextImpl's constructor calls UpdateAtomicTSOEmulationConfig() so the
+ * value is live before the first block is compiled. The shipped
+ * arm64ec-windows/xtajit64.dll already contains both the "FEX_TSOENABLED"
+ * lookup string and the report line
+ *   "FEX: TSO config tso={} halfbar={} vector={} memcpyset={} rev=ml513"
+ * (Source/Windows/Common/TSOHandlerConfig.h), so this needs an app rebuild
+ * only -- no FEX rebuild, and no new DLL to commit.
+ *
+ * WHAT TSOEnabled=0 ACTUALLY RELAXES, precisely:
+ *   - ORDINARY loads and stores lose their ordering. FEX stops selecting the
+ *     TSO IR ops, so DEF_OP(LoadMemTSO)/DEF_OP(StoreMemTSO) in
+ *     FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp are not reached and the
+ *     plain ldr/str forms are emitted instead of ldapur/ldapr/ldar and
+ *     stlur/stlr.
+ *   - LOCK-PREFIXED INSTRUCTIONS ARE NOT AFFECTED. They lower to the
+ *     AtomicFetchAdd family and the CAS IR ops, and JIT/AtomicOps.cpp emits
+ *     ldaddal (or ldaxr/stlxr without LSE) unconditionally -- there is no TSO
+ *     config gate on that path at all. So a guest's explicit interlocked
+ *     operations keep their acquire-release semantics either way.
+ * The exposure is therefore ordering BETWEEN ordinary accesses, which is
+ * exactly the x86 guarantee a hand-rolled lock-free algorithm leans on. FEX's
+ * own description of the option is "Highly likely to break any multithreaded
+ * application if disabled", and a TSO violation typically shows up as rare
+ * silent corruption rather than a prompt crash.
+ *
+ * Hence STRICT for every title until an on-device A/B has shown BOTH a
+ * frame-time win AND a clean extended play session. Nothing here has been
+ * measured or validated on device.
+ */
+enum { MADEIRA_TSO_STRICT = 0, MADEIRA_TSO_RELAXED = 1 };
+
+/* Per-title defaults. Every entry is STRICT on purpose: the table exists so
+ * that opting one title in is a one-word diff with a visible owner, not so
+ * that titles arrive opted in. */
+static const struct { const char *exe; int mode; } madeira_tso_builtin[] = {
+    { "Lethal Company.exe", MADEIRA_TSO_STRICT },
+    { "THUMPER_win10.exe",  MADEIRA_TSO_STRICT },
+    { "ULTRAKILL.exe",      MADEIRA_TSO_STRICT },
+};
+
+static const char *madeira_tso_mode_name(int mode) {
+    return mode == MADEIRA_TSO_RELAXED ? "relaxed" : "strict";
+}
+
+static const char *madeira_exe_basename(const char *path) {
+    const char *base = path;
+    for (const char *p = path; *p; p++) {
+        if (*p == '\\' || *p == '/') base = p + 1;
+    }
+    return base;
+}
+
+static char *madeira_tso_trim(char *s) {
+    while (*s == ' ' || *s == '\t' || *s == '\r' || *s == '\n') s++;
+    char *end = s + strlen(s);
+    while (end > s && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r' || end[-1] == '\n')) end--;
+    *end = '\0';
+    return s;
+}
+
+/* Returns MADEIRA_TSO_*, or -1 when the token is not a mode word at all --
+ * a typo is reported rather than silently meaning "strict". */
+static int madeira_tso_parse_mode(const char *tok) {
+    if (!strcasecmp(tok, "relaxed") || !strcasecmp(tok, "on") ||
+        !strcasecmp(tok, "1") || !strcasecmp(tok, "true")) {
+        return MADEIRA_TSO_RELAXED;
+    }
+    if (!strcasecmp(tok, "strict") || !strcasecmp(tok, "off") ||
+        !strcasecmp(tok, "0") || !strcasecmp(tok, "false")) {
+        return MADEIRA_TSO_STRICT;
+    }
+    return -1;
+}
+
+/* Documents/madeira-tso.txt -- the same no-rebuild override idea as
+ * madeira-args.txt, which matters more than usual here: a free provisioning
+ * profile expires weekly, an A/B needs many alternations, and a rebuild
+ * between arms changes more than the one variable under test.
+ *
+ * One directive per line; '#' begins a comment:
+ *
+ *     # everything not named below
+ *     default = strict
+ *     Lethal Company.exe = relaxed
+ *
+ * A line with no '=' is taken as the default mode, so a file containing the
+ * single word `relaxed` also works. An entry whose key matches the exe's
+ * basename (case-insensitively) beats `default`.
+ *
+ * Returns the resolved mode, or -1 when the file is absent, unreadable or
+ * says nothing applicable -- the caller then falls back to the built-in
+ * table. `src_out` receives a short human-readable provenance string. */
+static int madeira_tso_from_file(const char *docs_dir, const char *exe_base, char *src_out, size_t src_len) {
+    if (!docs_dir || !*docs_dir) {
+        return -1;
+    }
+
+    char path[PATH_MAX];
+    int n = snprintf(path, sizeof(path), "%s/madeira-tso.txt", docs_dir);
+    if (n < 0 || (size_t)n >= sizeof(path)) {
+        return -1;
+    }
+
+    FILE *f = fopen(path, "r");
+    if (!f) {
+        return -1;
+    }
+
+    int resolved = -1;         /* best match so far */
+    int matched_exe = 0;       /* an exe-specific line already won */
+    int bad_lines = 0;
+    char line[512];
+
+    while (fgets(line, sizeof(line), f)) {
+        char *hash = strchr(line, '#');
+        if (hash) *hash = '\0';
+
+        char *text = madeira_tso_trim(line);
+        if (!*text) continue;
+
+        char *eq = strchr(text, '=');
+        char *key, *val;
+        if (eq) {
+            *eq = '\0';
+            key = madeira_tso_trim(text);
+            val = madeira_tso_trim(eq + 1);
+        } else {
+            key = (char *)"default";
+            val = text;
+        }
+
+        int mode = madeira_tso_parse_mode(val);
+        if (mode < 0) {
+            bad_lines++;
+            continue;
+        }
+
+        if (!strcasecmp(key, exe_base)) {
+            resolved = mode;
+            matched_exe = 1;                 /* exact title wins outright */
+        } else if (!strcasecmp(key, "default") && !matched_exe) {
+            resolved = mode;
+        }
+    }
+    fclose(f);
+
+    if (resolved < 0) {
+        return -1;
+    }
+    snprintf(src_out, src_len, "madeira-tso.txt (%s%s)",
+             matched_exe ? "per-title entry" : "default entry",
+             bad_lines ? ", unparsed lines ignored" : "");
+    return resolved;
+}
+
+/* Decide this launch's TSO mode and publish it to FEX. Must run before Wine
+ * starts, because get_initial_environment() snapshots the unix environment
+ * into the Windows one exactly once (build/ntdll-unix/env_ios.c). */
+static void madeira_apply_tso_profile(const char *madeira_exe) {
+    const char *exe_base = madeira_exe_basename(madeira_exe);
+    char source[160];
+
+    int mode = madeira_tso_from_file(getenv("MADEIRA_DOCS_DIR"), exe_base, source, sizeof(source));
+    if (mode < 0) {
+        mode = MADEIRA_TSO_STRICT;
+        snprintf(source, sizeof(source), "built-in default");
+        for (size_t i = 0; i < sizeof(madeira_tso_builtin) / sizeof(madeira_tso_builtin[0]); i++) {
+            if (!strcasecmp(exe_base, madeira_tso_builtin[i].exe)) {
+                mode = madeira_tso_builtin[i].mode;
+                snprintf(source, sizeof(source), "built-in table");
+                break;
+            }
+        }
+    }
+
+    const char *value = (mode == MADEIRA_TSO_RELAXED) ? "0" : "1";
+
+    /* overwrite=1, and BOTH arms written explicitly, on purpose: this app
+     * reuses one host process across launches, so a value left behind by an
+     * earlier run must not decide this one. "strict" is an assignment here,
+     * never an absence. (Same trap the FEX_O0 unsetenv in ContentView.swift
+     * was added for.) */
+    setenv("FEX_TSOENABLED", value, 1);
+
+    LOG("[tso] %{public}s -> %{public}s (FEX_TSOENABLED=%{public}s, from %{public}s)",
+        exe_base, madeira_tso_mode_name(mode), value, source);
+    dprintf(STDERR_FILENO, "[tso] %s -> %s (FEX_TSOENABLED=%s, from %s)\n",
+            exe_base, madeira_tso_mode_name(mode), value, source);
+    if (mode == MADEIRA_TSO_RELAXED) {
+        dprintf(STDERR_FILENO,
+                "[tso] RELAXED ordering is an UNVALIDATED experiment: ordinary guest "
+                "loads/stores lose acquire/release. LOCK-prefixed atomics are unchanged. "
+                "Expect rare silent corruption rather than prompt crashes if it is wrong.\n");
+    }
+}
 
 /* ---- ml581: undo the hand-made AppData skeleton ------------------------
  *
@@ -618,6 +831,11 @@ static void *wine_process_thread(void *arg) {
         const char *bundle_subdir = use_arm64ec ? "arm64ec-windows" : "aarch64-windows";
         LOG("Target exe: %{public}s (bundle=%{public}s)", madeira_exe, bundle_subdir);
         dprintf(STDERR_FILENO, "[WineProc] Target exe: %s (bundle=%s)\n", madeira_exe, bundle_subdir);
+
+        /* Publish this launch's FEX TSO mode before Wine snapshots the
+         * environment. See madeira_apply_tso_profile() above; default is
+         * strict (full TSO emulation) for every title. */
+        madeira_apply_tso_profile(madeira_exe);
 
         // Ensure Wine prefix has system32 directory with DLLs from bundle
         {
