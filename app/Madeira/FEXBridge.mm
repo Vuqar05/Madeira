@@ -220,23 +220,19 @@ static bool g_exit_jmp_set = false;
 // ---------------------------------------------------------------------------
 class iOSSyscallHandler : public FEXCore::HLE::SyscallHandler {
 public:
-    iOSSyscallHandler() {
-        OSABI = FEXCore::HLE::SyscallOSABI::OS_LINUX64;
-    }
-
     static std::atomic<int> syscall_count;
 
-    uint64_t HandleSyscall(FEXCore::Core::CpuStateFrame *Frame, FEXCore::HLE::SyscallArguments *Args) override {
+    void HandleSyscall(FEXCore::Core::CpuStateFrame *Frame) override {
         syscall_count.fetch_add(1);
-        // Args[0] = RAX (syscall number), Args[1] = RDI, Args[2] = RSI, Args[3] = RDX, ...
-        uint64_t SyscallNum = Args->Argument[0];
+        // Raw guest GPRs, SysV syscall ABI: RAX=nr, RDI/RSI/RDX/R10/R8/R9=args.
+        auto &gregs = Frame->State.gregs;
+        uint64_t SyscallNum = gregs[FEXCore::X86State::REG_RAX];
 
         switch (SyscallNum) {
         case 1: { // sys_write(fd, buf, count)
-            // Args layout: [0]=RAX (syscall num), [1]=RDI (fd), [2]=RSI (buf), [3]=RDX (count)
-            int fd = static_cast<int>(Args->Argument[1]);
-            auto buf = reinterpret_cast<const char*>(Args->Argument[2]);
-            size_t count = Args->Argument[3];
+            int fd = static_cast<int>(gregs[FEXCore::X86State::REG_RDI]);
+            auto buf = reinterpret_cast<const char*>(gregs[FEXCore::X86State::REG_RSI]);
+            size_t count = gregs[FEXCore::X86State::REG_RDX];
 
             // NOTE: On non-Windows, syscall does NOT have FLAGS_BLOCK_END.
             // The JIT-compiled block continues past the syscall instruction.
@@ -245,15 +241,17 @@ public:
             if (fd == 1 || fd == 2) {
                 // stdout/stderr
                 fex_log("[x86 write fd=%d] %.*s", fd, (int)count, buf);
-                return count;
+                gregs[FEXCore::X86State::REG_RAX] = count;
+            } else {
+                gregs[FEXCore::X86State::REG_RAX] = static_cast<uint64_t>(-1); // EPERM
             }
-            return -1; // EPERM
+            break;
         }
         case 60: // sys_exit
         case 231: { // sys_exit_group
-            // Args layout: [0]=RAX (syscall num), [1]=RDI (arg0), [2]=RSI, ...
-            fex_log("[x86] exit(%llu) via syscall %llu", Args->Argument[1], SyscallNum);
-            g_exit_code = static_cast<int64_t>(Args->Argument[1]);
+            uint64_t ExitArg = gregs[FEXCore::X86State::REG_RDI];
+            fex_log("[x86] exit(%llu) via syscall %llu", ExitArg, SyscallNum);
+            g_exit_code = static_cast<int64_t>(ExitArg);
 
             if (g_exit_jmp_set) {
                 fex_log("[x86] Escaping via longjmp (exit code %lld)", g_exit_code);
@@ -265,13 +263,14 @@ public:
             fex_log("[x86] WARNING: longjmp not set, trying InterruptFaultPage fallback");
             auto *Thread = Frame->Thread;
             ::mprotect(&Thread->InterruptFaultPage, sizeof(Thread->InterruptFaultPage), PROT_NONE);
-            return 0;
+            break;
         }
         default:
             fex_log("[x86] Unhandled syscall %llu", SyscallNum);
             // Do NOT modify rip — syscall is non-block-ending on non-Windows,
             // so the JIT continues past it inline.
-            return -38; // ENOSYS
+            gregs[FEXCore::X86State::REG_RAX] = static_cast<uint64_t>(-38); // ENOSYS
+            break;
         }
     }
 
@@ -430,8 +429,7 @@ bool fex_initialize(void) {
     // Step 5: Create HostFeatures for Apple A15 (iPhone 13 Pro)
     fex_log("  Creating HostFeatures...");
     FEXCore::HostFeatures Features{};
-    Features.DCacheLineSize = 64;
-    Features.ICacheLineSize = 64;
+    Features.DCacheLineLog2 = 4; // DCacheSize() == 4 << DCacheLineLog2, so 4 -> 64 bytes.
     Features.SupportsCacheMaintenanceOps = true;
     Features.SupportsAES = true;
     Features.SupportsCRC = true;
@@ -668,7 +666,10 @@ int64_t fex_test_execute(void) {
     fex_log("Creating FEX thread (RIP=0x%llx, RSP=0x%llx)...",
             (unsigned long long)code_addr, (unsigned long long)stack_addr);
 
-    auto *Thread = g_ctx->CreateThread(code_addr, stack_addr);
+    FEXCore::Core::CPUState InitialState{};
+    InitialState.rip = code_addr;
+    InitialState.gregs[FEXCore::X86State::REG_RSP] = stack_addr;
+    auto *Thread = g_ctx->CreateThread(&InitialState);
     if (!Thread) {
         fex_log("FAIL: CreateThread returned null");
         for (int i = 0; i < num_mapped; i++) ::munmap(mapped_regions[i].addr, mapped_regions[i].size);
