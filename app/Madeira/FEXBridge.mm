@@ -22,6 +22,8 @@
 #include <FEXCore/Utils/DualMap.h>
 #include <FEXCore/Utils/LogManager.h>
 
+#import <Foundation/Foundation.h>
+
 #include <mach/mach.h>
 #include <mach/vm_map.h>
 #include <sys/mman.h>
@@ -418,6 +420,23 @@ bool fex_initialize(void) {
         // Set 64-bit mode - our x86 test code is x86-64
         FEXCore::Config::Set(FEXCore::Config::ConfigOption::CONFIG_IS64BIT_MODE, "1");
         fex_log("  Set IS64BIT_MODE = 1");
+
+        // Enable the persistent JIT disk cache (FEX-2609): compiled blocks survive
+        // across app launches instead of being re-JITted from scratch every time.
+        // Point it at Caches (not Documents/Application Support) since it's a purely
+        // regenerable cache: the OS is free to purge it under storage pressure and it
+        // isn't backed up to iCloud. DiskCachePath needs a trailing slash — DiskCache.cpp
+        // uses it as-is (BasePath + "RWCacheDB") when set, unlike its own generated
+        // default which appends the separator itself.
+        NSArray<NSString *> *CachePaths = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES);
+        if (CachePaths.count > 0) {
+            fextl::string DiskCacheDir = fextl::string(CachePaths.firstObject.UTF8String) + "/FEXDiskCache/";
+            FEXCore::Config::Set(FEXCore::Config::ConfigOption::CONFIG_DISKCACHE, "1");
+            FEXCore::Config::Set(FEXCore::Config::ConfigOption::CONFIG_DISKCACHEPATH, DiskCacheDir);
+            fex_log("  Enabled DiskCache at %s", DiskCacheDir.c_str());
+        } else {
+            fex_log("  WARNING: Could not resolve Caches directory, DiskCache left disabled");
+        }
     } catch (const std::exception& e) {
         fex_log("FAIL: Config::Initialize() threw exception: %s", e.what());
         return false;
