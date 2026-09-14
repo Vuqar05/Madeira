@@ -480,12 +480,22 @@ jobs:
       # so passing it here is safe.
       # ==============================================================
 
+      # Cache key must track the FEX submodule's actual checked-out commit,
+      # not a hand-typed SHA: a hardcoded key (e.g. "fex-053c385-...") keeps
+      # matching after the submodule is bumped, so actions/cache restores the
+      # OLD build and "Configure FEX"/"Build FEX" below get silently skipped
+      # forever — the app keeps linking whatever FEXCore last populated the
+      # cache, however stale, no matter what the submodule pointer says.
+      - name: FEX submodule SHA
+        id: fex_rev
+        run: echo "sha=$(git -C FEX rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
       - name: Cache FEX build
         id: fex
         uses: actions/cache@v4
         with:
           path: FEX/build-ios
-          key: fex-053c385-caspalstub-${{ env.CACHE_V }}
+          key: fex-${{ steps.fex_rev.outputs.sha }}-caspalstub-${{ env.CACHE_V }}
 
       # FEX fork bug: IosLogUnimplementedCASPAL (Arm64.cpp) sits OUTSIDE
       # every #ifdef FEX_IOS_HOST in that file, yet calls Win32 APIs —
