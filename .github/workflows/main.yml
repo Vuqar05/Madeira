@@ -156,6 +156,51 @@ jobs:
           "toolchains/$MINGW/bin/aarch64-w64-mingw32-clang" --version
 
       # ==============================================================
+      # Two pre-existing bugs in wine's madeira-lgpl branch break
+      # `configure` for every arch, before any real compilation starts.
+      # Both are fixed here, unconditionally, before either wine tree
+      # (build-macos below, build-sechost-* further down) is configured,
+      # since both read from this same submodule checkout.
+      #
+      # 1) commit d88d55eee004 added an
+      #    `#include "arm64ec_x64_export_iat.c"` in dlls/ntdll/loader.c
+      #    (and gated two arm64ec_redirect_ptr call sites behind a
+      #    helper only that missing file defines) without ever
+      #    committing the file. wine's makedep scans #include
+      #    directives as plain text, ignoring the surrounding
+      #    #ifdef __arm64ec__, so it fails for every arch:
+      #      loader.c:1342: error: arm64ec_x64_export_iat.c: No such file
+      #      config.status: error: could not create Makefile
+      #    Reverting that hunk (restoring the pre-9/23 redirect
+      #    behavior) is the safest fix without a spec for what the
+      #    missing file was meant to contain.
+      #
+      # 2) dlls/ntdll/unix/sync.c includes build/madeira_cfg.h BEFORE
+      #    config.h. wine's makedep requires config.h to be the first
+      #    include in a unix-lib source file and fails configure with
+      #    "config.h must be included before other headers" otherwise.
+      #    dlls/ntdll/unix/system.c makes the same madeira_cfg.h include
+      #    work correctly by placing it after config.h (and after wine's
+      #    own headers), and madeira_cfg.h is documented as
+      #    "header-only and dependency-free" (only libc headers), so
+      #    swapping the two lines in sync.c is safe and sufficient.
+      # ==============================================================
+
+      - name: Patch wine configure-breaking bugs (madeira-lgpl)
+        run: |
+          set -euxo pipefail
+          cd wine
+          if grep -q arm64ec_x64_export_iat dlls/ntdll/loader.c; then
+            git apply "$GITHUB_WORKSPACE/patches/wine-arm64ec-x64-export-iat-stub.patch"
+          fi
+          ! grep -q arm64ec_x64_export_iat dlls/ntdll/loader.c
+
+          if ! grep -q '^#include "config.h"' <(grep -m1 '^#include' dlls/ntdll/unix/sync.c); then
+            git apply "$GITHUB_WORKSPACE/patches/wine-ntdll-unix-sync-madeira-cfg-order.patch"
+          fi
+          grep -q '^#include "config.h"' <(grep -m1 '^#include' dlls/ntdll/unix/sync.c)
+
+      # ==============================================================
       # WINE
       #
       # This branch's wine submodule tracks the LGPL-relicensed
