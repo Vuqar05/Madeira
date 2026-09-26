@@ -1,0 +1,24 @@
+diff --git a/build/dxmt-ios/build.sh b/build/dxmt-ios/build.sh
+index 0bd4790..a8c090c 100755
+--- a/build/dxmt-ios/build.sh
++++ b/build/dxmt-ios/build.sh
+@@ -74,7 +74,10 @@ compile_objcxx_arc() {
+         echo "FAILED"; FAILED=$((FAILED+1)); FAILED_FILES="$FAILED_FILES $name"
+     fi
+ }
++# deps.sh calls `exit 1` when the package is absent, which would end THIS script
++# if sourced directly; probe it in a subshell first.
+ if [[ -f "$BUILD_DIR/../madeira-d3d12/deps.sh" ]] && \
++   ( source "$BUILD_DIR/../madeira-d3d12/deps.sh" ) >/dev/null 2>&1 && \
+    source "$BUILD_DIR/../madeira-d3d12/deps.sh" 2>/dev/null; then
+     echo "=== madeira-d3d12 canary (Objective-C++, Metal Shader Converter) ==="
+     compile_objcxx_arc "$REPO_ROOT/research/madeira-d3d12/tests/native/msc_canary.mm" \
+@@ -98,6 +101,8 @@ if [[ -f "$BUILD_DIR/../madeira-d3d12/deps.sh" ]] && \
+     compile_cxx "$REPO_ROOT/research/madeira-d3d12/src/unix/madeira_ags.cpp" madeira_ags
+ else
+     echo "=== madeira-d3d12 canary SKIPPED (converter package not resolvable) ==="
++    echo "=== linking madeira_ir_convert stub: native D3D12 shader conversion disabled ==="
++    compile_objc "$REPO_ROOT/patches/madeira_ir_convert_stub.c" madeira_ir_convert_stub
+ fi
+ 
+ echo "=== winemetal unix (Objective-C) ==="

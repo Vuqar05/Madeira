@@ -210,6 +210,62 @@ jobs:
           grep -q '^#include "config.h"' <(grep -m1 '^#include' dlls/ntdll/unix/sync.c)
 
       # ==============================================================
+      # Two fixes to this repository's own build inputs, applied as
+      # patches so the tracked files stay identical to upstream:
+      #
+      # 1) build/ntdll-unix/server_ios.c reads
+      #    rusage_info_v6.ri_page_wait_time_mach, which exists in no SDK
+      #    on the runner (newest: iPhoneOS 26.2) nor in public XNU. It
+      #    feeds one diagnostic log value ("pgw="), now printed as 0.
+      #
+      # 2) build/dxmt-ios/build.sh sources build/madeira-d3d12/deps.sh to
+      #    find Apple's Metal Shader Converter package, which upstream
+      #    deliberately does not vendor. deps.sh calls `exit 1` when it is
+      #    absent, which ends the SOURCING script too, so the "optional"
+      #    guard can never take its skip branch. The patch probes deps.sh
+      #    in a subshell first, and when the package is absent compiles
+      #    patches/madeira_ir_convert_stub.c: winemetal_unix.c references
+      #    madeira_ir_convert() unconditionally, so without it the app
+      #    fails to link. With the stub, D3D11 via DXMT works and the
+      #    native D3D12 runtime's shader conversion reports
+      #    STATUS_NOT_IMPLEMENTED. Set the MSC_PKG_URL secret to a
+      #    download of the pinned package to build the real thing.
+      # ==============================================================
+
+      - name: Patch in-repo build inputs
+        run: |
+          set -euxo pipefail
+          if grep -q 'ri_page_wait_time_mach - ' build/ntdll-unix/server_ios.c; then
+            git apply patches/madeira-server-ios-no-page-wait.patch
+          fi
+          ! grep -q 'ri_page_wait_time_mach - ' build/ntdll-unix/server_ios.c
+
+          if ! grep -q madeira_ir_convert_stub build/dxmt-ios/build.sh; then
+            git apply patches/madeira-dxmt-ios-msc-optional.patch
+          fi
+          grep -q madeira_ir_convert_stub build/dxmt-ios/build.sh
+
+      - name: Metal Shader Converter package (optional)
+        env:
+          MSC_PKG_URL: ${{ secrets.MSC_PKG_URL }}
+        run: |
+          set -euo pipefail
+          PKG="research/GPTK/Metal Shader Converter 4.0 beta 2.pkg"
+          WANT=1acc33c87ea663933df89721a998d066106685473020bcbe007cee7a16155734
+          if [ -z "${MSC_PKG_URL:-}" ]; then
+            echo "MSC_PKG_URL not set: building with the madeira_ir_convert stub"
+            echo "HAVE_MSC=0" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          mkdir -p research/GPTK
+          curl -fsSL -o "$PKG" "$MSC_PKG_URL"
+          HAVE="$(shasum -a 256 "$PKG" | cut -d' ' -f1)"
+          if [ "$HAVE" != "$WANT" ]; then
+            echo "FATAL: converter package SHA-256 $HAVE, expected $WANT"; exit 1
+          fi
+          echo "HAVE_MSC=1" >> "$GITHUB_ENV"
+
+      # ==============================================================
       # WINE
       #
       # This branch's wine submodule tracks the LGPL-relicensed
@@ -687,9 +743,13 @@ jobs:
           du -sh toolchains/llvm-ios-build toolchains/llvm-project
 
       # ==============================================================
-      # DXMT — PE modules via meson (needs Wine's winecrt0), then the
-      # unix side, then merged with the LLVM iOS archives into
-      # libdxmt_combined.a, which is what the pbxproj links.
+      # DXMT — the unix side only, merged with the LLVM iOS archives into
+      # libdxmt_combined.a, which is what the pbxproj links. The PE side
+      # (d3d11/dxgi/winemetal/d3d10core.dll) is tracked by upstream in
+      # both app/Madeira/aarch64-windows and arm64ec-windows, built from
+      # this same dxmt commit, so it is used as shipped rather than
+      # rebuilt over those tracked copies (docs/BUILDING.md never
+      # rebuilds the aarch64 set either).
       # ==============================================================
 
       # airconv_context.cpp is the ONLY file including air_msad.h /
@@ -740,30 +800,18 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            research/dxmt/build-pe
             build/dxmt-ios/obj
             app/Madeira/libdxmt_combined.a
-            app/Madeira/aarch64-windows
-          key: dxmt-ca8a251-${{ env.CACHE_V }}
+          # build/dxmt-ios and research/madeira-d3d12 live in THIS repo, so
+          # hash them (same hazard as wineunix); HAVE_MSC separates stub
+          # builds from real-converter builds.
+          key: dxmt-ca8a251-msc${{ env.HAVE_MSC }}-${{ hashFiles('build/dxmt-ios/*.sh', 'research/madeira-d3d12/src/unix/**', 'research/madeira-d3d12/tests/native/msc_canary.mm', 'patches/madeira_ir_convert_stub.c') }}-${{ env.CACHE_V }}
 
       - name: DXMT
         if: steps.dxmt.outputs.cache-hit != 'true'
         run: |
           set -euxo pipefail
-          ln -sfn ../../toolchains research/dxmt/toolchains
-          export PATH="$PWD/toolchains/$MINGW/bin:/opt/homebrew/bin:$PATH"
-          export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
-          cd research/dxmt
-          rm -rf build-pe
-          meson setup --cross-file build-aarch64-win.txt --native-file build-osx.txt \
-            -Dwine_build_path=../../wine/build-macos build-pe
-          meson compile -C build-pe
-          cp build-pe/src/d3d11/d3d11.dll \
-             build-pe/src/dxgi/dxgi.dll \
-             build-pe/src/winemetal/winemetal.dll \
-             build-pe/src/d3d10/d3d10core.dll \
-             ../../app/Madeira/aarch64-windows/
-          cd ../../build/dxmt-ios
+          cd build/dxmt-ios
           ./build.sh
           xcrun -sdk iphoneos libtool -static -o libdxmt_combined.a \
             obj/*.o ../../toolchains/llvm-ios-build/lib/*.a
@@ -811,14 +859,19 @@ jobs:
           PY
           grep -n "glassEffect" "$F" && { echo "FATAL: calls remain"; exit 1; } || true
 
+      # Debug, per docs/BUILDING.md: "Debug is the configuration that runs
+      # the games; Release builds have crashed the guest". The licence
+      # copies are git-ignored and a build phase fails the build without
+      # them, so stage them first.
       - name: Build Madeira.app
         run: |
           set -euxo pipefail
+          bash build/stage-licenses.sh
           rm -rf out
           xcodebuild \
             -project app/Madeira.xcodeproj \
             -target Madeira \
-            -configuration Release \
+            -configuration Debug \
             -sdk iphoneos \
             CONFIGURATION_BUILD_DIR="$PWD/out" \
             ARCHS=arm64 ONLY_ACTIVE_ARCH=NO \
@@ -845,9 +898,10 @@ jobs:
             artifacts/Madeira.ipa
             /tmp/fex.log
             wine/build-macos/config.log
-            research/dxmt/build-pe/meson-logs/**
             build/ntdll-unix/obj/*.err
             build/win32u-unix/obj/*.err
+            build/wineserver/obj/*.txt
+            build/wineserver/obj/base/*.err
             build/dxmt-ios/obj/*.err
           if-no-files-found: warn
           retention-days: 7
