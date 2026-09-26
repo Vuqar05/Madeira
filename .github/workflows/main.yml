@@ -158,6 +158,10 @@ jobs:
       # ==============================================================
       # WINE
       #
+      # This branch's wine submodule tracks the LGPL-relicensed
+      # `madeira-lgpl` branch (see .gitmodules), not the fork's
+      # `ios-build` branch used elsewhere in this project's history.
+      #
       # Directory targets are a trap: `make include` / `make dlls/ntdll`
       # report "nothing to be done" because those are existing
       # DIRECTORIES, generating nothing. Skipping the real build is why
@@ -166,6 +170,11 @@ jobs:
       #
       # build-arm64ec is symlinked to build-macos: the only thing read
       # from it is $build/include, and widl output is arch-independent.
+      #
+      # `-k` is used defensively: a plain `make` can fail on the macOS
+      # HOST .so targets, and only the PE static libs (winecrt0, for
+      # DXMT's meson) and the widl-generated headers are actually
+      # consumed downstream.
       # ==============================================================
 
       - name: Cache Wine build
@@ -173,15 +182,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: wine/build-macos
-          key: wine-7817e22-${{ env.CACHE_V }}
+          key: wine-723d1bf-${{ env.CACHE_V }}
 
-      # NOTE: a plain `make` CANNOT succeed here. dlls/win32u/win32u.so is
-      # the macOS HOST .so, and the fork's patched bitblt.c references
-      # ios_srcwatch_arm / ios_srcwatch_arm_geom / winios_dump_srcbits —
-      # iOS-only symbols that exist only in Madeira's own iOS build. The
-      # author never builds that target. `make -k` keeps going and still
-      # produces the two things actually consumed: the PE static libs
-      # (winecrt0, for DXMT's meson) and the widl-generated headers.
       - name: Build Wine (PE libs + generated headers)
         if: steps.winecache.outputs.cache-hit != 'true'
         run: |
@@ -265,7 +267,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: build/sechost-out
-          key: sechost-7817e22-${{ hashFiles('patches/wine-sechost-no-plugplay-ios.patch') }}-${{ env.CACHE_V }}
+          key: sechost-723d1bf-${{ hashFiles('patches/wine-sechost-no-plugplay-ios.patch') }}-${{ env.CACHE_V }}
 
       - name: Rebuild sechost.dll with the plugplay patch
         if: steps.sechost.outputs.cache-hit != 'true'
@@ -388,7 +390,7 @@ jobs:
           # the submodule sha restores a stale libntdll_unix.a and silently
           # skips the rebuild -- an edit to env_ios.c/process_ios.c then ships
           # as a green build that does not contain it (run #10 did exactly this).
-          key: wineunix-7817e22-${{ hashFiles('build/ntdll-unix/**/*.c', 'build/ntdll-unix/**/*.h', 'build/ntdll-unix/**/*.sh', 'build/win32u-unix/**/*.c', 'build/win32u-unix/**/*.h', 'build/win32u-unix/**/*.sh') }}-${{ env.CACHE_V }}
+          key: wineunix-723d1bf-${{ hashFiles('build/ntdll-unix/**/*.c', 'build/ntdll-unix/**/*.h', 'build/ntdll-unix/**/*.sh', 'build/win32u-unix/**/*.c', 'build/win32u-unix/**/*.h', 'build/win32u-unix/**/*.sh') }}-${{ env.CACHE_V }}
 
       - name: Wine unix libs (ntdll, win32u)
         if: steps.wineunix.outputs.cache-hit != 'true'
@@ -412,7 +414,7 @@ jobs:
             build/wineserver/obj
             app/Madeira/libwineserver.a
           # same hazard as wineunix above: build/wineserver/*.c lives in this repo.
-          key: wineserver-7817e22-${{ hashFiles('build/wineserver/**/*.c', 'build/wineserver/**/*.h', 'build/wineserver/**/*.sh', 'build/wineserver/**/*.py') }}-${{ env.CACHE_V }}
+          key: wineserver-723d1bf-${{ hashFiles('build/wineserver/**/*.c', 'build/wineserver/**/*.h', 'build/wineserver/**/*.sh', 'build/wineserver/**/*.py') }}-${{ env.CACHE_V }}
 
       - name: Seed wineserver base archive
         if: steps.wsrv.outputs.cache-hit != 'true'
@@ -485,7 +487,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: FEX/build-ios
-          key: fex-053c385-caspalstub-${{ env.CACHE_V }}
+          key: fex-0f8edf8-caspalstub-${{ env.CACHE_V }}
 
       # FEX fork bug: IosLogUnimplementedCASPAL (Arm64.cpp) sits OUTSIDE
       # every #ifdef FEX_IOS_HOST in that file, yet calls Win32 APIs —
@@ -650,7 +652,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: build/dxmt-ios/shader-headers
-          key: shaders-b4b89f0-${{ env.CACHE_V }}
+          key: shaders-ca8a251-${{ env.CACHE_V }}
 
       - name: Generate airconv shader headers
         if: steps.shaders.outputs.cache-hit != 'true'
@@ -688,7 +690,7 @@ jobs:
             build/dxmt-ios/obj
             app/Madeira/libdxmt_combined.a
             app/Madeira/aarch64-windows
-          key: dxmt-b4b89f0-${{ env.CACHE_V }}
+          key: dxmt-ca8a251-${{ env.CACHE_V }}
 
       - name: DXMT
         if: steps.dxmt.outputs.cache-hit != 'true'
