@@ -4,6 +4,11 @@
 #import "WineProcessBridge.h"
 #import "IOSDisplayShim.h"
 #import "Winios/Winios.h"
+#import "Winios/WiniosCursor.h"
+// Steam content decoders (liblzma shim, zstd decoder, zip chunks), used by the owned library's downloads.
+#import "SwiftSteam/lzma_shim.h"
+// On-device remote pairing for Built-in StikJIT (build/rppairing-ios, JITPairing.swift).
+#import "MadeiraRPPairing.h"
 
 // Wine file-based logging (server_ios.c)
 void wine_log_set_file(const char *path);
@@ -31,6 +36,18 @@ void madeira_set_fence_mode(int mode);
 // Read per present; safe to flip live mid-game.
 void madeira_set_vsync_locked(int locked);
 int madeira_get_vsync_locked(void);
+
+// ml1050: what the PANEL can do and what we asked it for, published from
+// Swift (only UIKit knows) so the native [frame] line can print the
+// quantisation grid every present snaps to. panel_hz = the display's own
+// maximum, intent_hz = the CADisplayLink rate currently requested (0 = no
+// intent armed). Both are diagnostics; nothing branches on them.
+// Defined by DXMT from willfaust/dxmt#1 on; IOSDisplayShim.m carries a weak
+// no-op fallback, so the app links and runs against main's DXMT too.
+void madeira_set_display_max_fps(int panel_hz, int intent_hz);
+// 1 when DXMT's own madeira_set_display_max_fps (and with it the 30 FPS cap,
+// vsync mode 3) is linked; valid after the first madeira_set_display_max_fps call.
+int madeira_dxmt_has_display_pacing(void);
 
 /* ml526: startup phase timeline (Winios.m) */
 void winios_phase(const char *name);

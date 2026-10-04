@@ -88,3 +88,18 @@ signed off under the DCO (the fork's `CONTRIBUTING.md`):
 - feb96ad2be4 2026-09-25 xinput: read Madeira host controller snapshots
   through win32u. Author: 125hz. willfaust/wine pull request #1, merged as
   815cf1f92e2.
+- 2026-09-29 the iOS WoW64 series, author 125hz, willfaust/wine pull
+  requests #6-#12, merged as cea4dfc9a14: 970dac54a4e, 2ebe9374b26,
+  db62a711998, e9289051644, 1a73c698b8c, f9074408fd9, 059cb1923c0.
+- 2026-09-29 dinput: opt-in joystick backed by the Madeira host gamepad slot
+  (56f69bc7528, pull request #3) and server iOS: queue a process-wide system
+  APC on a live thread (3ba35adcbdd, pull request #13). Author: 125hz.
+- 2026-09-30 round 3, author 125hz: nsi reads through the in-process
+  fallback without `\\.\Nsi` (4e85de8c795, 8d4c3d9ab5b, 5c4d1f7a6f2, pull
+  request #14, merged as 368f16891ea); server iOS: hand an undeliverable
+  async I/O APC to a waiting thread (c3119789ade, pull request #15, merged as
+  18322fc5617; narrowed by our 074e0e368b6 so it is dropped, never parked,
+  when no thread is waiting); opt-in fastsync for events and semaphores
+  (e200a5e19a9, f6848ad4e98, pull request #16, merged as e33e56e4db8); ntdll
+  ARM64EC: opt-in guard against a self-deadlock in the loader's image-map
+  notification (d770df01ae7, pull request #17, merged as f7df74abb76).
