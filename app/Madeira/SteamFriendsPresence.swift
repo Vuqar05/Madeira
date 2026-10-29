@@ -27,16 +27,36 @@ enum SteamFriendsPresence {
     private(set) static var friends: [Friend] = []
     private(set) static var presence: [UInt64: Presence] = [:]
     private static var accessToken: (value: String, expires: Date)?
-    private static var nextFetch = Date.distantPast
     private static var running = false
     private static let interval: TimeInterval = 15
     private static var lastEResult = "-"
 
-    /// Called from MadeiraDock.pollReport while Dock reports friends-available=1.
+    private static var loop: Task<Void, Never>?
+
+    /// Called from MadeiraDock.pollReport once Dock reports the game running.
+    /// Starts a loop for the session: report polling stops once the game is in
+    /// front, so the loop keeps its own 15 s pace. It ends when Dock removes the
+    /// feed at exit (after it was seen once) or at reset().
     static func tick(appID: Int) {
-        guard !running, Date() >= nextFetch else { return }
-        nextFetch = Date().addingTimeInterval(interval)
-        guard let feed = try? Data(contentsOf: MadeiraDock.drive.appendingPathComponent("madeira-friends.bin")) else {
+        guard loop == nil else { return }
+        loop = Task { @MainActor in
+            var seen = false
+            while !Task.isCancelled {
+                let exists = FileManager.default.fileExists(atPath: feedURL.path)
+                if seen && !exists { break }
+                seen = seen || exists
+                round(appID: appID)
+                try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+            }
+            loop = nil
+        }
+    }
+
+    private static var feedURL: URL { MadeiraDock.drive.appendingPathComponent("madeira-friends.bin") }
+
+    private static func round(appID: Int) {
+        guard !running else { return }
+        guard let feed = try? Data(contentsOf: feedURL) else {
             return skip("no feed")
         }
         guard let parsed = parseFeed(feed) else { return skip("feed malformed (\(feed.count) bytes)") }
@@ -77,7 +97,8 @@ enum SteamFriendsPresence {
     static func reset() {
         friends = []
         presence = [:]
-        nextFetch = .distantPast
+        loop?.cancel()
+        loop = nil
         lastSkip = ""
     }
 
