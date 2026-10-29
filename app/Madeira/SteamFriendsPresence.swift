@@ -9,7 +9,8 @@ import Foundation
 /// the friends Dock listed in C:\madeira-friends.bin. These are plain HTTPS
 /// calls, not a second CM sign-in, so Dock's session is not replaced.
 /// Logs carry counts and HTTP statuses only, never tokens, SteamIDs or names.
-@MainActor
+/// Runs off the main actor: once a Wine game is in front, work queued on the
+/// main actor stops running. State is guarded by `lock`.
 enum SteamFriendsPresence {
     struct Friend: Equatable {
         let steamID: UInt64
@@ -24,69 +25,69 @@ enum SteamFriendsPresence {
         var lobby: UInt64
     }
 
-    private(set) static var friends: [Friend] = []
-    private(set) static var presence: [UInt64: Presence] = [:]
-    private static var accessToken: (value: String, expires: Date)?
-    private static var running = false
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var storedFriends: [Friend] = []
+    nonisolated(unsafe) private static var storedPresence: [UInt64: Presence] = [:]
+    static var friends: [Friend] { lock.withLock { storedFriends } }
+    static var presence: [UInt64: Presence] { lock.withLock { storedPresence } }
+    nonisolated(unsafe) private static var accessToken: (value: String, expires: Date)?
     private static let interval: TimeInterval = 15
-    private static var lastEResult = "-"
+    nonisolated(unsafe) private static var lastEResult = "-"
 
-    private static var loop: Task<Void, Never>?
+    nonisolated(unsafe) private static var loop: Task<Void, Never>?
 
     /// Called from MadeiraDock.pollReport once Dock reports the game running.
     /// Starts a loop for the session: report polling stops once the game is in
     /// front, so the loop keeps its own 15 s pace. It ends when Dock removes the
     /// feed at exit (after it was seen once) or at reset().
     static func tick(appID: Int) {
-        guard loop == nil else { return }
-        loop = Task { @MainActor in
-            var seen = false
-            while !Task.isCancelled {
-                let exists = FileManager.default.fileExists(atPath: feedURL.path)
-                if seen && !exists { break }
-                seen = seen || exists
-                round(appID: appID)
-                try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+        let url = feedURL
+        lock.withLock {
+            guard loop == nil else { return }
+            loop = Task.detached(priority: .utility) {
+                var seen = false
+                while !Task.isCancelled {
+                    let exists = FileManager.default.fileExists(atPath: url.path)
+                    if seen && !exists { break }
+                    seen = seen || exists
+                    await round(appID: appID, feedURL: url)
+                    try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+                }
+                lock.withLock { loop = nil }
             }
-            loop = nil
         }
     }
 
     private static var feedURL: URL { MadeiraDock.drive.appendingPathComponent("madeira-friends.bin") }
 
-    private static func round(appID: Int) {
-        guard !running else { return }
+    private static func round(appID: Int, feedURL: URL) async {
         guard let feed = try? Data(contentsOf: feedURL) else {
             return skip("no feed")
         }
         guard let parsed = parseFeed(feed) else { return skip("feed malformed (\(feed.count) bytes)") }
-        friends = parsed
+        lock.withLock { storedFriends = parsed }
         guard !parsed.isEmpty else { return skip("feed empty") }
         guard let credentials = SteamSignIn.credentialsForDock() else { return skip("no stored sign-in") }
         guard let me = try? MadeiraDock.subject(credentials.refreshToken) else { return skip("no account in token") }
-        running = true
         let ids = parsed.map(\.steamID)
-        Task { @MainActor in
-            defer { running = false }
-            do {
-                let token = try await webToken(refresh: credentials.refreshToken, steamID: me)
-                var result: [UInt64: Presence] = [:]
-                for start in stride(from: 0, to: ids.count, by: 100) {
-                    let batch = Array(ids[start..<min(start + 100, ids.count)])
-                    result.merge(try await summaries(batch, token: token)) { $1 }
-                }
-                presence = result
-                let online = result.values.filter { $0.state > 0 }
-                SteamLog.event("[dock-friends] online=\(online.count) playing=\(online.filter { $0.appID != 0 }.count) "
-                    + "same-app=\(online.filter { $0.appID == UInt32(appID) }.count) "
-                    + "lobbies=\(online.filter { $0.appID == UInt32(appID) && $0.lobby != 0 }.count) of \(ids.count)")
-            } catch {
-                SteamLog.event("[dock-friends] presence failed: \(error)")
+        do {
+            let token = try await webToken(refresh: credentials.refreshToken, steamID: me)
+            var result: [UInt64: Presence] = [:]
+            for start in stride(from: 0, to: ids.count, by: 100) {
+                let batch = Array(ids[start..<min(start + 100, ids.count)])
+                result.merge(try await summaries(batch, token: token)) { $1 }
             }
+            lock.withLock { storedPresence = result }
+            let online = result.values.filter { $0.state > 0 }
+            SteamLog.event("[dock-friends] online=\(online.count) playing=\(online.filter { $0.appID != 0 }.count) "
+                + "same-app=\(online.filter { $0.appID == UInt32(appID) }.count) "
+                + "lobbies=\(online.filter { $0.appID == UInt32(appID) && $0.lobby != 0 }.count) of \(ids.count)")
+        } catch {
+            SteamLog.event("[dock-friends] presence failed: \(error)")
         }
     }
 
-    private static var lastSkip = ""
+    nonisolated(unsafe) private static var lastSkip = ""
     /// Logs why a round was skipped, once per reason.
     private static func skip(_ reason: String) {
         if reason != lastSkip { SteamLog.event("[dock-friends] skipped: \(reason)") }
@@ -95,11 +96,13 @@ enum SteamFriendsPresence {
 
     /// Clears the state when a Dock session ends.
     static func reset() {
-        friends = []
-        presence = [:]
-        loop?.cancel()
-        loop = nil
-        lastSkip = ""
+        lock.withLock {
+            storedFriends = []
+            storedPresence = [:]
+            loop?.cancel()
+            loop = nil
+            lastSkip = ""
+        }
     }
 
     // MARK: Feed (format: madeira-dock README, "Friends")
