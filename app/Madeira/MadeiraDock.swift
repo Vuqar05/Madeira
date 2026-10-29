@@ -332,7 +332,7 @@ enum MadeiraDock {
         "session-offline-entitled", "session-offline-listed", "session-offline-timeout-state",
         "session-offline-fallback", "session-offline-ready",
         "launch-user-arguments-bytes", "launch-user-arguments-invalid",
-        "friends-available", "friends-own-state", "friends-set-online", "friends-total", "friends-valid-ids", "friends-count", "friends-cmd-seq", "friends-cmd-result",
+        "friends-available", "friends-own-state", "friends-set-online", "friends-total", "friends-valid-ids", "friends-named", "friends-playing", "friends-seconds", "friends-count", "friends-cmd-seq", "friends-cmd-result",
         "launch-client-error", "launch-option-index", "launch-option-invalid", "launch-option-missing",
         "launch-update-wait", "launch-update-retry", "launch-update-ready",
         "launch-config-wait", "launch-config-gave-up", "launch-session-wait", "launch-session-gave-up",
