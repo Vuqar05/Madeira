@@ -36,11 +36,14 @@ enum SteamFriendsPresence {
     static func tick(appID: Int) {
         guard !running, Date() >= nextFetch else { return }
         nextFetch = Date().addingTimeInterval(interval)
-        guard let feed = try? Data(contentsOf: MadeiraDock.drive.appendingPathComponent("madeira-friends.bin")),
-              let parsed = parseFeed(feed) else { return }
+        guard let feed = try? Data(contentsOf: MadeiraDock.drive.appendingPathComponent("madeira-friends.bin")) else {
+            return skip("no feed")
+        }
+        guard let parsed = parseFeed(feed) else { return skip("feed malformed (\(feed.count) bytes)") }
         friends = parsed
-        guard !parsed.isEmpty, let credentials = SteamSignIn.credentialsForDock(),
-              let me = try? MadeiraDock.subject(credentials.refreshToken) else { return }
+        guard !parsed.isEmpty else { return skip("feed empty") }
+        guard let credentials = SteamSignIn.credentialsForDock() else { return skip("no stored sign-in") }
+        guard let me = try? MadeiraDock.subject(credentials.refreshToken) else { return skip("no account in token") }
         running = true
         let ids = parsed.map(\.steamID)
         Task { @MainActor in
@@ -63,11 +66,19 @@ enum SteamFriendsPresence {
         }
     }
 
+    private static var lastSkip = ""
+    /// Logs why a round was skipped, once per reason.
+    private static func skip(_ reason: String) {
+        if reason != lastSkip { SteamLog.event("[dock-friends] skipped: \(reason)") }
+        lastSkip = reason
+    }
+
     /// Clears the state when a Dock session ends.
     static func reset() {
         friends = []
         presence = [:]
         nextFetch = .distantPast
+        lastSkip = ""
     }
 
     // MARK: Feed (format: madeira-dock README, "Friends")
