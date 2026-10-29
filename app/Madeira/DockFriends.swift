@@ -11,13 +11,45 @@ import SwiftUI
 
     enum Action: UInt8 { case invite = 1, join = 2 }
 
+    struct Friend: Equatable {
+        let steamID: UInt64
+        let name: String
+        /// Feed flags: 1 in game, 2 this game, 4 joinable, 8 invited this player.
+        let dockFlags: UInt8
+        /// Steam persona state (0 offline, 1 online, 2 busy, 3 away, ...).
+        var state: UInt32 = 0
+        var appID: UInt32 = 0
+    }
+
+    /// C:\madeira-friends.bin: magic MFRND001, count, then per friend
+    /// SteamID(8) state(4) App ID(4) flags(1) name length(1) name.
+    nonisolated static func parseFeed(_ data: Data) -> [Friend]? {
+        let bytes = [UInt8](data)
+        guard bytes.count >= 12, bytes.count <= 12 + 250 * (18 + 64),
+              Array(bytes[0..<8]) == Array("MFRND001".utf8) else { return nil }
+        func u32(_ at: Int) -> UInt32 { (0..<4).reduce(0) { $0 | UInt32(bytes[at + $1]) << (8 * $1) } }
+        func u64(_ at: Int) -> UInt64 { (0..<8).reduce(0) { $0 | UInt64(bytes[at + $1]) << (8 * $1) } }
+        let count = Int(u32(8))
+        guard count <= 250 else { return nil }
+        var at = 12, result: [Friend] = []
+        for _ in 0..<count {
+            guard at + 18 <= bytes.count else { return nil }
+            let length = Int(bytes[at + 17])
+            guard length < 64, at + 18 + length <= bytes.count,
+                  let name = String(bytes: bytes[(at + 18)..<(at + 18 + length)], encoding: .utf8) else { return nil }
+            result.append(Friend(steamID: u64(at), name: name, dockFlags: bytes[at + 16], state: u32(at + 8), appID: u32(at + 12)))
+            at += 18 + length
+        }
+        return at == bytes.count ? result : nil
+    }
+
     struct Pending: Equatable {
         let action: Action
         let steamID: UInt64
         let sequence: UInt32
     }
 
-    @Published private(set) var friends: [SteamFriendsPresence.Friend] = []
+    @Published private(set) var friends: [DockFriends.Friend] = []
     /// Dock is running with friends available (its feed exists).
     @Published private(set) var available = false
     @Published private(set) var pending: Pending?
@@ -35,7 +67,7 @@ import SwiftUI
     func refresh() {
         let data = try? Data(contentsOf: feedURL)
         available = data != nil
-        if let data, let parsed = SteamFriendsPresence.parseFeed(data) {
+        if let data, let parsed = DockFriends.parseFeed(data) {
             friends = parsed.sorted { order($0) != order($1) ? order($0) < order($1)
                 : $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
         }
@@ -43,7 +75,7 @@ import SwiftUI
     }
 
     /// Invites first, then joinable friends in this game, this game, other games, online, offline.
-    private func order(_ f: SteamFriendsPresence.Friend) -> Int {
+    private func order(_ f: DockFriends.Friend) -> Int {
         if f.dockFlags & 8 != 0 { return -1 }
         if f.dockFlags & 4 != 0 { return 0 }
         if f.dockFlags & 2 != 0 { return 1 }
@@ -51,7 +83,7 @@ import SwiftUI
         return f.state > 0 ? 3 : 4
     }
 
-    func send(_ action: Action, to friend: SteamFriendsPresence.Friend) {
+    func send(_ action: Action, to friend: DockFriends.Friend) {
         guard pending == nil else { return }
         sequence = sequence &+ 1
         if sequence == 0 { sequence = 1 }
@@ -127,7 +159,7 @@ import SwiftUI
 }
 
 struct DockFriendRow: View {
-    let friend: SteamFriendsPresence.Friend
+    let friend: DockFriends.Friend
     @ObservedObject var model: DockFriends
 
     private var status: String {

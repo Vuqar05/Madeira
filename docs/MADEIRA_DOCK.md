@@ -124,8 +124,8 @@ own accepted-invite path to the running game. January client
 build only; elsewhere `friends-available=0` and the launch is unchanged.
 The in-game Session menu's Friends page (`DockFriends.swift`) reads the feed
 and sends Join/Invite; tested on the iPad in both directions. Incoming lobby
-invites show at the top with Accept (tested). The Web API presence code
-(`SteamFriendsPresence.swift`) stays disabled; its feed parser is shared.
+invites show at the top with Accept (tested). The earlier Web API presence code was removed (2026-10-30): it got a
+refresh token revoked, and Dock now supplies friends' status.
 
 ## How a launch works
 

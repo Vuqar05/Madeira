@@ -373,8 +373,6 @@ enum MadeiraDock {
     }
 
     @MainActor private static var lastReport = Report()
-    /// The App ID of the Dock session started last (friends presence).
-    @MainActor static var currentAppID: Int?
 
     /// Reads C:\madeira-dock.txt and logs fields that changed ([dock-report]).
     @MainActor static func pollReport() -> Report {
@@ -393,14 +391,6 @@ enum MadeiraDock {
             let lines = String(decoding: data, as: UTF8.self).split(separator: "\n").filter { $0.hasPrefix("[steam-host] ") }
             SteamLog.event("[dock-report-file] lines=\(lines.count)")
             for line in lines.prefix(400) { SteamLog.event("[dock-report-file] " + line.trimmingCharacters(in: .whitespacesAndNewlines)) }
-        }
-        // Off: after five GenerateAccessTokenForApp calls (2026-10-29 20:10)
-        // Steam refused the stored refresh token on every following Dock
-        // sign-in (connection result 15). Do not re-enable without a token
-        // route that cannot invalidate the client sign-in.
-        if SteamFriendsPresence.enabled, report.fields["friends-available"] == "1", report.fields["probe-result"] == nil,
-           report.fields["launch-game-running"] == "1", let app = currentAppID {
-            SteamFriendsPresence.tick(appID: app)
         }
         lastReport = report
         return report
@@ -427,8 +417,6 @@ enum MadeiraDock {
     @MainActor static func writeHandoff(account: String, token: String, appID: Int) throws {
         cleanup()
         lastReport = Report()
-        currentAppID = appID
-        SteamFriendsPresence.reset()
         DockFriends.shared.reset()
         let report = drive.appendingPathComponent("madeira-dock.txt")
         if FileManager.default.fileExists(atPath: report.path) { try FileManager.default.removeItem(at: report) }
