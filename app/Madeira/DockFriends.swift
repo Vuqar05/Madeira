@@ -77,10 +77,12 @@ import SwiftUI
     private func checkResult(_ pending: Pending) {
         if let data = try? Data(contentsOf: reportURL), data.count <= 1 << 20 {
             var seenSequence = false
-            for line in String(decoding: data, as: UTF8.self).split(separator: "\n") {
+            // Dock writes CRLF lines; "\r\n" is one Character, so split on newlines.
+            for raw in String(decoding: data, as: UTF8.self).split(whereSeparator: \.isNewline) {
+                let line = raw.trimmingCharacters(in: .whitespaces)
                 if line.hasSuffix("friends-cmd-seq=\(pending.sequence)") { seenSequence = true }
-                else if seenSequence, let value = line.split(separator: "friends-cmd-result=").last.flatMap({ Int($0) }),
-                        line.contains("friends-cmd-result=") {
+                else if seenSequence, let range = line.range(of: "friends-cmd-result="),
+                        let value = Int(line[range.upperBound...]) {
                     finish(pending, result: value)
                     return
                 }
@@ -93,7 +95,15 @@ import SwiftUI
         self.pending = nil
         outcome = (pending.steamID, pending.action, result)
         SteamLog.event("[dock-friends] \(pending.action) result=\(result)")
+        // The row shows the result for a few seconds, then its status again.
+        let sequence = pending.sequence
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(5))
+            if self.pending == nil, self.lastSequence == sequence { self.outcome = nil }
+        }
+        lastSequence = sequence
     }
+    private var lastSequence: UInt32 = 0
 
     /// Clears the state when a Dock session ends.
     func reset() {
@@ -105,7 +115,8 @@ import SwiftUI
 
     static func message(action: Action, result: Int) -> String {
         switch result {
-        case 1: return action == .invite ? "Invite sent" : "Joining…"
+        // Join hands the lobby to the game; whether the game gets in is up to it.
+        case 1: return action == .invite ? "Invite sent" : "Sent to the game"
         case 2: return action == .invite ? "Start the game to invite" : "Not in a joinable lobby"
         case 3: return "Not on your friends list"
         case 4: return "Steam refused the request"
