@@ -113,13 +113,17 @@ Tap a game. Dock is started with Steam's default launch option; extra
 arguments from the library profile go to Valve's `LaunchApp` through
 `MADEIRA_STEAM_HOST_ARGUMENTS` (bounded; see the Dock README).
 
-**Friends (Dock side only, 2026-10-29).** While the game runs, Dock writes
-the online friends list to `C:\madeira-friends.bin` and accepts Join/Invite
+**Friends (Dock side only, 2026-10-30).** While the game runs, Dock signs
+in to Friends the way desktop Steam's Friends window does, so friends see the
+account Online and In-Game and the session receives friends' status. It
+writes the friends list to `C:\madeira-friends.bin` and accepts Join/Invite
 commands in `C:\madeira-friends-cmd.bin` (formats and limits in the Dock
-README, "Friends"). Join goes through the client's own accepted-invite path
-to the running game. January client build only; elsewhere
-`friends-available=0` and the launch is unchanged. Madeira does not read the
-feed yet (Friends sheet: planned), and nothing is verified on a device.
+README, "Friends"). In a lobby, Invite sends a real lobby invite; on the iPad
+a friend accepted one and joined the lobby. Join goes through the client's
+own accepted-invite path to the running game (not yet tested). January client
+build only; elsewhere `friends-available=0` and the launch is unchanged.
+Madeira does not read the feed yet (Friends sheet: planned). The Web API
+presence code (`SteamFriendsPresence.swift`) stays disabled.
 
 ## How a launch works
 
