@@ -65,5 +65,11 @@ env.FEX_EXTENDEDVOLATILEMETADATA = oo2core_5_win64.dll:bink2w64.dll
 # Touches reach program as a mouse: 1 always, 0 never; default: not while touch controller is shown
 # env.MADEIRA_TOUCH_MOUSE = 1
 
+# LOVE games with their own 64-bit LuaJIT 2.1 (GC64, e.g. Balatro): interp loads Madeira's
+# interpreter-only x64 build (compat/love/lua51.dll) instead of the game's JIT build.
+# Off by default; best set per game (Game details > This game's config). Balatro: main
+# thread CPU -38%, energy -61% (see app/Madeira/compat/love/README.md)
+# env.MADEIRA_LUAJIT = interp
+
 # MetalFX spatial upscaling factor (Direct3D 11 and 12; choices: 1.5, 2)
 # metalfx-upscale = 1.5

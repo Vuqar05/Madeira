@@ -33,6 +33,11 @@
  * an fd of the GC64 build in the app bundle (build/luajit-x64/build.sh), and
  * the section is created from that file instead. The game's file on disk is
  * never touched. Detection is by content, not by file or program name.
+ *
+ * MADEIRA_LUAJIT=interp (madeira.cfg: env.MADEIRA_LUAJIT = interp) maps the
+ * bundled build for GC64 LuaJITs too. The bundled build is interpreter-only,
+ * so FEX no longer translates machine code that the game's JIT writes at run
+ * time; whether that is faster than the game's own JIT is per game.
  */
 
 #include <fcntl.h>
@@ -136,14 +141,28 @@ static int ljc_contains( int fd, off_t file_size, const char *needle )
 int madeira_luajit_compat_fd( int unix_fd, off_t file_size )
 {
     const char *bundle = getenv( "WINEDLLPATH" );
+    const char *mode = getenv( "MADEIRA_LUAJIT" );
+    int interp = mode && !strcmp( mode, "interp" );
     char path[4096];
     int fd;
 
     if (!ljc_exports_luajit( unix_fd )) return -1;
     if (!ljc_contains( unix_fd, file_size, "NtAllocateVirtualMemory" ))
     {
-        fprintf( stderr, "[luajit-compat] x64 LuaJIT with GC64, left as is\n" );
-        return -1;
+        if (!interp)
+        {
+            fprintf( stderr, "[luajit-compat] x64 LuaJIT with GC64, left as is\n" );
+            return -1;
+        }
+        if (!bundle || snprintf( path, sizeof(path), "%s/compat/love/lua51.dll", bundle ) >= (int)sizeof(path))
+            return -1;
+        if ((fd = open( path, O_RDONLY | O_CLOEXEC )) == -1)
+        {
+            fprintf( stderr, "[luajit-compat] MADEIRA_LUAJIT=interp, but %s is missing; game's GC64 LuaJIT left as is\n", path );
+            return -1;
+        }
+        fprintf( stderr, "[luajit-compat] x64 LuaJIT with GC64; MADEIRA_LUAJIT=interp maps the bundled interpreter-only build\n" );
+        return fd;
     }
     if (!bundle || snprintf( path, sizeof(path), "%s/compat/love/lua51.dll", bundle ) >= (int)sizeof(path))
         return -1;
