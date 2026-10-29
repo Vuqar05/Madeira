@@ -42,8 +42,9 @@ import SwiftUI
         if let pending { checkResult(pending) }
     }
 
-    /// Joinable friends in this game first, then this game, other games, online, offline.
+    /// Invites first, then joinable friends in this game, this game, other games, online, offline.
     private func order(_ f: SteamFriendsPresence.Friend) -> Int {
+        if f.dockFlags & 8 != 0 { return -1 }
         if f.dockFlags & 4 != 0 { return 0 }
         if f.dockFlags & 2 != 0 { return 1 }
         if f.dockFlags & 1 != 0 { return 2 }
@@ -119,6 +120,7 @@ struct DockFriendRow: View {
     @ObservedObject var model: DockFriends
 
     private var status: String {
+        if friend.dockFlags & 8 != 0 { return "Invited you to play" }
         if friend.dockFlags & 4 != 0 { return "In this game · joinable" }
         if friend.dockFlags & 2 != 0 { return "In this game" }
         if friend.dockFlags & 1 != 0 { return "In another game" }
@@ -132,7 +134,7 @@ struct DockFriendRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Circle().fill(friend.dockFlags & 3 != 0 ? Color.green : friend.state > 0 ? Color.blue : Color.gray)
+            Circle().fill(friend.dockFlags & 8 != 0 ? Color.yellow : friend.dockFlags & 3 != 0 ? Color.green : friend.state > 0 ? Color.blue : Color.gray)
                 .frame(width: 10, height: 10)
             VStack(alignment: .leading, spacing: 2) {
                 Text(friend.name.isEmpty ? "Unknown" : friend.name).lineLimit(1)
@@ -147,9 +149,9 @@ struct DockFriendRow: View {
             if model.pending?.steamID == friend.steamID {
                 ProgressView()
             } else {
-                if friend.dockFlags & 4 != 0 {
-                    Button("Join") { model.send(.join, to: friend) }.buttonStyle(.borderedProminent)
-                        .disabled(model.pending != nil)
+                if friend.dockFlags & 12 != 0 {
+                    Button(friend.dockFlags & 8 != 0 ? "Accept" : "Join") { model.send(.join, to: friend) }
+                        .buttonStyle(.borderedProminent).disabled(model.pending != nil)
                 }
                 if friend.state > 0 {
                     Button("Invite") { model.send(.invite, to: friend) }.buttonStyle(.bordered)

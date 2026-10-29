@@ -123,8 +123,8 @@ a friend accepted one and joined the lobby. Join goes through the client's
 own accepted-invite path to the running game. January client
 build only; elsewhere `friends-available=0` and the launch is unchanged.
 The in-game Session menu's Friends page (`DockFriends.swift`) reads the feed
-and sends Join/Invite; tested on the iPad in both directions. Incoming
-invites are not shown yet. The Web API presence code
+and sends Join/Invite; tested on the iPad in both directions. Incoming lobby
+invites show at the top with Accept (tested). The Web API presence code
 (`SteamFriendsPresence.swift`) stays disabled; its feed parser is shared.
 
 ## How a launch works
