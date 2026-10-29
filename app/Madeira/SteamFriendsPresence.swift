@@ -30,6 +30,7 @@ enum SteamFriendsPresence {
     private static var nextFetch = Date.distantPast
     private static var running = false
     private static let interval: TimeInterval = 15
+    private static var lastEResult = "-"
 
     /// Called from MadeiraDock.pollReport while Dock reports friends-available=1.
     static func tick(appID: Int) {
@@ -112,7 +113,11 @@ enum SteamFriendsPresence {
         request.httpBody = form(["refresh_token": refresh, "steamid": String(steamID)])
         let json = try await call(request, name: "GenerateAccessTokenForApp")
         guard let response = json["response"] as? [String: Any], let token = response["access_token"] as? String,
-              !token.isEmpty else { throw PresenceError.malformed("GenerateAccessTokenForApp") }
+              !token.isEmpty else {
+            // Field names only: never a token value.
+            let keys = ((json["response"] as? [String: Any])?.keys.sorted() ?? json.keys.sorted()).joined(separator: ",")
+            throw PresenceError.malformed("GenerateAccessTokenForApp eresult=\(lastEResult) keys=[\(keys)]")
+        }
         accessToken = (token, SteamSignIn.expiry(of: token) ?? Date().addingTimeInterval(3600))
         return token
     }
@@ -140,6 +145,7 @@ enum SteamFriendsPresence {
         request.timeoutInterval = 15
         let (data, response) = try await URLSession.shared.data(for: request)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        lastEResult = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "x-eresult") ?? "-"
         guard status == 200 else { throw PresenceError.http(name, status) }
         guard data.count <= 4 << 20, let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw PresenceError.malformed(name)
