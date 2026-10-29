@@ -16,6 +16,9 @@ enum SteamFriendsPresence {
         let steamID: UInt64
         let name: String
         let dockFlags: UInt8
+        /// Steam persona state from Dock's feed (0 offline, 1 online, ...).
+        var state: UInt32 = 0
+        var appID: UInt32 = 0
     }
 
     struct Presence: Equatable {
@@ -123,7 +126,7 @@ enum SteamFriendsPresence {
             let length = Int(bytes[at + 17])
             guard length < 64, at + 18 + length <= bytes.count,
                   let name = String(bytes: bytes[(at + 18)..<(at + 18 + length)], encoding: .utf8) else { return nil }
-            result.append(Friend(steamID: u64(at), name: name, dockFlags: bytes[at + 16]))
+            result.append(Friend(steamID: u64(at), name: name, dockFlags: bytes[at + 16], state: u32(at + 8), appID: u32(at + 12)))
             at += 18 + length
         }
         return at == bytes.count ? result : nil

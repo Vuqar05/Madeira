@@ -120,10 +120,12 @@ writes the friends list to `C:\madeira-friends.bin` and accepts Join/Invite
 commands in `C:\madeira-friends-cmd.bin` (formats and limits in the Dock
 README, "Friends"). In a lobby, Invite sends a real lobby invite; on the iPad
 a friend accepted one and joined the lobby. Join goes through the client's
-own accepted-invite path to the running game (not yet tested). January client
+own accepted-invite path to the running game. January client
 build only; elsewhere `friends-available=0` and the launch is unchanged.
-Madeira does not read the feed yet (Friends sheet: planned). The Web API
-presence code (`SteamFriendsPresence.swift`) stays disabled.
+The in-game Session menu's Friends page (`DockFriends.swift`) reads the feed
+and sends Join/Invite; tested on the iPad in both directions. Incoming
+invites are not shown yet. The Web API presence code
+(`SteamFriendsPresence.swift`) stays disabled; its feed parser is shared.
 
 ## How a launch works
 

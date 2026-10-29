@@ -429,6 +429,7 @@ enum MadeiraDock {
         lastReport = Report()
         currentAppID = appID
         SteamFriendsPresence.reset()
+        DockFriends.shared.reset()
         let report = drive.appendingPathComponent("madeira-dock.txt")
         if FileManager.default.fileExists(atPath: report.path) { try FileManager.default.removeItem(at: report) }
         guard let url = transferURL else { throw DockError.message("Dock's private transfer folder is unavailable.") }
