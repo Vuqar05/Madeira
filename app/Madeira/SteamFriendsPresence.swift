@@ -28,6 +28,8 @@ enum SteamFriendsPresence {
     private static let lock = NSLock()
     nonisolated(unsafe) private static var storedFriends: [Friend] = []
     nonisolated(unsafe) private static var storedPresence: [UInt64: Presence] = [:]
+    /// Disabled: see MadeiraDock.pollReport.
+    static let enabled = false
     static var friends: [Friend] { lock.withLock { storedFriends } }
     static var presence: [UInt64: Presence] { lock.withLock { storedPresence } }
     nonisolated(unsafe) private static var accessToken: (value: String, expires: Date)?

@@ -394,7 +394,11 @@ enum MadeiraDock {
             SteamLog.event("[dock-report-file] lines=\(lines.count)")
             for line in lines.prefix(400) { SteamLog.event("[dock-report-file] " + line.trimmingCharacters(in: .whitespacesAndNewlines)) }
         }
-        if report.fields["friends-available"] == "1", report.fields["probe-result"] == nil,
+        // Off: after five GenerateAccessTokenForApp calls (2026-10-29 20:10)
+        // Steam refused the stored refresh token on every following Dock
+        // sign-in (connection result 15). Do not re-enable without a token
+        // route that cannot invalidate the client sign-in.
+        if SteamFriendsPresence.enabled, report.fields["friends-available"] == "1", report.fields["probe-result"] == nil,
            report.fields["launch-game-running"] == "1", let app = currentAppID {
             SteamFriendsPresence.tick(appID: app)
         }
