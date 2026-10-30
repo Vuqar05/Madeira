@@ -9,12 +9,12 @@ import SwiftUI
 @MainActor final class DockFriends: ObservableObject {
     static let shared = DockFriends()
 
-    enum Action: UInt8 { case invite = 1, join = 2 }
+    enum Action: UInt8 { case invite = 1, join = 2, setStatus = 3 }
 
     struct Friend: Equatable {
         let steamID: UInt64
         let name: String
-        /// Feed flags: 1 in game, 2 this game, 4 joinable, 8 invited this player.
+        /// Feed flags: 1 in game, 2 this game, 4 joinable, 8 invited this player, 16 you have a lobby or connect string (Invite is offered).
         let dockFlags: UInt8
         /// Steam persona state (0 offline, 1 online, 2 busy, 3 away, ...).
         var state: UInt32 = 0
@@ -83,22 +83,32 @@ import SwiftUI
         return f.state > 0 ? 3 : 4
     }
 
-    func send(_ action: Action, to friend: DockFriends.Friend) {
+    /// Changes the status in a running session. Offline is not offered: it is
+    /// chosen before launch and turns friends off for the session.
+    func setStatus(_ status: SteamOnlineStatus) {
+        guard status != .offline else { return }
+        send(.setStatus, id: UInt64(status.rawValue))
+        SteamOnlineStatus.current = status
+    }
+
+    func send(_ action: Action, to friend: DockFriends.Friend) { send(action, id: friend.steamID) }
+
+    private func send(_ action: Action, id: UInt64) {
         guard pending == nil else { return }
         sequence = sequence &+ 1
         if sequence == 0 { sequence = 1 }
         var bytes = [UInt8]("MFCMD001".utf8)
         bytes.append(action.rawValue)
-        for i in 0..<8 { bytes.append(UInt8(truncatingIfNeeded: friend.steamID >> (8 * UInt64(i)))) }
+        for i in 0..<8 { bytes.append(UInt8(truncatingIfNeeded: id >> (8 * UInt64(i)))) }
         for i in 0..<4 { bytes.append(UInt8(truncatingIfNeeded: sequence >> (8 * UInt32(i)))) }
         do {
             try Data(bytes).write(to: commandURL, options: .atomic)
         } catch {
             SteamLog.event("[dock-friends] command not written")
-            outcome = (friend.steamID, action, 6)
+            outcome = (id, action, 6)
             return
         }
-        pending = Pending(action: action, steamID: friend.steamID, sequence: sequence)
+        pending = Pending(action: action, steamID: id, sequence: sequence)
         sentAt = Date()
         outcome = nil
         SteamLog.event("[dock-friends] \(action) sent")
@@ -148,8 +158,8 @@ import SwiftUI
     static func message(action: Action, result: Int) -> String {
         switch result {
         // Join hands the lobby to the game; whether the game gets in is up to it.
-        case 1: return action == .invite ? "Invite sent" : "Sent to the game"
-        case 2: return action == .invite ? "Start the game to invite" : "Not in a joinable lobby"
+        case 1: return action == .invite ? "Invite sent" : action == .setStatus ? "Status changed" : "Sent to the game"
+        case 2: return action == .invite ? "Nothing to invite to yet: join or create a lobby" : "Not in a joinable lobby"
         case 3: return "Not on your friends list"
         case 4: return "Steam refused the request"
         case 0: return "No answer from Steam"
@@ -196,12 +206,33 @@ struct DockFriendRow: View {
                     Button(friend.dockFlags & 8 != 0 ? "Accept" : "Join") { model.send(.join, to: friend) }
                         .buttonStyle(.borderedProminent).disabled(model.pending != nil)
                 }
-                if friend.state > 0 {
+                // Like desktop Steam: Invite only while you have a lobby or connect string to invite with (feed flag 16).
+                if friend.state > 0, friend.dockFlags & 16 != 0 {
                     Button("Invite") { model.send(.invite, to: friend) }.buttonStyle(.bordered)
                         .disabled(model.pending != nil)
                 }
             }
         }
         .frame(minHeight: 44)
+    }
+}
+
+/// The Steam status Dock signs in with (Settings › Steam). The raw value is
+/// Steam's persona state, passed to Dock as MADEIRA_DOCK_PERSONA_STATE.
+enum SteamOnlineStatus: Int, CaseIterable, Identifiable {
+    case online = 1, away = 3, invisible = 7, offline = 0
+    var id: Int { rawValue }
+    var title: String {
+        switch self {
+        case .online: return "Online"
+        case .away: return "Away"
+        case .invisible: return "Invisible"
+        case .offline: return "Offline"
+        }
+    }
+    private static let key = "steamOnlineStatus"
+    static var current: SteamOnlineStatus {
+        get { SteamOnlineStatus(rawValue: UserDefaults.standard.object(forKey: key) as? Int ?? 1) ?? .online }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: key) }
     }
 }

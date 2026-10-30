@@ -4818,6 +4818,8 @@ struct LibraryHUD: View {
     @State private var bindsPage = false
     /// The Session menu's Friends page (Madeira Dock sessions).
     @State private var friendsPage = false
+    /// The status shown on the Friends page; Offline never reaches here (friends are off for that session).
+    @State private var steamStatus = SteamOnlineStatus.current
     @ObservedObject private var dockFriends = DockFriends.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
@@ -5149,6 +5151,11 @@ struct LibraryHUD: View {
                 Spacer()
                 Button("Done") { model.menu = false }.buttonStyle(.bordered)
             }.padding(.horizontal, 22).padding(.top, 22).padding(.bottom, 8)
+            Picker("Status", selection: Binding(get: { steamStatus }, set: { steamStatus = $0; dockFriends.setStatus($0) })) {
+                ForEach(SteamOnlineStatus.allCases.filter { $0 != .offline }) { Text($0.title).tag($0) }
+            }
+            .pickerStyle(.segmented).padding(.horizontal, 22).padding(.bottom, 8)
+            .disabled(dockFriends.pending != nil)
             if dockFriends.friends.isEmpty {
                 Spacer()
                 Text(dockFriends.available ? "No friends yet" : "Friends are available while the game runs")

@@ -689,6 +689,8 @@ struct SteamSettingsSection: View {
     @ObservedObject private var onboarding = OnboardingModel.shared
     @ObservedObject private var cloud = SteamCloudSetting.shared
     @State private var confirmSignOut = false
+    /// Settings › Steam › Status (SteamOnlineStatus), shown while signed in.
+    @State private var status = SteamOnlineStatus.current
     /// Settings › Steam › Game language (SteamLanguage); "" follows the device.
     @State private var language = SteamLanguage.chosen ?? ""
 
@@ -700,6 +702,10 @@ struct SteamSettingsSection: View {
             if let name = signIn.accountName {
                 LabeledContent("Signed in as", value: name)
                 Button("Sign out of Steam", role: .destructive) { confirmSignOut = true }
+                Picker("Status", selection: $status) {
+                    ForEach(SteamOnlineStatus.allCases) { Text($0.title).tag($0) }
+                }
+                .onChange(of: status) { _, value in SteamOnlineStatus.current = value }
             } else {
                 Button { open(.steamSignIn) } label: { Label("Sign in to Steam", systemImage: "person.crop.circle.badge.plus") }
             }
@@ -725,7 +731,7 @@ struct SteamSettingsSection: View {
         } header: {
             Text("Steam")
         } footer: {
-            Text("Game language: the language Steam downloads install, and the one Steam tells the game to use. A game without it gets English. Installed games keep their language until you choose Download in their page.\n\nMadeira keeps a Steam sign-in token in this device's Keychain, for this device only. Signing out removes it.")
+            Text("Status: what friends see when you play with Madeira Dock. Offline turns off friends and invites for the whole game and can only be chosen here, before it starts. Online, Away and Invisible can also be changed in the game, from the Madeira menu's Friends page.\n\nGame language: the language Steam downloads install, and the one Steam tells the game to use. A game without it gets English. Installed games keep their language until you choose Download in their page.\n\nMadeira keeps a Steam sign-in token in this device's Keychain, for this device only. Signing out removes it.")
         }
         .confirmationDialog("Sign out of Steam?", isPresented: $confirmSignOut, titleVisibility: .visible) {
             Button("Sign out", role: .destructive) { signIn.signOut() }
