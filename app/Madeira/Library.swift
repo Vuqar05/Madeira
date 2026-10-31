@@ -4816,6 +4816,11 @@ struct LibraryHUD: View {
     @ObservedObject private var curtain = LaunchCurtain.shared
     /// The Session menu's Controller binds page (keyboard-and-mouse mode).
     @State private var bindsPage = false
+    /// The Session menu's Friends page (Madeira Dock sessions).
+    @State private var friendsPage = false
+    /// The status shown on the Friends page; Offline never reaches here (friends are off for that session).
+    @State private var steamStatus = SteamOnlineStatus.current
+    @ObservedObject private var dockFriends = DockFriends.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
         GeometryReader { geo in
@@ -4842,7 +4847,7 @@ struct LibraryHUD: View {
                 if !model.startingScreen { LibraryFloatingItem(isMenu: true, viewport: geo.size, insets: geo.safeAreaInsets) }
                 if model.menu {
                     Color.black.opacity(0.5).ignoresSafeArea().onTapGesture { model.menu = false }.transition(.opacity)
-                    (bindsPage ? AnyView(bindsMenu) : AnyView(menu))
+                    (bindsPage ? AnyView(bindsMenu) : friendsPage ? AnyView(friendsMenu) : AnyView(menu))
                         .frame(width: min(460, geo.size.width - 32), height: min(650, geo.size.height - geo.safeAreaInsets.top - geo.safeAreaInsets.bottom - 24))
                         .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 28))
                         .clipShape(RoundedRectangle(cornerRadius: 28))
@@ -4879,7 +4884,8 @@ struct LibraryHUD: View {
         .onAppear { model.saveCurrentProfile() }
         .onChange(of: model.menu) { _, open in
             LibraryController.shared.configure(enabled: model.enabled, ownsInput: open)
-            if !open { bindsPage = false }
+            if !open { bindsPage = false; friendsPage = false }
+            if open { dockFriends.refresh() }
             if !open { model.saveCurrentProfile() }
             if open { eco = madeira_get_eco() != 0; fenceMode = FPSOverlayFenceMode.current }
         }
@@ -5134,6 +5140,41 @@ struct LibraryHUD: View {
         }
     }
 
+    /// Friends from the running Madeira Dock session: Join a friend's lobby in
+    /// this game, or Invite a friend (to this player's lobby when in one).
+    private var friendsMenu: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Button("Session", systemImage: "chevron.left") { friendsPage = false }.buttonStyle(.borderless)
+                Spacer()
+                Text("Friends").font(.headline)
+                Spacer()
+                Button("Done") { model.menu = false }.buttonStyle(.bordered)
+            }.padding(.horizontal, 22).padding(.top, 22).padding(.bottom, 8)
+            Picker("Status", selection: Binding(get: { steamStatus }, set: { steamStatus = $0; dockFriends.setStatus($0) })) {
+                ForEach(SteamOnlineStatus.allCases.filter { $0 != .offline }) { Text($0.title).tag($0) }
+            }
+            .pickerStyle(.segmented).padding(.horizontal, 22).padding(.bottom, 8)
+            .disabled(dockFriends.pending != nil)
+            if dockFriends.friends.isEmpty {
+                Spacer()
+                Text(dockFriends.available ? "No friends yet" : "Friends are available while the game runs")
+                    .foregroundStyle(.secondary)
+                Spacer()
+            } else {
+                List(dockFriends.friends, id: \.steamID) { friend in
+                    DockFriendRow(friend: friend, model: dockFriends)
+                }.scrollContentBackground(.hidden)
+            }
+        }
+        .task {
+            while !Task.isCancelled {
+                dockFriends.refresh()
+                try? await Task.sleep(for: .seconds(dockFriends.pending == nil ? 3 : 0.5))
+            }
+        }
+    }
+
     private var menu: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
@@ -5162,6 +5203,9 @@ struct LibraryHUD: View {
                     }
                 }
                 Button("Keyboard", systemImage: "keyboard") { model.menu = false; LibraryKeyboard.show() }
+                if dockFriends.available {
+                    Button("Friends", systemImage: "person.2") { friendsPage = true }
+                }
                 Divider()
                 FPSChoice(mode: Binding(get: { model.fpsMode }, set: { model.setFPS($0) }))
                 // Saved to the game with the rest of the session's profile.

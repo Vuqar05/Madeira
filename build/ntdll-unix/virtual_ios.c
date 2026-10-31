@@ -11361,6 +11361,15 @@ void __attribute__((weak)) d3d9_native_window_teardown( unsigned long window_bas
              (void *)window_base );
 }
 
+/* opengl32's unix side caches 32-bit copies of GL strings per window
+ * (return_wow64_string); a dead window's copies must not reach the next
+ * process given the same base.  Weak default for a build without that
+ * opengl32; the strong definition is in wine/dlls/opengl32/unix_wgl.c. */
+void __attribute__((weak)) opengl32_wow64_window_teardown( unsigned long window_base )
+{
+    (void)window_base;
+}
+
 /* RELEASE-ON-NEXT-ADOPT, step 2: tear down every window whose owner has exited.
  *
  * Runs at the top of ios_wow_window_reserve(), on the booting thread of the
@@ -11424,6 +11433,7 @@ static void ios_wow_reclaim_dead_windows(void)
          * PEB at this point.  No lock is held here; the call is idempotent,
          * so a teardown that fails and is retried later is harmless. */
         d3d9_native_window_teardown( (unsigned long)base );
+        opengl32_wow64_window_teardown( (unsigned long)base );
 
         if (!ios_wow_window_teardown( base, dead_peb, guard_owned ))
         {
@@ -12327,7 +12337,7 @@ static NTSTATUS load_builtin_unixlib( void *module, BOOL wow, const void **funcs
             /* Real opengl32 unix side (OpenGL ES / desktop GL through the winios
              * WGL driver). MADEIRA_NO_GL=1 keeps the old GL-absent stub table.
              * The wow64 table's thunks convert every embedded guest pointer with
-             * ios_wow_host_ptr() (patches/wine-opengl-winios.patch: make_opengl),
+             * ios_wow_host_ptr() (wine/dlls/opengl32/make_opengl),
              * so 32-bit GL games (Quake 3 engine, GLQuake) reach the driver. */
             pthread_once( &ios_stub_tables_once, ios_init_stub_tables );
             if (getenv("MADEIRA_NO_GL")) {

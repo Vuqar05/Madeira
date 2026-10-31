@@ -792,7 +792,7 @@ static void madeira_link_d3d9_wined3d(NSFileManager *fm, NSString *prefix, NSStr
      * contexts get for engines that copy the string into a fixed buffer would
      * hide extensions from it. overwrite=0: madeira.cfg can still set a limit. */
     setenv("MADEIRA_GL_EXTENSIONS_MAX", "0", 0);
-    extmax = getenv("MADEIRA_GL_EXTENSIONS_MAX");   /* byte limit of GL_EXTENSIONS in 32-bit OpenGL contexts (opengl32, patches/wine-opengl-winios.patch): unset = 3072, 0 = none; d3d9 = wined3d makes it 0 unless set */
+    extmax = getenv("MADEIRA_GL_EXTENSIONS_MAX");   /* byte limit of GL_EXTENSIONS in 32-bit OpenGL contexts (opengl32, wine/dlls/opengl32): unset = 3072, 0 = none; d3d9 = wined3d makes it 0 unless set */
     dprintf(STDERR_FILENO, "[WineProc] d3d9 = wined3d: Wine's d3d9 on wined3d/OpenGL (system32 %d, sysx64 %d, "
             "syswow64 %d; 1 = linked, -1 = farm has no d3d9-wined3d.dll, -2 = not this session's), "
             "MADEIRA_GL_BACKEND=%s, MADEIRA_GL_EXTENSIONS_MAX=%s\n", s32, s64, s32wow,

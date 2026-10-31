@@ -31,13 +31,11 @@ func checkAppEntitlement(_ ent: String) -> Bool {
 }
 
 struct EntitlementStatus {
-    let jitAllowed: Bool
     let increasedMemory: Bool
     let extendedVA: Bool
 
     static func check() -> EntitlementStatus {
         EntitlementStatus(
-            jitAllowed: checkAppEntitlement("com.apple.security.cs.allow-jit"),
             increasedMemory: checkAppEntitlement("com.apple.developer.kernel.increased-memory-limit"),
             extendedVA: checkAppEntitlement("com.apple.developer.kernel.extended-virtual-addressing")
         )

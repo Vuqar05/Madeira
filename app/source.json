@@ -18,9 +18,6 @@
       "appPermissions": {
         "entitlements": [
           {
-            "name": "com.apple.security.cs.allow-jit"
-          },
-          {
             "name": "com.apple.developer.kernel.increased-memory-limit"
           },
           {

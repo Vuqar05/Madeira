@@ -45,7 +45,7 @@ xcodebuild \
 
 python3 "$ROOT/tools/build/runtime-components.py" bundle "$APP"
 
-# Preserve Madeira's requested JIT/debug entitlements in the IPA. SideStore will
+# Preserve Madeira's requested memory/debug entitlements in the IPA. SideStore will
 # replace this ad-hoc signature with the user's development signature while
 # retaining the supported entitlements.
 codesign --force --sign - \
@@ -61,8 +61,10 @@ bundle_required=(
 for path in "${bundle_required[@]}"; do
   [[ -e "$path" ]] || { echo "ERROR: required bundle resource missing: $path" >&2; exit 1; }
 done
-codesign -d --entitlements :- "$APP" 2>/dev/null | grep -q 'com.apple.security.cs.allow-jit' || {
-  echo "ERROR: packaged app is missing the allow-jit entitlement" >&2
+# get-task-allow lets StikDebug attach, which is what enables JIT on iOS
+# (allow-jit is macOS-only and no longer requested).
+codesign -d --entitlements :- "$APP" 2>/dev/null | grep -q 'get-task-allow' || {
+  echo "ERROR: packaged app is missing the get-task-allow entitlement" >&2
   exit 1
 }
 

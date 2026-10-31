@@ -224,5 +224,17 @@ __pycache__/
 # Python host-check caches
 __pycache__/
 
+# Local build/test output: root-level logs, device logs, xcodebuild derived
+# data and archives, IPA staging and exports (regenerable, device-specific)
+/*.log
+device-logs/
+dist/
+build/signed-dd/
+build/prefriends-dd/
+build/ipa-stage/
+build/*.xcarchive/
+build/files-before.txt
+build/files-after.txt
+
 # Verified runtime component caches
 .runtime-cache/
