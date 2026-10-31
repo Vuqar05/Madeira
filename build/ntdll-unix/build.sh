@@ -159,6 +159,16 @@ compile_unixlib "$CRYPTO_DIR/crypt32_unixlib_ios.c" "crypt32_unixlib" "crypt32" 
     -I"$WINE_SRC/dlls/crypt32" -I"$GNUTLS_PREFIX/include" \
     -include "$CRYPTO_DIR/ios_gnutls_shim.h" \
     "${GNUTLS_DEFS[@]}"
+if [ ${#GNUTLS_DEFS[@]} -gt 0 ]; then
+    for module in bcrypt secur32 crypt32; do
+        for table in unix_call_funcs unix_call_wow64_funcs; do
+            xcrun nm -gU "$OBJ_DIR/${module}_unixlib.o" | grep -Eq "[[:space:]]_${module}_${table}$" || {
+                echo "ERROR: $module did not build its $table table" >&2
+                exit 1
+            }
+        done
+    done
+fi
 # OpenGL: opengl32's unix side (wrappers + generated thunks). It dispatches to
 # win32u's WGL layer, whose iOS driver is build/win32u-unix/opengl_ios.c.
 compile_unixlib "$WINE_SRC/dlls/opengl32/unix_wgl.c" "opengl32_wgl" "opengl32" \

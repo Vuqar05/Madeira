@@ -49,7 +49,6 @@ STRIP="$TC/arm64ec-w64-mingw32-strip"
 case "${1:-}" in
     -h|--help) sed -n '2,/^set -eu/p' "${BASH_SOURCE[0]}" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
 esac
-[ $# -gt 0 ] || set -- cryptsp d3dx11_43 faultrep msvcp110 msvcr110 xaudio2_7
 # Builtins for games and their installers (the madeira-bcd fork has shipped
 # them, built from this submodule the same way, since 2026-09-26):
 #   msvcr70-msvcr100, msvcrt20, msvcrt40, msvcirt, msvcp60-msvcp100, msvcp120
@@ -121,7 +120,7 @@ for m in "$@"; do
 done
 
 if [ ! -f "$B/config.status" ]; then
-    mkdir -p "$B" && (cd "$B" && ../configure --enable-archs=arm64ec --without-x --disable-tests --enable-winegstreamer)
+    mkdir -p "$B" && (cd "$B" && ../configure --enable-archs=arm64ec --without-x --disable-tests --without-freetype --without-gnutls --enable-winegstreamer)
 fi
 # widl looks for stdole2.tlb under aarch64-windows/ when it builds an ARM64EC
 # typelib import (shell32 and others); this tree builds it into arm64ec-windows/.
@@ -139,15 +138,18 @@ mkdir -p "$B/dlls/stdole2.tlb"
 # or built in this run; its Makefile.in is restored when the script ends.
 # UNDELAY=0 keeps the delay imports.
 undelayed=()
+backup="$(mktemp -d)"
 restore_makefiles() {
     local m
-    for m in "${undelayed[@]+"${undelayed[@]}"}"; do git -C "$R/wine" checkout -- "dlls/$m/Makefile.in"; done
+    for m in "${undelayed[@]+"${undelayed[@]}"}"; do cp "$backup/$m" "$R/wine/dlls/$m/Makefile.in"; done
+    rm -rf "$backup"
 }
 trap restore_makefiles EXIT
 in_farm() { [ -n "$(find "$DEST" -maxdepth 1 -iname "$1.dll" 2>/dev/null)" ]; }
 if [ "${UNDELAY:-1}" != 0 ]; then
     for m in "$@"; do
         mk="$R/wine/dlls/$m/Makefile.in"
+        [ -f "$mk" ] || continue
         delayed="$(sed -n 's/^DELAYIMPORTS[[:space:]]*=[[:space:]]*//p' "$mk")"
         [ -n "$delayed" ] && grep -q '^IMPORTS' "$mk" || continue
         ok=1
@@ -155,9 +157,10 @@ if [ "${UNDELAY:-1}" != 0 ]; then
             in_farm "$i" || case " $* " in *" $i "*) ;; *) ok=0 ;; esac
         done
         [ "$ok" = 1 ] || continue
+        cp "$mk" "$backup/$m"
+        undelayed+=("$m")
         sed -i.bak -e '/^DELAYIMPORTS[[:space:]]*=/d' -e "s/^\(IMPORTS[[:space:]]*=.*\)\$/\1 $delayed/" "$mk" && rm -f "$mk.bak"
         rm -f "$B/dlls/$m/arm64ec-windows/$(sed -n 's/^MODULE[[:space:]]*=[[:space:]]*//p' "$mk")"   # an earlier link with the delay imports must not satisfy make
-        undelayed+=("$m")
     done
     [ ${#undelayed[@]} -eq 0 ] || echo "delay imports linked as plain imports: ${undelayed[*]}"
 fi

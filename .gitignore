@@ -235,3 +235,6 @@ build/ipa-stage/
 build/*.xcarchive/
 build/files-before.txt
 build/files-after.txt
+
+# Verified runtime component caches
+.runtime-cache/
