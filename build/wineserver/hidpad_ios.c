@@ -235,12 +235,47 @@ static int hidpad_log_open( unsigned int pid )
     return 0;
 }
 
+/* MADEIRA_HIDPAD_OWNER=<exe name> (Steam Input): only that process may open
+ * the pad. Valve's client in Madeira Dock reads it and hands the game a virtual
+ * Xbox pad; on Windows Steam hides the real pad from the game, so here every
+ * other process is refused, or the game sees the pad twice. */
+static int hidpad_open_allowed( void )
+{
+    const char *owner = getenv( "MADEIRA_HIDPAD_OWNER" );
+    const struct process *process = current ? current->process : NULL;
+    data_size_t len, i, n;
+    const WCHAR *name;
+
+    if (!owner || !*owner) return 1;
+    if (!process || !process->image) return 0;
+    len = process->imagelen / sizeof(WCHAR);
+    n = strlen( owner );
+    if (len < n + 1 || process->image[len - n - 1] != '\\') return 0;
+    name = process->image + len - n;
+    for (i = 0; i < n; i++)
+    {
+        WCHAR a = name[i], b = (unsigned char)owner[i];
+        if (a >= 'A' && a <= 'Z') a += 'a' - 'A';
+        if (b >= 'A' && b <= 'Z') b += 'a' - 'A';
+        if (a != b) return 0;
+    }
+    return 1;
+}
+
 static struct object *hidpad_device_open_file( struct object *obj, unsigned int access,
                                                unsigned int sharing, unsigned int options )
 {
     struct hidpad_device *device = (struct hidpad_device *)obj;
     struct hidpad_file *file;
 
+    if (!hidpad_open_allowed())
+    {
+        if (hidpad_log_open( current ? current->process->id : 0 ))
+            fprintf( stderr, "[hid-pad] ml2107 open refused pid=%04x (not MADEIRA_HIDPAD_OWNER)\n",
+                     current ? current->process->id : 0 );
+        set_error( STATUS_ACCESS_DENIED );
+        return NULL;
+    }
     if (!(file = alloc_object( &hidpad_file_ops ))) return NULL;
     file->device = (struct hidpad_device *)grab_object( device );
     file->fd = NULL;

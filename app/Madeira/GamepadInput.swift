@@ -103,7 +103,7 @@ final class GamepadInput: @unchecked Sendable {
     @MainActor func beginPadSession(steamInput: Bool = false) {
         let mode = steamInput ? (value: "dualsense", source: "steam-input") : Self.configuredPadMode()
         let output = Self.configuredPadOutput()
-        unsetenv("MADEIRA_HIDPAD"); unsetenv("MADEIRA_HIDPAD_NAME")
+        unsetenv("MADEIRA_HIDPAD"); unsetenv("MADEIRA_HIDPAD_NAME"); unsetenv("MADEIRA_HIDPAD_OWNER")
         // An earlier session in this app run may have taken player 1 off XInput.
         queue.async { [self] in hidActive = false; hidKeepsXInput = false }
         guard ["hid", "dualsense", "generic"].contains(mode.value) else {
@@ -126,6 +126,9 @@ final class GamepadInput: @unchecked Sendable {
         default: kind = first == nil || sony ? "dualsense" : "generic"
         }
         setenv("MADEIRA_HIDPAD", kind, 1)
+        // Steam Input: only Valve's client (in Dock) opens the pad; the game gets
+        // Steam's virtual Xbox pad, as Steam hides the real one on Windows.
+        if steamInput { setenv("MADEIRA_HIDPAD_OWNER", "dockhost.exe", 1) }
         if kind == "generic", let name = first?.vendorName { setenv("MADEIRA_HIDPAD_NAME", name, 1) }
         let keepXInput = Self.optIn("MADEIRA_HIDPAD_XINPUT")
         queue.async { [self] in hidActive = true; hidKeepsXInput = keepXInput; sample() }
