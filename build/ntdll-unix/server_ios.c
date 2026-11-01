@@ -5548,6 +5548,75 @@ static const struct hidpad_identity *ios_hidpad_live_identity( char *link, unsig
 }
 
 /***********************************************************************
+ *           ios_hidpad_usb_parent
+ *
+ * Steam Input (docs/STEAM_INPUT.md): the USB device a wired pad's HID
+ * interface sits on. SDL's HIDAPI (in Valve's client) takes the bus type from
+ * the HID device's parent devnode (CM_Get_Parent, its CompatibleIDs: "USB...")
+ * and the client looks the pad up among USB devices; with no parent the pad
+ * has no bus and the client never opens it. Windows keeps the device tree in
+ * the kernel; Madeira's setupapi reads the HID device's "Parent" value
+ * (wine/dlls/setupapi/devinst.c CM_Get_Parent). A USB composite device, as a
+ * wired pad is, with its GUID_DEVINTERFACE_USB_DEVICE interface listed like
+ * the HID one. Returns how many of its 4 keys were written.
+ */
+static unsigned int ios_hidpad_usb_parent( const struct hidpad_identity *id, const char *usb_instance )
+{
+    static const char enumkey[] = "\\Registry\\Machine\\System\\CurrentControlSet\\Enum";
+    static const char classes[] = "\\Registry\\Machine\\System\\CurrentControlSet\\Control\\DeviceClasses";
+    static const char usb_interface[] = "{a5dcbf10-6530-11d2-901f-00c04fb951ed}";
+    const char *class_name = "USB", *class_guid = "{36fc9e60-c465-11cf-8056-444553540000}";
+    const char *desc = "USB Composite Device";
+    const char *compatible[] = { "USB\\DevClass_00&SubClass_00&Prot_00", "USB\\DevClass_00&SubClass_00",
+                                 "USB\\DevClass_00", "USB\\COMPOSITE" };
+    char hardware0[64], hardware1[64], link[160], path[400], symlink[170];
+    const char *hardware[2] = { hardware0, hardware1 };
+    unsigned int written = 0;
+    HANDLE key;
+
+    snprintf( hardware0, sizeof(hardware0), "USB\\VID_%04X&PID_%04X&REV_%04X", id->vid, id->pid, id->version );
+    snprintf( hardware1, sizeof(hardware1), "USB\\VID_%04X&PID_%04X", id->vid, id->pid );
+    snprintf( link, sizeof(link), "USB#VID_%04X&PID_%04X#%s#%s", id->vid, id->pid, id->serial, usb_interface );
+    snprintf( symlink, sizeof(symlink), "\\\\?\\%s", link );
+    if ((key = ios_hidpad_key( enumkey, usb_instance )))
+    {
+        ios_hidpad_value( key, "ClassGUID", REG_SZ, &class_guid, 1, 0 );
+        ios_hidpad_value( key, "Class", REG_SZ, &class_name, 1, 0 );
+        ios_hidpad_value( key, "DeviceDesc", REG_SZ, &desc, 1, 0 );
+        ios_hidpad_value( key, "Mfg", REG_SZ, &id->manufacturer, 1, 0 );
+        ios_hidpad_value( key, "HardwareID", REG_MULTI_SZ, hardware, 2, 0 );
+        ios_hidpad_value( key, "CompatibleIDs", REG_MULTI_SZ, compatible, ARRAY_SIZE(compatible), 0 );
+        ios_hidpad_value( key, "ContainerID", REG_SZ, &id->container_id, 1, 0 );
+        ios_hidpad_value( key, "ConfigFlags", REG_DWORD, NULL, 0, 0 );
+        NtClose( key );
+        written++;
+    }
+    snprintf( path, sizeof(path), "%s\\##?#%s", usb_interface, link );
+    if ((key = ios_hidpad_key( classes, path )))
+    {
+        ios_hidpad_value( key, "DeviceInstance", REG_SZ, &usb_instance, 1, 0 );
+        NtClose( key );
+        written++;
+    }
+    snprintf( path, sizeof(path), "%s\\##?#%s\\#", usb_interface, link );
+    if ((key = ios_hidpad_key( classes, path )))
+    {
+        const char *value = symlink;
+        ios_hidpad_value( key, "SymbolicLink", REG_SZ, &value, 1, 0 );
+        NtClose( key );
+        written++;
+    }
+    snprintf( path, sizeof(path), "%s\\##?#%s\\#\\Control", usb_interface, link );
+    if ((key = ios_hidpad_key( classes, path )))
+    {
+        ios_hidpad_value( key, "Linked", REG_DWORD, NULL, 0, 1 );
+        NtClose( key );
+        written++;
+    }
+    return written;
+}
+
+/***********************************************************************
  *           ios_hidpad_publish
  *
  * ml2102: the registry half of the opt-in HID controller (MADEIRA_HIDPAD,
@@ -5572,7 +5641,8 @@ static void ios_hidpad_publish(void)
     char link[200], path[400], instance[128], symlink[210];
     const char *class_name = "HIDClass", *class_guid = HIDPAD_HIDCLASS_GUID;
     const char *desc = "HID-compliant game controller";
-    unsigned int written = 0;
+    unsigned int written = 0, usb_parent;
+    char usb_instance[128];
     HANDLE key;
 
     if (!getenv( "MADEIRA_HIDPAD" )) return;
@@ -5584,6 +5654,7 @@ static void ios_hidpad_publish(void)
     }
     snprintf( instance, sizeof(instance), "%s\\%s", id->device_id, id->instance );
     snprintf( symlink, sizeof(symlink), "\\\\?\\%s", link );
+    snprintf( usb_instance, sizeof(usb_instance), "USB\\VID_%04X&PID_%04X\\%s", id->vid, id->pid, id->serial );
 
     if ((key = ios_hidpad_key( enumkey, instance )))
     {
@@ -5594,9 +5665,14 @@ static void ios_hidpad_publish(void)
         ios_hidpad_value( key, "HardwareID", REG_MULTI_SZ, id->hardware_ids, ARRAY_SIZE(id->hardware_ids), 0 );
         ios_hidpad_value( key, "ContainerID", REG_SZ, &id->container_id, 1, 0 );
         ios_hidpad_value( key, "ConfigFlags", REG_DWORD, NULL, 0, 0 );
+        {
+            const char *value = usb_instance;
+            ios_hidpad_value( key, "Parent", REG_SZ, &value, 1, 0 );
+        }
         NtClose( key );
         written++;
     }
+    usb_parent = ios_hidpad_usb_parent( id, usb_instance );
     snprintf( path, sizeof(path), "%s\\##?#%s", HIDPAD_HID_INTERFACE_GUID, link );
     if ((key = ios_hidpad_key( classes, path )))
     {
@@ -5620,8 +5696,8 @@ static void ios_hidpad_publish(void)
         NtClose( key );
         written++;
     }
-    wine_log_write( "[hid-pad] ml2102 %s %04X:%04X registered (%u/4 keys) as %s rev=ml2105",
-                    id->env, id->vid, id->pid, written, symlink );
+    wine_log_write( "[hid-pad] ml2102 %s %04X:%04X registered (%u/4 keys) as %s, USB parent %u/4 rev=ml2105",
+                    id->env, id->vid, id->pid, written, symlink, usb_parent );
 }
 #endif
 
