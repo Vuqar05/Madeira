@@ -25,6 +25,10 @@
  * If AudioUnit setup fails (no session, etc.) the driver degrades to the
  * Tier-1 wall-clock null behaviour so game timing never breaks.
  * AVAudioSession activation happens app-side (WineProcessBridge.m).
+ *
+ * CAPTURE: one microphone endpoint, fed by an AudioQueue input (see
+ * "Capture: the microphone" below). It is listed only when the app's audio
+ * session can record (MADEIRA_AUDIO_INPUT=1, set by WineProcessBridge.m).
  */
 
 #include <stdint.h>
@@ -363,6 +367,15 @@ struct ios_stream {
     _Atomic uint32_t st_cbs;       /* render passes that mixed this stream */
     _Atomic uint32_t st_short_cbs; /* passes that ran short */
     _Atomic uint32_t st_cb_max;    /* largest render pass, device frames */
+    /* Capture (the microphone). The ring holds the client's own format: the
+     * AudioQueue thread writes it (write_pos) and get_capture_buffer reads it
+     * (play_pos = frames the client has released). */
+    int capture;                   /* an eCapture stream */
+    UINT32 period_frames;          /* frames per capture packet */
+    UINT32 getbuf_last;            /* frames handed out by get_capture_buffer, not yet released */
+    double cap_phase;              /* resampler position, in input samples past cap_prev */
+    float cap_prev;                /* last input sample of the previous queue buffer */
+    _Atomic uint32_t cap_dropped;  /* frames lost to a full ring since the last packet */
 };
 
 /* ml739: one stream object per client, mirroring Wine's CoreAudio driver.
@@ -977,7 +990,274 @@ static void ios_dev_stop_if_idle(void)
  * synthesis exactly as before. */
 static int ios_stream_is_live(const struct ios_stream *s)
 {
-    return s->mixable && g_dev.au != NULL;
+    return !s->capture && s->mixable && g_dev.au != NULL;
+}
+
+/* ------------------- Capture: the microphone ------------------- */
+
+/* The microphone comes in through an AudioQueue, not through the RemoteIO
+ * unit. Input on RemoteIO has to be enabled before AudioUnitInitialize, and
+ * that unit is initialised once and kept for the process lifetime (ml1026):
+ * re-initialising it under a playing game is the churn that trapped caulk.
+ * An input queue is a separate object in the audio server, created when a
+ * capture client starts and disposed when the last one stops, so the
+ * microphone indicator is on only while a game is listening.
+ *
+ * The queue delivers 16-bit mono at IOS_CAP_RATE. Its callback runs on the
+ * queue's own thread and, like the render callback, touches only
+ * g_cap_streams and the per-stream ring and atomics: each started capture
+ * client gets the samples resampled (linear) to its rate, copied to all of
+ * its channels and converted to its sample format, so any format a game asks
+ * for in shared mode works (dsound and winmm capture come through here too). */
+#define IOS_CAP_RATE 48000u
+#define IOS_CAP_BUFFERS 4
+#define IOS_CAP_BUFFER_FRAMES 480u   /* 10 ms per queue buffer */
+
+static const char IOS_MIC_DEVICE_NAME[] = "ios-mic";
+
+struct ios_capture_device {
+    AudioQueueRef q;               /* non-NULL while some capture client is started */
+    int failed;                    /* AudioQueueNewInput failed; stay silent */
+    _Atomic int running;           /* the callback re-enqueues its buffer */
+    _Atomic int in_cb;             /* callbacks in flight; ios_cap_detach waits for 0 */
+    _Atomic uint32_t peak_bits;    /* largest |sample| since the last report, as float bits */
+};
+static struct ios_capture_device g_cap;
+static pthread_mutex_t g_cap_lock = PTHREAD_MUTEX_INITIALIZER;
+/* Published to the queue callback; seq_cst against in_cb (see ios_cap_detach). */
+static _Atomic(struct ios_stream *) g_cap_streams[IOS_MAX_STREAMS];
+
+static REFERENCE_TIME ios_engine_period(void);
+
+/* WineProcessBridge.m sets MADEIRA_AUDIO_INPUT=1 when the session it activated
+ * can record: env.MADEIRA_MICROPHONE is not 0, the category is PlayAndRecord,
+ * an input is available and the user has not refused the microphone. */
+static int ios_capture_available(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        const char *e = getenv("MADEIRA_AUDIO_INPUT");
+        cached = e && e[0] == '1';
+        fprintf(stderr, "[ios_audio] microphone endpoint %s (MADEIRA_AUDIO_INPUT=%s)\n",
+                cached ? "listed" : "not listed", e ? e : "unset");
+    }
+    return cached;
+}
+
+/* One sample in the client's format. Signed integers are full scale; 8-bit
+ * PCM is unsigned, as WAVEFORMATEX defines it. */
+static void ios_cap_store(BYTE *dst, float v, int is_float, int bits)
+{
+    if (v > 1.0f) v = 1.0f;
+    else if (v < -1.0f) v = -1.0f;
+    if (is_float) { memcpy(dst, &v, 4); return; }
+    switch (bits) {
+    case 8:  dst[0] = (BYTE)((int)(v * 127.0f) + 128); break;
+    case 16: { int16_t i = (int16_t)(v * 32767.0f); memcpy(dst, &i, 2); break; }
+    case 24: { int32_t i = (int32_t)(v * 8388607.0f);
+               dst[0] = (BYTE)i; dst[1] = (BYTE)(i >> 8); dst[2] = (BYTE)(i >> 16); break; }
+    case 32: { int32_t i = (int32_t)((double)v * 2147483647.0); memcpy(dst, &i, 4); break; }
+    }
+}
+
+/* Append n microphone samples (16-bit mono at in_rate) to one capture
+ * client's ring. Producer side of a single-producer ring: write_pos is ours,
+ * play_pos the client's. A full ring drops the new frames and says so in the
+ * next packet's flags (AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY).
+ *
+ * The resampler walks the sequence prev, in[0], in[1], ... where prev is the
+ * last sample of the previous buffer, so it is continuous across buffers. */
+static void ios_cap_feed(struct ios_stream *s, const int16_t *in, UInt32 n, UINT32 in_rate)
+{
+    UINT32 cap = s->buffer_frames, fb = s->frame_bytes, ch = s->channels, bps;
+    uint64_t rd, wr, used, room, made = 0, dropped = 0;
+    double pos, step;
+    float prev, peak = 0.0f;
+
+    if (!s->started || !s->ring || !cap || !fb || !ch || !n || !s->sample_rate || !in_rate) return;
+
+    rd   = atomic_load_explicit(&s->play_pos, memory_order_acquire);
+    wr   = atomic_load_explicit(&s->write_pos, memory_order_relaxed);
+    used = wr > rd ? wr - rd : 0;
+    room = used < cap ? cap - used : 0;
+    bps  = fb / ch;
+    step = (double)in_rate / s->sample_rate;
+    pos  = s->cap_phase;
+    prev = s->cap_prev;
+
+    while (pos < n) {
+        UInt32 i = (UInt32)pos;
+        float a = i ? in[i - 1] * (1.0f / 32768.0f) : prev;
+        float b = in[i] * (1.0f / 32768.0f);
+        float v = a + (b - a) * (float)(pos - i);
+        float m = v < 0 ? -v : v;
+
+        if (m > peak) peak = m;
+        if (made < room) {
+            BYTE *fr = s->ring + (size_t)((wr + made) % cap) * fb;
+            UINT32 c;
+            if (!s->mixable) memset(fr, 0, fb);
+            else for (c = 0; c < ch; c++) ios_cap_store(fr + (size_t)c * bps, v, s->is_float, s->sample_bits);
+            made++;
+        }
+        else dropped++;
+        pos += step;
+    }
+    s->cap_phase = pos - n;
+    s->cap_prev = in[n - 1] * (1.0f / 32768.0f);
+
+    /* release-store AFTER the frames are written, as in release_render_buffer */
+    atomic_store_explicit(&s->write_pos, wr + made, memory_order_release);
+    if (dropped) atomic_fetch_add_explicit(&s->cap_dropped, (uint32_t)dropped, memory_order_relaxed);
+    {
+        uint32_t bits, old;
+        memcpy(&bits, &peak, 4);
+        old = atomic_load_explicit(&g_cap.peak_bits, memory_order_relaxed);
+        while (bits > old && !atomic_compare_exchange_weak_explicit(&g_cap.peak_bits, &old, bits,
+                                                                    memory_order_relaxed, memory_order_relaxed)) {}
+    }
+}
+
+/* The queue's thread. No Wine calls, no locks, no logging. */
+static void ios_cap_input_cb(void *user, AudioQueueRef q, AudioQueueBufferRef buf,
+                             const AudioTimeStamp *ts, UInt32 npackets,
+                             const AudioStreamPacketDescription *desc)
+{
+    UInt32 n = buf->mAudioDataByteSize / sizeof(int16_t);
+    int i;
+    (void)user; (void)ts; (void)npackets; (void)desc;
+
+    atomic_fetch_add(&g_cap.in_cb, 1);
+    if (n)
+        for (i = 0; i < IOS_MAX_STREAMS; i++) {
+            struct ios_stream *s = atomic_load(&g_cap_streams[i]);
+            if (s) ios_cap_feed(s, (const int16_t *)buf->mAudioData, n, IOS_CAP_RATE);
+        }
+    atomic_fetch_sub(&g_cap.in_cb, 1);
+    if (atomic_load_explicit(&g_cap.running, memory_order_relaxed))
+        AudioQueueEnqueueBuffer(q, buf, 0, NULL);
+}
+
+/* Describe a capture client's format and publish it to the queue callback.
+ * A format the converter does not know is fed silence rather than refused. */
+static int ios_cap_attach(struct ios_stream *s, const struct WAVEFORMATEX_stub *fmt)
+{
+    int i, slot = -1, bits;
+    uint64_t period;
+
+    s->is_float = ios_fmt_is_float(fmt);
+    bits = (s->channels && s->frame_bytes) ? (int)(s->frame_bytes / s->channels) * 8 : 0;
+    s->sample_bits = bits;
+    s->mixable = (s->is_float && bits == 32) ||
+                 (!s->is_float && (bits == 8 || bits == 16 || bits == 24 || bits == 32));
+    /* one packet per engine period, as Windows hands them out */
+    period = (uint64_t)s->sample_rate * (uint64_t)ios_engine_period() / 10000000ull;
+    if (period > s->buffer_frames / 2) period = s->buffer_frames / 2;
+    s->period_frames = period ? (UINT32)period : 1;
+    s->cap_phase = 0;
+    s->cap_prev = 0;
+
+    pthread_mutex_lock(&g_cap_lock);
+    for (i = 0; i < IOS_MAX_STREAMS; i++)
+        if (!atomic_load(&g_cap_streams[i])) { slot = i; break; }
+    if (slot >= 0) atomic_store(&g_cap_streams[slot], s);
+    pthread_mutex_unlock(&g_cap_lock);
+
+    fprintf(stderr, "[ios_audio] mic CAPTURE slot=%d rate=%u ch=%u fb=%u float=%d bits=%d "
+                    "packet=%u frames ring=%u frames%s\n",
+            slot, s->sample_rate, s->channels, s->frame_bytes, s->is_float, bits,
+            s->period_frames, s->buffer_frames,
+            s->mixable ? "" : " -- UNKNOWN format, this client gets silence");
+    return slot < 0 ? -1 : 0;
+}
+
+/* Unpublish a capture client and wait until no queue callback can be inside
+ * it: the slot is cleared before in_cb is read and the callback raises in_cb
+ * before it reads a slot (both seq_cst), so a callback either never saw this
+ * stream or is counted. */
+static void ios_cap_detach(struct ios_stream *s)
+{
+    int i, spins = 0;
+
+    for (i = 0; i < IOS_MAX_STREAMS; i++)
+        if (atomic_load(&g_cap_streams[i]) == s) atomic_store(&g_cap_streams[i], NULL);
+    while (atomic_load(&g_cap.in_cb)) {
+        if (++spins > 500) {
+            fprintf(stderr, "[ios_audio] mic detach quiesce TIMED OUT -- proceeding\n");
+            break;
+        }
+        usleep(1000);
+    }
+}
+
+/* Start the microphone if it is not running. Failure leaves capture clients
+ * with no data (GetBuffer reports an empty buffer), which voice chat treats
+ * as silence. */
+static void ios_cap_start(void)
+{
+    AudioStreamBasicDescription asbd = {0};
+    OSStatus err;
+    int i;
+
+    pthread_mutex_lock(&g_cap_lock);
+    if (g_cap.q || g_cap.failed) goto out;
+
+    asbd.mSampleRate = IOS_CAP_RATE;
+    asbd.mFormatID = kAudioFormatLinearPCM;
+    asbd.mFormatFlags = kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked;
+    asbd.mFramesPerPacket = 1;
+    asbd.mChannelsPerFrame = 1;
+    asbd.mBitsPerChannel = 16;
+    asbd.mBytesPerFrame = 2;
+    asbd.mBytesPerPacket = 2;
+
+    /* NULL run loop: callbacks come on the queue's own thread */
+    if ((err = AudioQueueNewInput(&asbd, ios_cap_input_cb, NULL, NULL, NULL, 0, &g_cap.q))) {
+        fprintf(stderr, "[ios_audio] mic AudioQueueNewInput: %d -- capture stays silent\n", (int)err);
+        g_cap.q = NULL;
+        g_cap.failed = 1;
+        goto out;
+    }
+    for (i = 0; i < IOS_CAP_BUFFERS; i++) {
+        AudioQueueBufferRef b;
+        if (!AudioQueueAllocateBuffer(g_cap.q, IOS_CAP_BUFFER_FRAMES * 2, &b))
+            AudioQueueEnqueueBuffer(g_cap.q, b, 0, NULL);
+    }
+    atomic_store(&g_cap.running, 1);
+    if ((err = AudioQueueStart(g_cap.q, NULL))) {
+        /* not marked failed: an interrupted session can record again later */
+        fprintf(stderr, "[ios_audio] mic AudioQueueStart: %d -- capture stays silent\n", (int)err);
+        atomic_store(&g_cap.running, 0);
+        AudioQueueDispose(g_cap.q, true);
+        g_cap.q = NULL;
+        goto out;
+    }
+    fprintf(stderr, "[ios_audio] mic ON: %u Hz mono 16-bit, %u x %u-frame buffers\n",
+            IOS_CAP_RATE, IOS_CAP_BUFFERS, IOS_CAP_BUFFER_FRAMES);
+out:
+    pthread_mutex_unlock(&g_cap_lock);
+}
+
+/* Stop and dispose the queue once no capture client is started. Synchronous:
+ * after AudioQueueStop(.., true) no callback is running, and the callback
+ * never takes g_cap_lock, so holding it here cannot deadlock. */
+static void ios_cap_stop_if_idle(void)
+{
+    int i, any = 0;
+
+    pthread_mutex_lock(&g_cap_lock);
+    for (i = 0; i < IOS_MAX_STREAMS; i++) {
+        struct ios_stream *m = atomic_load(&g_cap_streams[i]);
+        if (m && m->started) { any = 1; break; }
+    }
+    if (!any && g_cap.q) {
+        atomic_store(&g_cap.running, 0);
+        AudioQueueStop(g_cap.q, true);
+        AudioQueueDispose(g_cap.q, true);
+        g_cap.q = NULL;
+        fprintf(stderr, "[ios_audio] mic OFF (no capture client running)\n");
+    }
+    pthread_mutex_unlock(&g_cap_lock);
 }
 
 /* ---------------------------------------------------------------- */
@@ -1060,7 +1340,9 @@ static NTSTATUS ios_process_detach(void *args) {
             s->valid = 0;
             s->started = 0;
             ios_dev_detach(s);
+            ios_cap_detach(s);
         }
+        ios_cap_stop_if_idle();
     }
     return STATUS_SUCCESS;
 }
@@ -1081,8 +1363,21 @@ static NTSTATUS ios_main_loop(void *args) {
 static NTSTATUS ios_get_endpoint_ids(void *args) {
     LOG_FN_CALL(3, "get_endpoint_ids");
     struct get_endpoint_ids_params *p = args;
-    /* Only render endpoints; refuse capture entirely. */
-    if (p->flow != eRender) {
+    static const WCHAR render_name_w[] = { 'i','O','S',' ','N','u','l','l', 0 };
+    static const WCHAR mic_name_w[] = { 'i','O','S',' ','M','i','c','r','o','p','h','o','n','e', 0 };
+    const WCHAR *dev_name_w;
+    const char *dev;
+    unsigned int name_bytes, device_bytes;
+
+    /* One render endpoint; one capture endpoint (the microphone) when the
+     * session can record. Loopback and anything else: none. */
+    if (p->flow == eRender) {
+        dev_name_w = render_name_w; name_bytes = sizeof(render_name_w);
+        dev = IOS_DEVICE_NAME; device_bytes = sizeof(IOS_DEVICE_NAME);
+    } else if (p->flow == eCapture && ios_capture_available()) {
+        dev_name_w = mic_name_w; name_bytes = sizeof(mic_name_w);
+        dev = IOS_MIC_DEVICE_NAME; device_bytes = sizeof(IOS_MIC_DEVICE_NAME);
+    } else {
         p->num = 0;
         p->default_idx = 0;
         p->result = S_OK;
@@ -1091,9 +1386,6 @@ static NTSTATUS ios_get_endpoint_ids(void *args) {
     /* mmdevapi treats endpoint.name as WCHAR* (wide string, 2 bytes/char)
      * and endpoint.device as char* (single-byte). Both stored as byte
      * offsets from the endpoints buffer base. */
-    static const WCHAR dev_name_w[] = { 'i','O','S',' ','N','u','l','l', 0 };
-    unsigned int name_bytes = sizeof(dev_name_w);
-    unsigned int device_bytes = sizeof(IOS_DEVICE_NAME);
     unsigned int needed = sizeof(struct endpoint) + name_bytes + device_bytes;
     if (p->size < needed) {
         p->num = 1;
@@ -1106,7 +1398,7 @@ static NTSTATUS ios_get_endpoint_ids(void *args) {
     unsigned int device_off = name_off + name_bytes;
     char *buf = (char *)p->endpoints;
     memcpy(buf + name_off, dev_name_w, name_bytes);
-    memcpy(buf + device_off, IOS_DEVICE_NAME, device_bytes);
+    memcpy(buf + device_off, dev, device_bytes);
     p->endpoints[0].name = name_off;
     p->endpoints[0].device = device_off;
     p->num = 1;
@@ -1137,6 +1429,7 @@ static NTSTATUS ios_create_stream(void *args) {
     }
     s->valid = 1;
     s->started = 0;
+    s->capture = p->flow == eCapture;
     s->start_mach = 0;
     s->accumulated_frames = 0;
     s->sample_rate = p->fmt && p->fmt->nSamplesPerSec ? p->fmt->nSamplesPerSec : IOS_AUDIO_SAMPLE_RATE;
@@ -1162,6 +1455,8 @@ static NTSTATUS ios_create_stream(void *args) {
 
     if (p->flow == eRender && s->ring)
         ios_dev_attach(s, p->fmt);   /* failure -> null-mode */
+    else if (s->capture && s->ring)
+        ios_cap_attach(s, p->fmt);   /* failure -> no data, as with no microphone */
 
     if (p->channel_count) *p->channel_count = s->channels;
     if (p->stream) *p->stream = (stream_handle)(uintptr_t)s;
@@ -1171,6 +1466,7 @@ static NTSTATUS ios_create_stream(void *args) {
     if (stream_register(s)) {
         fprintf(stderr, "[ios-astream] ml739 too many streams -- refusing\n");
         ios_dev_detach(s);
+        ios_cap_detach(s);
         ios_audio_free_scratch(s->render_scratch, s->scratch_guest); free(s->ring); free(s);
         /* the handle was published above; it now points at freed memory */
         if (p->stream) *p->stream = 0;
@@ -1197,8 +1493,13 @@ static NTSTATUS ios_release_stream(void *args) {
         NtWaitForSingleObject(p->timer_thread, FALSE, NULL);
         NtClose(p->timer_thread);
     }
-    ios_dev_detach(s);
-    ios_dev_stop_if_idle();
+    if (s->capture) {
+        ios_cap_detach(s);
+        ios_cap_stop_if_idle();
+    } else {
+        ios_dev_detach(s);
+        ios_dev_stop_if_idle();
+    }
     stream_unregister(s);
     ios_audio_free_scratch(s->render_scratch, s->scratch_guest);
     free(s->ring);
@@ -1217,7 +1518,8 @@ static NTSTATUS ios_start(void *args) {
          * already sees this client. */
         s->start_mach = mach_absolute_time();
         s->started = 1;
-        ios_dev_start();
+        if (s->capture) ios_cap_start();
+        else ios_dev_start();
     }
     p->result = S_OK;
     return STATUS_SUCCESS;
@@ -1230,7 +1532,8 @@ static NTSTATUS ios_stop(void *args) {
     if (s->started) {
         s->accumulated_frames = elapsed_frames(s);
         s->started = 0;
-        ios_dev_stop_if_idle();
+        if (s->capture) ios_cap_stop_if_idle();
+        else ios_dev_stop_if_idle();
     }
     p->result = S_OK;
     return STATUS_SUCCESS;
@@ -1247,6 +1550,9 @@ static NTSTATUS ios_reset(void *args) {
     atomic_store(&s->write_pos, 0);
     atomic_store(&s->play_pos, 0);
     s->pending_frames = 0;
+    s->getbuf_last = 0;
+    s->cap_phase = 0;
+    atomic_store(&s->cap_dropped, 0);
     p->result = S_OK;
     return STATUS_SUCCESS;
 }
@@ -1519,18 +1825,104 @@ static NTSTATUS ios_release_render_buffer(void *args) {
     return STATUS_SUCCESS;
 }
 
+#define IOS_AUDCLNT_E_OUT_OF_ORDER   ((HRESULT)0x88890007L)
+#define IOS_AUDCLNT_E_INVALID_SIZE   ((HRESULT)0x88890009L)
+#define IOS_AUDCLNT_S_BUFFER_EMPTY   ((HRESULT)0x08890001L)
+#define IOS_BUFFERFLAGS_DATA_DISCONTINUITY 0x1
+
+/* Frames of microphone audio waiting in a capture client's ring. */
+static uint64_t ios_cap_avail(struct ios_stream *s)
+{
+    uint64_t rd = atomic_load_explicit(&s->play_pos, memory_order_relaxed);
+    uint64_t wr = atomic_load_explicit(&s->write_pos, memory_order_acquire);
+    uint64_t avail = wr > rd ? wr - rd : 0;
+    return avail > s->buffer_frames ? s->buffer_frames : avail;
+}
+
+/* One packet (period_frames) per call, copied out of the ring into the
+ * stream's scratch, which is in the guest window for a 32-bit client (see
+ * ios_audio_alloc_scratch) and is contiguous however the ring wraps. */
 static NTSTATUS ios_get_capture_buffer(void *args) {
     struct get_capture_buffer_params *p = args;
+    struct ios_stream *s = stream_from_handle(p->stream);
+    uint64_t rd, avail;
+    UINT32 n, cap, fb, i = 0;
+
     if (p->frames) *p->frames = 0;
     if (p->data) *p->data = NULL;
     if (p->flags) *p->flags = 0;
+    if (!s) { p->result = AUDCLNT_E_NOT_INITIALIZED; return STATUS_SUCCESS; }
+    if (s->getbuf_last) { p->result = IOS_AUDCLNT_E_OUT_OF_ORDER; return STATUS_SUCCESS; }
+
+    n = s->period_frames;
+    avail = s->capture ? ios_cap_avail(s) : 0;
+    if (!n || avail < n || !s->ring || !s->render_scratch || s->scratch_frames < n) {
+        p->result = IOS_AUDCLNT_S_BUFFER_EMPTY;
+        return STATUS_SUCCESS;
+    }
+
+    cap = s->buffer_frames;
+    fb = s->frame_bytes;
+    rd = atomic_load_explicit(&s->play_pos, memory_order_relaxed);
+    while (i < n) {
+        UINT32 idx = (UINT32)((rd + i) % cap);
+        UINT32 chunk = cap - idx;
+        if (chunk > n - i) chunk = n - i;
+        memcpy(s->render_scratch + (size_t)i * fb, s->ring + (size_t)idx * fb, (size_t)chunk * fb);
+        i += chunk;
+    }
+    if (p->flags && atomic_exchange_explicit(&s->cap_dropped, 0, memory_order_relaxed))
+        *p->flags = IOS_BUFFERFLAGS_DATA_DISCONTINUITY;
+    if (p->devpos) *p->devpos = rd;
+    if (p->qpcpos) {
+        /* when the packet's first frame was recorded: now, less what is queued */
+        uint64_t now = mach_to_ns(mach_absolute_time()) / 100;
+        uint64_t age = avail * 10000000ull / (s->sample_rate ? s->sample_rate : IOS_CAP_RATE);
+        *p->qpcpos = now > age ? now - age : 0;
+    }
+    s->getbuf_last = n;
+    if (p->data) *p->data = s->render_scratch;
+    if (p->frames) *p->frames = n;
     p->result = S_OK;
+
+    {   /* one line per ~10 s while a game listens: is the microphone delivering sound? */
+        static time_t last;
+        static unsigned packets;
+        packets++;
+        if (time(NULL) - last >= 10) {
+            uint32_t bits = atomic_exchange_explicit(&g_cap.peak_bits, 0, memory_order_relaxed);
+            float peak;
+            memcpy(&peak, &bits, 4);
+            if (last)
+                fprintf(stderr, "[ios_audio] mic stream=%p: %u packets of %u frames, input peak %.3f%s\n",
+                        (void *)s, packets, n, peak,
+                        peak == 0.0f ? " (silence: microphone access refused?)" : "");
+            last = time(NULL);
+            packets = 0;
+        }
+    }
     return STATUS_SUCCESS;
 }
 
 static NTSTATUS ios_release_capture_buffer(void *args) {
     struct release_capture_buffer_params *p = args;
-    p->result = S_OK;
+    struct ios_stream *s = stream_from_handle(p->stream);
+
+    if (!s) { p->result = AUDCLNT_E_NOT_INITIALIZED; return STATUS_SUCCESS; }
+    if (!p->done) {
+        s->getbuf_last = 0;
+        p->result = S_OK;
+    } else if (!s->getbuf_last) {
+        p->result = IOS_AUDCLNT_E_OUT_OF_ORDER;
+    } else if (p->done != s->getbuf_last) {
+        p->result = IOS_AUDCLNT_E_INVALID_SIZE;
+    } else {
+        uint64_t rd = atomic_load_explicit(&s->play_pos, memory_order_relaxed);
+        /* hands the frames back to the queue callback */
+        atomic_store_explicit(&s->play_pos, rd + p->done, memory_order_release);
+        s->getbuf_last = 0;
+        p->result = S_OK;
+    }
     return STATUS_SUCCESS;
 }
 
@@ -1552,21 +1944,23 @@ static NTSTATUS ios_get_mix_format(void *args) {
     LOG_FN_CALL(16, "get_mix_format");
     /* WAVEFORMATEXTENSIBLE is 40 bytes; first 18 are WAVEFORMATEX */
     if (p->fmt) {
+        /* the microphone is mono; the speaker bus is stereo */
+        UINT32 ch = p->flow == eCapture ? 1 : IOS_AUDIO_CHANNELS;
         memset(p->fmt, 0, 40);
         struct WAVEFORMATEX_stub *f = p->fmt;
         f->wFormatTag = 0xFFFE; /* WAVE_FORMAT_EXTENSIBLE */
-        f->nChannels = IOS_AUDIO_CHANNELS;
+        f->nChannels = ch;
         f->nSamplesPerSec = IOS_AUDIO_SAMPLE_RATE;
         f->wBitsPerSample = IOS_AUDIO_BITS;
-        f->nBlockAlign = IOS_AUDIO_FRAME_BYTES;
-        f->nAvgBytesPerSec = IOS_AUDIO_SAMPLE_RATE * IOS_AUDIO_FRAME_BYTES;
+        f->nBlockAlign = ch * IOS_AUDIO_BITS / 8;
+        f->nAvgBytesPerSec = IOS_AUDIO_SAMPLE_RATE * f->nBlockAlign;
         f->cbSize = 22; /* extensible body */
         /* Extensible body: Samples (2), ChannelMask (4), SubFormat (16).
          * KSDATAFORMAT_SUBTYPE_PCM = {00000001-0000-0010-8000-00AA00389B71} */
         uint16_t *samples = (uint16_t *)((char *)p->fmt + 18);
         *samples = IOS_AUDIO_BITS;
         uint32_t *mask = (uint32_t *)((char *)p->fmt + 20);
-        *mask = 0x3; /* SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT */
+        *mask = ch == 1 ? IOS_SPK_FRONT_CENTER : 0x3; /* SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT */
         /* SubFormat GUID PCM */
         static const uint8_t pcm_guid[16] = {   /* KSDATAFORMAT_SUBTYPE_IEEE_FLOAT (ml1068; was PCM) */
             0x03,0x00,0x00,0x00, 0x00,0x00, 0x10,0x00,
@@ -1634,7 +2028,9 @@ static NTSTATUS ios_get_current_padding(void *args) {
     struct ios_stream *s = stream_from_handle(p->stream);
     if (!s) { if (p->padding) *p->padding = 0; p->result = AUDCLNT_E_NOT_INITIALIZED; return STATUS_SUCCESS; }
     if (p->padding) {
-        if (ios_stream_is_live(s)) {
+        if (s->capture) {
+            *p->padding = (UINT32)ios_cap_avail(s);   /* frames waiting to be read */
+        } else if (ios_stream_is_live(s)) {
             uint64_t pad = atomic_load(&s->write_pos) - atomic_load(&s->play_pos);
             *p->padding = (UINT32)(pad > s->buffer_frames ? s->buffer_frames : pad);
         } else {
@@ -1647,7 +2043,11 @@ static NTSTATUS ios_get_current_padding(void *args) {
 
 static NTSTATUS ios_get_next_packet_size(void *args) {
     struct get_next_packet_size_params *p = args;
-    if (p->frames) *p->frames = 0;
+    struct ios_stream *s = stream_from_handle(p->stream);
+    if (!s) { if (p->frames) *p->frames = 0; p->result = AUDCLNT_E_NOT_INITIALIZED; return STATUS_SUCCESS; }
+    if (p->frames)
+        *p->frames = s->capture && s->period_frames && ios_cap_avail(s) >= s->period_frames
+                     ? s->period_frames : 0;
     p->result = S_OK;
     return STATUS_SUCCESS;
 }
@@ -1671,7 +2071,7 @@ static NTSTATUS ios_get_position(void *args) {
      * RT callback actually consumed — the true hardware clock. Null-mode
      * fallback: wall-clock synthesis as before. */
     if (p->pos) {
-        if (ios_stream_is_live(s))
+        if (s->capture || ios_stream_is_live(s))   /* capture: frames the client has read */
             *p->pos = atomic_load(&s->play_pos);
         else
             *p->pos = elapsed_frames(s);
@@ -1972,10 +2372,10 @@ static NTSTATUS ios_wow64_aux_message(void *args)
  * ignores `args` entirely.  The ORDER is enum unix_funcs from
  * wine/dlls/mmdevapi/unixlib.h, the same order as the table above.
  *
- * Buffer contract: get_render_buffer is the only call that hands the client a
- * pointer, and its buffer is allocated inside the guest window by
- * ios_audio_alloc_scratch(); the thunk refuses to publish anything that is
- * not in the window.
+ * Buffer contract: get_render_buffer and get_capture_buffer are the only calls
+ * that hand the client a pointer, and both hand out the stream's scratch,
+ * allocated inside the guest window by ios_audio_alloc_scratch(); the thunks
+ * refuse to publish anything that is not in the window.
  */
 
 static NTSTATUS ios_wow64_main_loop(void *args)
@@ -2122,9 +2522,10 @@ static NTSTATUS ios_wow64_get_capture_buffer(void *args)
     NTSTATUS status = ios_get_capture_buffer(&params);
 
     params32->result = params.result;
-    /* this driver has no capture endpoint, so `data` is always NULL and
-     * ios_wow_guest_ptr32() keeps it 0; the window check is the same
-     * contract get_render_buffer enforces, should that ever change */
+    /* `data` is the stream's scratch, allocated in the guest window by
+     * ios_audio_alloc_scratch() (NULL for an empty packet, which
+     * ios_wow_guest_ptr32() keeps 0); the window check is the same contract
+     * get_render_buffer enforces */
     if (!(slot = ios_wow_host_ptr(params32->data))) return status;
     if (data && !ios_wow_in_window(data)) {
         fprintf(stderr, "[ios_audio] WOW64 get_capture_buffer: buffer %p is OUTSIDE the "

@@ -70,6 +70,18 @@ OVERLAY = {
                         "two speakers, so voices (in the centre channel), bass and the rear channels are heard. "
                         "Off keeps only the front left and right channels, as Madeira did before, which loses "
                         "most dialogue in a surround game. Applies at the next game start."},
+    "env.MADEIRA_MICROPHONE": {"category": "Audio", "title": "Microphone",
+                "kind": "choice", "default": "",
+                "choices": [("", "On (default)"), ("bluetooth", "On, Bluetooth headset microphone"),
+                            ("0", "Off")],
+                "note": "Lets games use the microphone for voice chat. On by default: games see one microphone, "
+                        "iOS asks for access the first time a game listens, and the microphone indicator is on "
+                        "only while one does. With Bluetooth headphones the phone's own microphone is used, so "
+                        "game sound stays in full quality; \"Bluetooth headset microphone\" records through "
+                        "the headset instead, at telephone quality while a game listens. Without headphones, "
+                        "the speaker can echo into the microphone. Off lists no microphone. Applies at the "
+                        "next app start.",
+                "sources": ["app/Madeira/WineProcessBridge.m"]},
     "env.MADEIRA_PIN_GRAPHICS_DLLS": {"category": "Memory & JIT pool", "title": "Keep graphics DLLs loaded",
                 "kind": "bool", "default": "0",
                 "note": "Default off. On a D3D12 device/probe call, pins already loaded D3D12, DXGI and Wine Metal "

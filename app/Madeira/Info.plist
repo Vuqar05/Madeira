@@ -60,6 +60,8 @@
 	<array>
 		<string>_remotepairing-pairable-host._tcp</string>
 	</array>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Games use the microphone for voice chat. Madeira listens only while a game asks for it.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Madeira uses the local network to pair with this device for JIT, without a computer.</string>
 	<key>UIApplicationSupportsIndirectInputEvents</key>

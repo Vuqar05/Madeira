@@ -1449,9 +1449,36 @@ static void *wine_process_thread(void *arg) {
         {
             NSError *aerr = nil;
             AVAudioSession *session = [AVAudioSession sharedInstance];
-            [session setCategory:AVAudioSessionCategoryPlayback error:&aerr];
-            if (aerr) LOG("AVAudioSession setCategory failed: %{public}s",
-                          aerr.localizedDescription.UTF8String);
+            /* The microphone for games' voice chat (All settings › Audio › Microphone):
+             * PlayAndRecord, which also ignores the silent switch. DefaultToSpeaker
+             * keeps game sound on the speaker rather than the earpiece, and A2DP
+             * keeps Bluetooth headphones in full quality; their microphone then is
+             * the phone's. "bluetooth" also allows HFP, which records through the
+             * headset at the cost of telephone-quality sound while a game listens.
+             * 0: Playback, and the driver lists no microphone (as before). This
+             * runs before the env.* lines are exported, so the cfg line is read
+             * here directly. */
+            const char *mic = getenv("MADEIRA_MICROPHONE");
+            char mic_cfg[16];
+            if (!mic && madeira_cfg_get("env.MADEIRA_MICROPHONE", mic_cfg, sizeof(mic_cfg))) mic = mic_cfg;
+            BOOL mic_on = !(mic && mic[0] == '0' && !mic[1]);
+            if (mic_on) {
+                AVAudioSessionCategoryOptions opts = AVAudioSessionCategoryOptionDefaultToSpeaker |
+                                                     AVAudioSessionCategoryOptionAllowBluetoothA2DP;
+                if (mic && !strcasecmp(mic, "bluetooth")) opts |= AVAudioSessionCategoryOptionAllowBluetoothHFP;
+                if (![session setCategory:AVAudioSessionCategoryPlayAndRecord mode:AVAudioSessionModeDefault
+                                  options:opts error:&aerr]) {
+                    LOG("AVAudioSession PlayAndRecord failed: %{public}s -- no microphone",
+                        aerr.localizedDescription.UTF8String);
+                    mic_on = NO;
+                }
+                aerr = nil;
+            }
+            if (!mic_on) {
+                [session setCategory:AVAudioSessionCategoryPlayback error:&aerr];
+                if (aerr) LOG("AVAudioSession setCategory failed: %{public}s",
+                              aerr.localizedDescription.UTF8String);
+            }
             aerr = nil;
             /* A shared-mode client that keeps only one 10 ms engine period queued
              * (IAudioClient3 low latency) loses audio when RemoteIO pulls a larger
@@ -1476,6 +1503,21 @@ static void *wine_process_thread(void *arg) {
             char io_us[32];
             snprintf(io_us, sizeof io_us, "%lld", (long long)(session.IOBufferDuration * 1e6));
             setenv("MADEIRA_AUDIO_IO_US", io_us, 1);
+            /* The driver lists a microphone only when it can record. A user who
+             * has not been asked yet is asked by iOS when a game first listens. */
+            if (mic_on) {
+                AVAudioApplicationRecordPermission perm = [AVAudioApplication sharedInstance].recordPermission;
+                BOOL input = session.isInputAvailable && perm != AVAudioApplicationRecordPermissionDenied;
+                LOG("microphone: input %{public}s, permission %{public}s, %{public}s",
+                    session.isInputAvailable ? "available" : "unavailable",
+                    perm == AVAudioApplicationRecordPermissionGranted ? "granted" :
+                    perm == AVAudioApplicationRecordPermissionDenied ? "refused (Settings > Privacy > Microphone)" :
+                    "not asked yet", input ? "listed for games" : "not listed");
+                setenv("MADEIRA_AUDIO_INPUT", input ? "1" : "0", 1);
+            } else {
+                LOG("microphone: off (env.MADEIRA_MICROPHONE = 0)");
+                setenv("MADEIRA_AUDIO_INPUT", "0", 1);
+            }
         }
 
         /* 2026-07-04 BISECT RESULT: arm A (this env set, all handler fixes
