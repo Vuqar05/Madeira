@@ -7,15 +7,20 @@
       "tools/build/runtime-components.json",
       "build/madeira-dock/**",
       "tools/build/setup-llvm-mingw.sh",
-      "tools/build/build-runtime-component.sh"
+      "tools/build/build-runtime-component.sh",
+      "build/sdl3/**"
     ],
     "outputs": [
       "arm64ec-windows/dockhost.exe",
-      "arm64ec-windows/dock-notices.txt"
+      "arm64ec-windows/dock-notices.txt",
+      "arm64ec-windows/SDL3.dll",
+      "arm64ec-windows/sdl3-notices.txt"
     ],
     "required": [
       "arm64ec-windows/dockhost.exe",
-      "arm64ec-windows/dock-notices.txt"
+      "arm64ec-windows/dock-notices.txt",
+      "arm64ec-windows/SDL3.dll",
+      "arm64ec-windows/sdl3-notices.txt"
     ]
   },
   "windows": {

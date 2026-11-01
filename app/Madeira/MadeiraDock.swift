@@ -334,6 +334,9 @@ enum MadeiraDock {
         "launch-user-arguments-bytes", "launch-user-arguments-invalid",
         "launch-game-running", "friends-available", "friends-own-state", "friends-signin-available", "friends-signin", "friends-requested", "friends-own-game", "friends-total", "friends-valid-ids", "friends-named", "friends-playing", "friends-seconds", "friends-count", "friends-cmd-seq", "friends-cmd-result",
         "steam-input-available", "steam-input-controllers", "steam-input-ps-support", "steam-input-ps-support-set", "steam-input-ps-support-restored", "steam-input-settings-changed", "steam-input-config", "steam-input-store1-ps", "steam-input-store1-app", "steam-input-store2-ps", "steam-input-store2-app", "steam-input-store3-ps", "steam-input-store3-app", "steam-input-store4-ps", "steam-input-store4-app", "steam-input-store1-set", "steam-input-store2-set", "steam-input-store3-set", "steam-input-store4-set", "steam-input-override-restored", "steam-input-sdl-init", "steam-input-sdl-joysticks", "steam-input-focus-pid", "steam-input-focus-set", "steam-input-focused-app", "steam-input-activated", "steam-input-selected", "steam-input-layout-loaded", "steam-input-binding",
+        "steam-input-mapping-cached", "steam-input-layout-source", "steam-input-layout-queued", "steam-input-layout-unavailable", "steam-input-connected",
+        "steam-input-output-stream", "steam-input-output-reserved", "steam-input-output-connected", "steam-input-output-changed",
+        "steam-input-activation-requested", "steam-input-focus-reported",
         "launch-client-error", "launch-option-index", "launch-option-invalid", "launch-option-missing",
         "launch-update-wait", "launch-update-retry", "launch-update-ready",
         "launch-config-wait", "launch-config-gave-up", "launch-session-wait", "launch-session-gave-up",
@@ -653,54 +656,66 @@ enum DockSteamInput {
     /// The key's value at the top level of UserLocalConfigStore, nil when absent.
     /// Throws when the file is not laid out as expected.
     static func value(in text: String) throws -> String? {
-        let lines = text.components(separatedBy: "\n")
+        let lines = text.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n")
         let (open, close) = try block(lines)
         return top(lines, open: open, close: close).lazy.compactMap { entry(lines[$0]) }.first
     }
 
     /// The text with the key set to `value` (nil removes the line).
     static func setting(_ value: String?, in text: String) throws -> String {
-        var lines = text.components(separatedBy: "\n")
+        let newline = text.contains("\r\n") ? "\r\n" : "\n"
+        var lines = text.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n")
         let (open, close) = try block(lines)
         if let at = top(lines, open: open, close: close).first(where: { entry(lines[$0]) != nil }) {
             if let value { lines[at] = "\t\"\(key)\"\t\t\"\(value)\"" } else { lines.remove(at: at) }
         } else if let value {
             lines.insert("\t\"\(key)\"\t\t\"\(value)\"", at: open + 1)
         }
-        return lines.joined(separator: "\n")
+        return lines.joined(separator: newline)
     }
 
     /// Before the launch: the key goes to 2 when `enabled`; any earlier change
     /// still noted (a crash) is undone first.
-    static func prepare(steamID: UInt64, enabled: Bool) {
-        restore()
+    static func prepare(steamID: UInt64, enabled: Bool) throws {
+        guard restore() else { throw Layout() }
         guard enabled else { return }
         let url = localConfig(steamID: steamID)
-        do {
-            let text = try String(contentsOf: url, encoding: .utf8)
-            let previous = try value(in: text)
-            SteamLog.event("[steam-input] PlayStation setting was \(previous ?? "unset")")
-            guard previous != every else { return }
-            try JSONEncoder().encode(Note(file: url.path, previous: previous)).write(to: note, options: .atomic)
-            try setting(every, in: text).write(to: url, atomically: true, encoding: .utf8)
-            SteamLog.event("[steam-input] PlayStation setting set to \(every) for this launch")
-        } catch {
-            SteamLog.event("[steam-input] PlayStation setting not changed: \(error.localizedDescription)")
-        }
+        let fm = FileManager.default
+        let text = fm.fileExists(atPath: url.path)
+            ? try String(contentsOf: url, encoding: .utf8) : "\"UserLocalConfigStore\"\n{\n}\n"
+        let previous = try value(in: text)
+        guard previous != every else { return }
+        let changed = try setting(every, in: text)
+        try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        // Persist recovery before touching the client's settings. Failed writes
+        // keep the note so the next launch can finish restoring the old value.
+        try JSONEncoder().encode(Note(file: url.path, previous: previous)).write(to: note, options: .atomic)
+        try changed.write(to: url, atomically: true, encoding: .utf8)
+        SteamLog.event("[steam-input] PlayStation support enabled for this launch")
     }
 
-    /// After the Dock session (or before the next one): the line as it was.
-    static func restore() {
-        guard let data = try? Data(contentsOf: note), let saved = try? JSONDecoder().decode(Note.self, from: data) else { return }
-        let url = URL(fileURLWithPath: saved.file)
+    /// After the client has shut down. Keep recovery information if it fails.
+    @discardableResult static func restore() -> Bool {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: note.path) else { return true }
         do {
+            let saved = try JSONDecoder().decode(Note.self, from: Data(contentsOf: note))
+            let url = URL(fileURLWithPath: saved.file)
+            // A first-account write can fail after journaling but before the
+            // file exists. The previous absent key is already restored then.
+            if saved.previous == nil && !fm.fileExists(atPath: url.path) {
+                try fm.removeItem(at: note)
+                return true
+            }
             let text = try String(contentsOf: url, encoding: .utf8)
             try setting(saved.previous, in: text).write(to: url, atomically: true, encoding: .utf8)
-            SteamLog.event("[steam-input] PlayStation setting restored to \(saved.previous ?? "unset")")
+            try fm.removeItem(at: note)
+            SteamLog.event("[steam-input] PlayStation setting restored")
+            return true
         } catch {
-            SteamLog.event("[steam-input] PlayStation setting not restored: \(error.localizedDescription)")
+            SteamLog.event("[steam-input] PlayStation setting restoration pending")
+            return false
         }
-        try? FileManager.default.removeItem(at: note)
     }
 
     private struct Layout: Error, LocalizedError { var errorDescription: String? { "unexpected localconfig.vdf layout" } }

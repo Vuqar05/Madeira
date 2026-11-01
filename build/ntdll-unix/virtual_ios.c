@@ -35018,6 +35018,46 @@ NTSTATUS WINAPI NtReadVirtualMemory( HANDLE process, const void *addr, void *buf
  *             NtWriteVirtualMemory   (NTDLL.@)
  *             ZwWriteVirtualMemory   (NTDLL.@)
  */
+#ifdef WINE_IOS
+/* The iOS server has no task port for a Wine pseudo-process and deliberately
+ * denies cross-process writes. A write to the current-process pseudo-handle
+ * needs no task port: NtReadVirtualMemory already handles its own process
+ * locally. In particular, Steam's overlay uses this to install its XInput
+ * hooks. Do not enable writes in the server's get_process_port(): that also
+ * enables writes to other pseudo-processes and has regressed client startup.
+ * Honour the host protections and use the existing W^X aliases for JIT pages.
+ */
+static NTSTATUS ios_write_self_memory( void *addr, const void *buffer, SIZE_T size )
+{
+    NTSTATUS status = STATUS_SUCCESS;
+    void *copy = NULL;
+
+    if (!size) return STATUS_SUCCESS;
+    if ((uintptr_t)addr + size < (uintptr_t)addr ||
+        !ios_kw_dest_ok( addr, size )) return STATUS_PARTIAL_COPY;
+    if (ios_kw_has_rw_alias( (uintptr_t)addr, (uintptr_t)addr + size ) &&
+        !(copy = malloc( size ))) return STATUS_NO_MEMORY;
+
+    __TRY
+    {
+        if (copy)
+        {
+            /* Preserve overlapping source/destination semantics across aliases. */
+            memmove( copy, buffer, size );
+            if (!ios_kw_store( addr, copy, size )) status = STATUS_PARTIAL_COPY;
+        }
+        else memmove( addr, buffer, size );
+    }
+    __EXCEPT
+    {
+        status = STATUS_PARTIAL_COPY;
+    }
+    __ENDTRY
+    free( copy );
+    return status;
+}
+#endif
+
 NTSTATUS WINAPI NtWriteVirtualMemory( HANDLE process, void *addr, const void *buffer,
                                       SIZE_T size, SIZE_T *bytes_written )
 {
@@ -35025,15 +35065,30 @@ NTSTATUS WINAPI NtWriteVirtualMemory( HANDLE process, void *addr, const void *bu
 
     if (virtual_check_buffer_for_read( buffer, size ))
     {
-        SERVER_START_REQ( write_process_memory )
+#ifdef WINE_IOS
+        if (process == GetCurrentProcess())
         {
-            req->handle     = wine_server_obj_handle( process );
-            req->addr       = wine_server_client_ptr( addr );
-            wine_server_add_data( req, buffer, size );
-            status = wine_server_call( req );
-            size = reply->written;
+            static unsigned int notes;
+
+            status = ios_write_self_memory( addr, buffer, size );
+            if (status) size = 0;
+            if (__sync_fetch_and_add( &notes, 1 ) < 8)
+                dprintf( 2, "[self-vm-write] local write %p+%lu status=%08x\n",
+                         addr, (unsigned long)size, status );
         }
-        SERVER_END_REQ;
+        else
+#endif
+        {
+            SERVER_START_REQ( write_process_memory )
+            {
+                req->handle     = wine_server_obj_handle( process );
+                req->addr       = wine_server_client_ptr( addr );
+                wine_server_add_data( req, buffer, size );
+                status = wine_server_call( req );
+                size = reply->written;
+            }
+            SERVER_END_REQ;
+        }
     }
     else
     {
