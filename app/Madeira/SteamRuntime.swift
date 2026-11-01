@@ -19,13 +19,18 @@ enum SteamRuntimeFiles {
         let sha256: String
     }
     static let origin = "https://client-update.akamai.steamstatic.com/"
+    static let controllerPackage = Package(
+        file: "public_all.zip.3772dd7f589901c02941d91713a174ad2912f68e", bytes: 30_703_832,
+        sha256: "54922e455d8a33785966cff838cb804dfaf99ce4a0db4dd6111c491d503ab43b")
+    static let controllerTemplate = "controller_base/templates/controller_ps5_gamepad_joystick.vdf"
     static let packages = [
         Package(file: "bins_win32.zip.23e34a6d4b10596a44561a5100dac5585d2517da", bytes: 59_544_006,
                 sha256: "8b712b2a3412a9066b7725f4e1c5cef9a7ca5b187b6585a5b92d25d09df0ba62"),
         Package(file: "bins_win64_win32.zip.f29d67dc38a4be027f1734802697c668621a6da1", bytes: 10_509_550,
                 sha256: "345f6e4bdc19b27ae53bf752c21e2d894e0e899d94823222fb426e890d1226b5"),
         Package(file: "steam_win32.zip.3e96965d109fc2d4cc14206b2fc4ec960a746ed3", bytes: 2_307_664,
-                sha256: "1369615c795b60de822876b4dc4042186cf58d0dc8f63ea1371167f667e16925")
+                sha256: "1369615c795b60de822876b4dc4042186cf58d0dc8f63ea1371167f667e16925"),
+        controllerPackage
     ]
     static let clientSHA256 = "71b391fe9f3e2006cbc81a5c75eef3eb4186012deabfdb2c8b7e8d4850ecf640"
     static let relativeRoot = "Program Files (x86)/Steam"
@@ -82,7 +87,7 @@ enum SteamRuntimeFiles {
             throw Failure.invalidPackage
         }
         let count = u16(end + 10), central = u32(end + 16), centralSize = u32(end + 12)
-        try need(u16(end + 4) == 0 && u16(end + 6) == 0 && u16(end + 8) == count && count <= 256)
+        try need(u16(end + 4) == 0 && u16(end + 6) == 0 && u16(end + 8) == count && count <= 4096)
         try need(central <= end && centralSize == end - central)
         var cursor = central, total = 0
         var seen = Set<String>()
@@ -246,34 +251,7 @@ actor SteamRuntimeInstaller {
         let stage = fm.temporaryDirectory.appendingPathComponent("madeira-runtime-" + UUID().uuidString)
         try fm.createDirectory(at: stage, withIntermediateDirectories: true)
         defer { try? fm.removeItem(at: stage) }
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.httpCookieStorage = nil; configuration.urlCredentialStorage = nil
-        configuration.timeoutIntervalForRequest = 60; configuration.timeoutIntervalForResource = 900
-        let session = URLSession(configuration: configuration, delegate: SteamRuntimeRedirects(), delegateQueue: nil)
-        defer { session.invalidateAndCancel() }
-        var names = Set<String>(), files: [String] = []
-        for (index, package) in SteamRuntimeFiles.packages.enumerated() {
-            try Task.checkCancellation()
-            await progress("Downloading Steam components (\(index + 1) of \(SteamRuntimeFiles.packages.count))…")
-            let url = URL(string: SteamRuntimeFiles.origin + package.file)!
-            let (temporary, response) = try await session.download(from: url)
-            defer { try? fm.removeItem(at: temporary) }
-            guard let http = response as? HTTPURLResponse, http.statusCode == 200,
-                  http.url?.host == url.host, http.url?.scheme == "https",
-                  (try temporary.resourceValues(forKeys: [.fileSizeKey])).fileSize == package.bytes else {
-                throw SteamRuntimeFiles.Failure.invalidPackage
-            }
-            let archive = try Data(contentsOf: temporary, options: .mappedIfSafe)
-            guard Self.hash(archive) == package.sha256 else { throw SteamRuntimeFiles.Failure.invalidPackage }
-            await progress("Verifying Steam components…")
-            try SteamRuntimeFiles.unpack(archive) { name, bytes in
-                guard names.insert(name.lowercased()).inserted else { throw SteamRuntimeFiles.Failure.invalidPackage }
-                let file = stage.appendingPathComponent(name)
-                try fm.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
-                try bytes.write(to: file, options: .atomic)
-                files.append(name)
-            }
-        }
+        let files = try await download(SteamRuntimeFiles.packages, to: stage, progress: progress)
         guard Self.hash(try Data(contentsOf: stage.appendingPathComponent("steamclient64.dll"))) == SteamRuntimeFiles.clientSHA256,
               files.contains("steam.exe") else { throw SteamRuntimeFiles.Failure.invalidPackage }
         try Task.checkCancellation()
@@ -322,7 +300,85 @@ actor SteamRuntimeInstaller {
             try fm.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
             try fm.moveItem(at: stage.appendingPathComponent(name), to: target)
         }
+        let marker = try SteamRuntimeFiles.destination(SteamRuntimeFiles.relativeRoot + "/controller_base/.madeira-package", under: drive)
+        try SteamRuntimeFiles.controllerPackage.sha256.write(to: marker, atomically: true, encoding: .utf8)
         await progress("Steam components are ready.")
+    }
+
+    // Existing Dock installs need controller_base too. Add only missing files
+    // from the pinned public package; never replace a desktop client's files.
+    func prepareSteamInput(prefix: URL, progress: @Sendable (String) async -> Void) async throws {
+        guard !busy, wine_process_is_running() == 0, wineserver_is_running() == 0 else {
+            throw SteamRuntimeFiles.Failure.activeSession
+        }
+        busy = true; defer { busy = false }
+        let fm = FileManager.default, drive = prefix.appendingPathComponent("drive_c")
+        let root = try SteamRuntimeFiles.destination(SteamRuntimeFiles.relativeRoot, under: drive)
+        guard Self.hash(try Data(contentsOf: root.appendingPathComponent("steamclient64.dll"))) == SteamRuntimeFiles.clientSHA256 else {
+            throw SteamRuntimeFiles.Failure.conflict
+        }
+        let marker = root.appendingPathComponent("controller_base/.madeira-package")
+        if (try? String(contentsOf: marker, encoding: .utf8)) == SteamRuntimeFiles.controllerPackage.sha256,
+           fm.fileExists(atPath: root.appendingPathComponent(SteamRuntimeFiles.controllerTemplate).path) { return }
+        let stage = fm.temporaryDirectory.appendingPathComponent("madeira-controller-" + UUID().uuidString)
+        try fm.createDirectory(at: stage, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: stage) }
+        let files = try await download([SteamRuntimeFiles.controllerPackage], to: stage,
+                                       keeping: { $0.hasPrefix("controller_base/") }, progress: progress)
+        guard files.contains(SteamRuntimeFiles.controllerTemplate) else { throw SteamRuntimeFiles.Failure.invalidPackage }
+        for name in files {
+            let target = try SteamRuntimeFiles.destination(SteamRuntimeFiles.relativeRoot + "/" + name, under: drive)
+            if fm.fileExists(atPath: target.path), !fm.contentsEqual(atPath: target.path, andPath: stage.appendingPathComponent(name).path) {
+                throw SteamRuntimeFiles.Failure.conflict
+            }
+        }
+        try Task.checkCancellation()
+        guard wine_process_is_running() == 0, wineserver_is_running() == 0 else { throw SteamRuntimeFiles.Failure.activeSession }
+        // No suspension while publishing. Identical partial installs are retryable.
+        for name in files {
+            let target = try SteamRuntimeFiles.destination(SteamRuntimeFiles.relativeRoot + "/" + name, under: drive)
+            if fm.fileExists(atPath: target.path) { continue }
+            try fm.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try fm.moveItem(at: stage.appendingPathComponent(name), to: target)
+        }
+        let safeMarker = try SteamRuntimeFiles.destination(SteamRuntimeFiles.relativeRoot + "/controller_base/.madeira-package", under: drive)
+        try SteamRuntimeFiles.controllerPackage.sha256.write(to: safeMarker, atomically: true, encoding: .utf8)
+    }
+
+    private func download(_ packages: [SteamRuntimeFiles.Package], to stage: URL,
+                          keeping: (String) -> Bool = { _ in true },
+                          progress: @Sendable (String) async -> Void) async throws -> [String] {
+        let fm = FileManager.default
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpCookieStorage = nil; configuration.urlCredentialStorage = nil
+        configuration.timeoutIntervalForRequest = 60; configuration.timeoutIntervalForResource = 900
+        let session = URLSession(configuration: configuration, delegate: SteamRuntimeRedirects(), delegateQueue: nil)
+        defer { session.invalidateAndCancel() }
+        var names = Set<String>(), files: [String] = []
+        for (index, package) in packages.enumerated() {
+            try Task.checkCancellation()
+            await progress("Downloading Steam components (\(index + 1) of \(packages.count))…")
+            let url = URL(string: SteamRuntimeFiles.origin + package.file)!
+            let (temporary, response) = try await session.download(from: url)
+            defer { try? fm.removeItem(at: temporary) }
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200,
+                  http.url?.host == url.host, http.url?.scheme == "https",
+                  (try temporary.resourceValues(forKeys: [.fileSizeKey])).fileSize == package.bytes else {
+                throw SteamRuntimeFiles.Failure.invalidPackage
+            }
+            let archive = try Data(contentsOf: temporary, options: .mappedIfSafe)
+            guard Self.hash(archive) == package.sha256 else { throw SteamRuntimeFiles.Failure.invalidPackage }
+            await progress("Verifying Steam components…")
+            try SteamRuntimeFiles.unpack(archive) { name, bytes in
+                guard names.insert(name.lowercased()).inserted else { throw SteamRuntimeFiles.Failure.invalidPackage }
+                guard keeping(name) else { return }
+                let file = stage.appendingPathComponent(name)
+                try fm.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try bytes.write(to: file, options: .atomic)
+                files.append(name)
+            }
+        }
+        return files
     }
 
     private static func hash(_ data: Data) -> String { SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() }

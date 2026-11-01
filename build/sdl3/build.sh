@@ -1,5 +1,6 @@
 #!/bin/bash
 # SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 125hz
 # Madeira Converter Exception: see LICENSE-EXCEPTION.md
 #
 # Build an x86-64 SDL3.dll for Valve's 64-bit client in Madeira Dock and
@@ -37,14 +38,13 @@ fi
 git -C "$WORK/src" checkout -q "$COMMIT"
 [ "$(git -C "$WORK/src" rev-parse HEAD)" = "$COMMIT" ] || { echo "SDL is not at $COMMIT" >&2; exit 1; }
 
+export MADEIRA_SDL3_MINGW="$MINGW"
 cmake -S "$WORK/src" -B "$WORK/build" -G Ninja \
-    -DCMAKE_SYSTEM_NAME=Windows -DCMAKE_SYSTEM_PROCESSOR=x86_64 \
-    -DCMAKE_C_COMPILER="$MINGW/x86_64-w64-mingw32-clang" \
-    -DCMAKE_CXX_COMPILER="$MINGW/x86_64-w64-mingw32-clang++" \
-    -DCMAKE_RC_COMPILER="$MINGW/x86_64-w64-mingw32-windres" \
+    -DCMAKE_TOOLCHAIN_FILE="$DIR/windows-x64.cmake" \
     -DCMAKE_BUILD_TYPE=Release -DSDL_SHARED=ON -DSDL_STATIC=OFF \
     -DSDL_TEST_LIBRARY=OFF -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF >/dev/null
 ninja -C "$WORK/build" >/dev/null
+mkdir -p "$OUT"
 "$MINGW/llvm-strip" -o "$OUT/SDL3.dll" "$WORK/build/SDL3.dll"
 {
     echo "SDL3.dll: Simple DirectMedia Layer, upstream commit $COMMIT"

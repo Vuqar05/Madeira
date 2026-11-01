@@ -3,7 +3,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 export ROOT
 case "${1:-}" in
-  dock) deps=() ;;
+  dock) deps=(cmake ninja) ;;
   windows) deps=(cmake ninja meson pkg-config bison flex) ;;
   moltenvk) deps=(cmake ninja) ;;
   zink) deps=(bison flex pkg-config) ;;
@@ -28,7 +28,10 @@ case "${1:-}" in
   dock) git -C "$ROOT" submodule update --init madeira-dock ;;
 esac
 case "${1:-}" in
-  dock) bash "$ROOT/build/madeira-dock/build.sh" --check ;;
+  dock)
+    bash "$ROOT/build/sdl3/build.sh"
+    bash "$ROOT/build/madeira-dock/build.sh" --check
+    ;;
   windows) bash "$ROOT/build/windows-runtime/build.sh" ;;
   moltenvk|zink|kosmickrisp) bash "$ROOT/tools/build/prepare-graphics.sh" "$1" ;;
   mesa-d3d12) bash "$ROOT/build/mesa-d3d12/build.sh" ;;

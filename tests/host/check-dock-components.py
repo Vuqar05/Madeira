@@ -17,8 +17,8 @@ SWIFTC = os.environ.get('SWIFTC') or shutil.which('swiftc') or str(Path.home() /
 source = root / 'app/Madeira/SteamRuntime.swift'
 text = source.read_text()
 assert 'static let origin = "https://client-update.akamai.steamstatic.com/"' in text
-pins = re.findall(r'Package\(file: "([^"]+)", bytes: ([0-9_]+),\s*sha256: "([0-9a-f]+)"\)', text)
-assert len(pins) == 3 and all(len(s) == 64 and int(b.replace('_', '')) > 0 and '/' not in f for f, b, s in pins), pins
+pins = re.findall(r'Package\(\s*file: "([^"]+)", bytes: ([0-9_]+),\s*sha256: "([0-9a-f]+)"\)', text)
+assert len(pins) == 4 and all(len(s) == 64 and int(b.replace('_', '')) > 0 and '/' not in f for f, b, s in pins), pins
 client = re.search(r'static let clientSHA256 = "([0-9a-f]{64})"', text).group(1)
 layouts = root / 'madeira-dock/src/client_layout.c'
 if layouts.exists():
@@ -27,12 +27,16 @@ if layouts.exists():
 else:
     print('SKIP: madeira-dock not checked out; client pin cross-check not run')
 assert 'url?.host == "client-update.akamai.steamstatic.com"' in text and 'url?.scheme == "https"' in text
-print('PASS: three pinned packages from one HTTPS Valve host; redirects stay on it')
+print('PASS: four pinned packages from one HTTPS Valve host; redirects stay on it')
 with tempfile.TemporaryDirectory(prefix='madeira-runtime-') as tmp:
     tmp = Path(tmp)
-    (tmp/'module.modulemap').write_text('module zlib [system] { header "/usr/include/zlib.h" export * link "z" }')
+    if sys.platform != 'darwin':
+        (tmp/'module.modulemap').write_text('module zlib [system] { header "/usr/include/zlib.h" export * link "z" }')
     main = r'''
 import Foundation
+func wine_process_is_running() -> Int32 { 0 }
+func wineserver_is_running() -> Int32 { 0 }
+func madeira_seed_prefix_if_needed(_ path: String) { }
 let fm = FileManager.default
 let mode = CommandLine.arguments[1]
 if mode == "registry" {
@@ -96,7 +100,7 @@ if mode == "registry" {
 '''
     (tmp/'main.swift').write_text(main)
     exe = tmp/'check'
-    subprocess.run([SWIFTC, '-I', str(tmp), str(source), str(tmp/'main.swift'), '-o', str(exe)], check=True)
+    subprocess.run([SWIFTC, '-module-cache-path', str(tmp/'module-cache'), '-I', str(tmp), str(source), str(tmp/'main.swift'), '-o', str(exe)], check=True)
     subprocess.run([str(exe), 'registry'], check=True)
     def archive(items, compression=zipfile.ZIP_DEFLATED):
         out = io.BytesIO()

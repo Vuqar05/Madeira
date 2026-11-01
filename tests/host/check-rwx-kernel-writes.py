@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 125hz
 # Madeira Converter Exception: see LICENSE-EXCEPTION.md
 """Kernel writes into anonymous RWX memory go through its RW alias (server_ios.c, virtual_ios.c); no Wine runs.
 
@@ -170,6 +171,35 @@ code += function(virtual, 'ssize_t virtual_locked_recvmsg( int fd, struct msghdr
 code += function(server, 'static BOOL read_reply_data( void *buffer, size_t size )\n{')
 code += span(server, '#define IOS_REPLY_PAGE', 'static BOOL ios_read_reply_guest(')
 code += r'''
+/* A current-process write needs no server task port. Other handles still use
+ * the server, which denies writes on this iOS model. Faulting destinations are
+ * rejected by the real ios_kw_dest_ok before copying. */
+typedef void *HANDLE;
+typedef size_t SIZE_T;
+#define WINAPI
+#define WINE_IOS 1
+#define STATUS_PARTIAL_COPY ((unsigned int)0x8000000d)
+#define STATUS_NO_MEMORY ((unsigned int)0xc0000017)
+#define STATUS_ACCESS_DENIED ((unsigned int)0xc0000022)
+#define GetCurrentProcess() ((HANDLE)(intptr_t)-1)
+#define __TRY if (1)
+#define __EXCEPT else
+#define __ENDTRY
+static unsigned int server_writes;
+struct write_req { HANDLE handle; uintptr_t addr; };
+struct write_reply { size_t written; };
+#define SERVER_START_REQ(name) do { struct write_req request, *req = &request; \
+    struct write_reply response = {0}, *reply = &response;
+#define SERVER_END_REQ } while (0)
+#define wine_server_obj_handle(p) (p)
+#define wine_server_client_ptr(p) ((uintptr_t)(p))
+#define wine_server_add_data(req, buf, n) ((void)(req), (void)(buf), (void)(n))
+#define wine_server_call(req) ((void)(req), server_writes++, STATUS_ACCESS_DENIED)
+static BOOL virtual_check_buffer_for_read( const void *buffer, size_t n ) { return !n || buffer != NULL; }
+'''
+code += function(virtual, 'static NTSTATUS ios_write_self_memory(')
+code += function(virtual, 'NTSTATUS WINAPI NtWriteVirtualMemory(')
+code += r'''
 #define VIEW 0x10000   /* a multiple of every host page size */
 static unsigned char pattern[3 * VIEW];
 
@@ -337,6 +367,45 @@ int main( void )
         close( sv[0] ); close( sv[1] );
     }
     puts( "read, pread, recvmsg: through the alias; an unwritable destination fails before reading" );
+
+    /* Steam's overlay uses WriteProcessMemory on its current-process handle.
+     * Exercise the production syscall, including W^X aliases and its unchanged
+     * server route for every other handle. */
+    {
+        size_t written = 99;
+        unsigned int before = server_writes;
+        char saved[32], expected[32];
+
+        assert( !NtWriteVirtualMemory( GetCurrentProcess(), buf, pattern, 32, &written ) );
+        assert( written == 32 && !memcmp( buf, pattern, 32 ) && server_writes == before );
+        memcpy( expected, buf, 32 );
+        memmove( expected + 2, expected, 20 );
+        assert( !NtWriteVirtualMemory( GetCurrentProcess(), buf + 2, buf, 20, NULL ) );
+        assert( !memcmp( buf, expected, 32 ) );
+        assert( !NtWriteVirtualMemory( GetCurrentProcess(), rx + 0xffe, pattern + 3, 24, &written ) );
+        assert( written == 24 && !memcmp( rx + 0xffe, pattern + 3, 24 ) );
+        memcpy( expected, rx + 0xffe, 24 );
+        memmove( expected + 2, expected, 20 );
+        assert( !NtWriteVirtualMemory( GetCurrentProcess(), rx + 0x1000, rx + 0xffe, 20, &written ) );
+        assert( !memcmp( rx + 0xffe, expected, 24 ) );
+        assert( !NtWriteVirtualMemory( GetCurrentProcess(), pool_rx + 0xffe, pattern, 24, &written ) );
+        assert( written == 24 && !memcmp( pool_rx + 0xffe, pattern, 24 ) );
+        assert( NtWriteVirtualMemory( GetCurrentProcess(), ro, pattern, 24, &written ) == STATUS_PARTIAL_COPY );
+        assert( !written );
+        memcpy( saved, rx + VIEW / 2 - 16, 32 );
+        assert( NtWriteVirtualMemory( GetCurrentProcess(), rx + VIEW / 2 - 16, pattern, 32,
+                                     &written ) == STATUS_PARTIAL_COPY );
+        assert( !written && !memcmp( saved, rx + VIEW / 2 - 16, 32 ) );
+        assert( NtWriteVirtualMemory( GetCurrentProcess(), (void *)(uintptr_t)-8, pattern, 24,
+                                     &written ) == STATUS_PARTIAL_COPY && !written );
+        assert( NtWriteVirtualMemory( GetCurrentProcess(), buf, NULL, 4, &written ) == STATUS_PARTIAL_COPY );
+        assert( !written );
+        assert( !NtWriteVirtualMemory( GetCurrentProcess(), NULL, NULL, 0, &written ) && !written );
+        memcpy( saved, buf, 32 );
+        assert( NtWriteVirtualMemory( (HANDLE)(intptr_t)42, buf, pattern, 32, &written ) == STATUS_ACCESS_DENIED );
+        assert( !written && server_writes == before + 1 && !memcmp( saved, buf, 32 ) );
+    }
+    puts( "current-process writes: ordinary/overlapping and W^X memory work; read-only and other-process writes stay denied" );
 
     /* releasing a range retires the aliases that start inside it, and only those */
     memset( ios_jit_anon_aliases, 0, sizeof(ios_jit_anon_aliases) );
