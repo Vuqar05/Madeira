@@ -560,6 +560,7 @@ static void reset( void )
 }
 #define CCS "\\Registry\\Machine\\System\\CurrentControlSet"
 #define IFACE CCS "\\Control\\DeviceClasses\\{4D1E55B2-F16F-11CF-88CB-001111000030}\\##?#HID#VID_054C&PID_0CE6&MI_03#9&4d616465&0&0000#{4d1e55b2-f16f-11cf-88cb-001111000030}"
+#define USB_IFACE CCS "\\Control\\DeviceClasses\\{a5dcbf10-6530-11d2-901f-00c04fb951ed}\\##?#USB#VID_054C&PID_0CE6#02a14d616465#{a5dcbf10-6530-11d2-901f-00c04fb951ed}"
 
 int main( void )
 {
@@ -603,7 +604,24 @@ int main( void )
                                      "#{4d1e55b2-f16f-11cf-88cb-001111000030};" ) );
     n = find( IFACE "\\#\\Control" );
     assert( n && !strcmp( n->values, "Linked=dword:1;" ) );
-    assert( creates == 5 );   /* VID_..., instance, interface, #, Control: no second class key */
+    /* Steam Input: the HID device names its USB parent (setupapi CM_Get_Parent), a USB
+     * composite device with USB compatible IDs and a listed USB device interface. */
+    n = find( CCS "\\Enum\\HID\\VID_054C&PID_0CE6&MI_03\\9&4d616465&0&0000" );
+    assert( strstr( n->values, "Parent=sz:USB\\VID_054C&PID_0CE6\\02a14d616465;" ) );
+    n = find( CCS "\\Enum\\USB\\VID_054C&PID_0CE6\\02a14d616465" );
+    assert( n && n->is_volatile );
+    assert( strstr( n->values, "ClassGUID=sz:{36fc9e60-c465-11cf-8056-444553540000};" ) );
+    assert( strstr( n->values, "HardwareID=multi:USB\\VID_054C&PID_0CE6&REV_0100|USB\\VID_054C&PID_0CE6|;" ) );
+    assert( strstr( n->values, "CompatibleIDs=multi:USB\\DevClass_00&SubClass_00&Prot_00|USB\\DevClass_00&SubClass_00|"
+                               "USB\\DevClass_00|USB\\COMPOSITE|;" ) );
+    n = find( USB_IFACE );
+    assert( n && !strcmp( n->values, "DeviceInstance=sz:USB\\VID_054C&PID_0CE6\\02a14d616465;" ) );
+    n = find( USB_IFACE "\\#\\Control" );
+    assert( n && !strcmp( n->values, "Linked=dword:1;" ) );
+    assert( strstr( last_log, "USB parent 4/4" ) );
+    /* HID: VID_..., instance, interface, #, Control (no second class key);
+     * USB: USB, VID_..., serial, the USB interface class, interface, #, Control. */
+    assert( creates == 12 );
 
     /* The env names another identity: the registry follows the device that exists. */
     reset();
