@@ -102,6 +102,20 @@ Open questions only a device can answer, in order:
 - Device test: a Steam game through Dock with a paired pad. Then read
   `[steam-host] steam-input-*` in the log.
 
+### Device result 1 (2026-11-01)
+`steam-input-available=1`, `steam-input-controllers=0`. Steam's
+`logs/controller.txt`: `CHIDDeviceListSDL(): Couldn't load SDL3.dll, not
+enumerating devices`. Wine refused `Steam\SDL3.dll` with `c000007b`: the January
+client ships only a 32-bit SDL3 (for `steam.exe`, which owns controllers on
+Windows), and no package of that build has a 64-bit one. The game itself read
+the HID DualSense, which is why its buttons worked.
+
+Fix: `build/sdl3/build.sh` builds upstream SDL at the commit Valve's copy
+reports (`SDL-release-3.4.0-98-gb1362f8a4`), unmodified, for x86-64, and
+stages it as `system32\SDL3.dll` next to `dockhost.exe`. It exports the same
+1,271 functions as Valve's 32-bit copy. Steam tries its own folder first, which
+fails, and then the search by name finds this copy.
+
 ### Phase 2: switch it on
 - If the count is 0: trace the client's HID enumeration (Wine `+hid,+setupapi`
   for the Dock process) and fill what Madeira's HID device misses.
