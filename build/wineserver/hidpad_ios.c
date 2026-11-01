@@ -271,7 +271,7 @@ static struct object *hidpad_device_open_file( struct object *obj, unsigned int 
     if (!hidpad_open_allowed())
     {
         if (hidpad_log_open( current ? current->process->id : 0 ))
-            fprintf( stderr, "[hid-pad] ml2107 open refused pid=%04x (not MADEIRA_HIDPAD_OWNER)\n",
+            fprintf( stderr, "[hid-pad] ml2108 open refused pid=%04x (not MADEIRA_HIDPAD_OWNER)\n",
                      current ? current->process->id : 0 );
         set_error( STATUS_ACCESS_DENIED );
         return NULL;
