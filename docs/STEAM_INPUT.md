@@ -143,6 +143,18 @@ fails, and then the search by name finds this copy.
   `GUID_DEVINTERFACE_USB_DEVICE` interfaces, and still does not open the
   pad. The next check is inside the client's own HID code (not SDL).
 
+### Device result 14 (2026-11-01)
+Steam's `CHIDDeviceListSDL` builds non-Steam pads from SDL joysticks
+(`sdl://N`), and in a headless client nothing starts SDL's joystick
+subsystem. Dock now calls SDL's public `SDL_InitSubSystem(SDL_INIT_GAMEPAD)`
+once the client has loaded `SDL3.dll`. Result: `steam-input-sdl-init=1`,
+`steam-input-sdl-joysticks=1`, and in `controller.txt` "Local Device Found
+… path: sdl://2", "Controller using HIDAPI driver", "Steam controller device
+opened for index 0", "reserving XInput slot 0", PollState 0 to 1, and the
+account's config sets for the DualSense loaded. `steam-input-controllers=1`.
+Audio stayed fine. Next: which layout is active for the game, and whether its
+output reaches the game (virtual XInput needs the overlay).
+
 ### Phase 2: switch it on
 - If the count is 0: trace the client's HID enumeration (Wine `+hid,+setupapi`
   for the Dock process) and fill what Madeira's HID device misses.
