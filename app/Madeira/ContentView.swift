@@ -3498,6 +3498,10 @@ struct ContentView: View {
                     throw DockError.message("Sign in to Steam in Madeira before starting Dock.")
                 }
                 try MadeiraDock.writeHandoff(account: signIn.accountName, token: signIn.refreshToken, appID: game.id)
+                // Steam Input: the client reads its PlayStation setting from the account's
+                // localconfig.vdf when it starts (DockSteamInput; put back in dockEnded).
+                DockSteamInput.prepare(steamID: try MadeiraDock.subject(signIn.refreshToken),
+                                       enabled: GamepadInput.keyboardMouseAvailable && profile?.usesSteamInput == true)
             } catch { fail(error); return }
             MadeiraDock.configure(game, launchOption: launchOption, arguments: LaunchArgumentText.plain(profile?.arguments ?? ""))
             // "Steam starts" (DockStartProgram): the chosen program takes the place of the

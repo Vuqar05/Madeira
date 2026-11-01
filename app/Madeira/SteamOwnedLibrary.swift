@@ -1027,6 +1027,7 @@ final class SteamOwnedLibrary: ObservableObject {
     /// Madeira Dock's session ended, or its start failed (MadeiraDockModel,
     /// ContentView.startDock): the connection comes back once no session runs.
     func dockEnded() {
+        DockSteamInput.restore()
         guard gate.heldForDock else { return }
         gate.releaseDock()
         reconcileSession()

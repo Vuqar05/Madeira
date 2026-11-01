@@ -628,3 +628,111 @@ enum DockOffline {
     }
     static let changed = Notification.Name("MadeiraDockOfflineChanged")
 }
+
+/// Steam Input's PlayStation setting for a Dock launch (docs/STEAM_INPUT.md).
+/// Valve's client reads `SteamController_PSSupport` from the account's
+/// localconfig.vdf (top level of UserLocalConfigStore: 1 games without
+/// PlayStation support, the default; 2 every game) when it starts, and only
+/// with 2 does it open a PlayStation pad. Before a Steam Input launch the
+/// key is set to 2; when the Dock session ends the line is put back as it
+/// was. The previous state is noted in Documents, so a crash is undone at
+/// the next launch. Only this one line of the file changes.
+enum DockSteamInput {
+    static let key = "SteamController_PSSupport"
+    private static let every = "2"
+    private static var note: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("madeira-steam-input.json")
+    }
+    private struct Note: Codable { var file: String; var previous: String? }
+
+    static func localConfig(steamID: UInt64) -> URL {
+        MadeiraDock.clientRoot.appendingPathComponent("userdata/\(steamID & 0xffff_ffff)/config/localconfig.vdf")
+    }
+
+    /// The key's value at the top level of UserLocalConfigStore, nil when absent.
+    /// Throws when the file is not laid out as expected.
+    static func value(in text: String) throws -> String? {
+        let lines = text.components(separatedBy: "\n")
+        let (open, close) = try block(lines)
+        return top(lines, open: open, close: close).lazy.compactMap { entry(lines[$0]) }.first
+    }
+
+    /// The text with the key set to `value` (nil removes the line).
+    static func setting(_ value: String?, in text: String) throws -> String {
+        var lines = text.components(separatedBy: "\n")
+        let (open, close) = try block(lines)
+        if let at = top(lines, open: open, close: close).first(where: { entry(lines[$0]) != nil }) {
+            if let value { lines[at] = "\t\"\(key)\"\t\t\"\(value)\"" } else { lines.remove(at: at) }
+        } else if let value {
+            lines.insert("\t\"\(key)\"\t\t\"\(value)\"", at: open + 1)
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    /// Before the launch: the key goes to 2 when `enabled`; any earlier change
+    /// still noted (a crash) is undone first.
+    static func prepare(steamID: UInt64, enabled: Bool) {
+        restore()
+        guard enabled else { return }
+        let url = localConfig(steamID: steamID)
+        do {
+            let text = try String(contentsOf: url, encoding: .utf8)
+            let previous = try value(in: text)
+            SteamLog.event("[steam-input] PlayStation setting was \(previous ?? "unset")")
+            guard previous != every else { return }
+            try JSONEncoder().encode(Note(file: url.path, previous: previous)).write(to: note, options: .atomic)
+            try setting(every, in: text).write(to: url, atomically: true, encoding: .utf8)
+            SteamLog.event("[steam-input] PlayStation setting set to \(every) for this launch")
+        } catch {
+            SteamLog.event("[steam-input] PlayStation setting not changed: \(error.localizedDescription)")
+        }
+    }
+
+    /// After the Dock session (or before the next one): the line as it was.
+    static func restore() {
+        guard let data = try? Data(contentsOf: note), let saved = try? JSONDecoder().decode(Note.self, from: data) else { return }
+        let url = URL(fileURLWithPath: saved.file)
+        do {
+            let text = try String(contentsOf: url, encoding: .utf8)
+            try setting(saved.previous, in: text).write(to: url, atomically: true, encoding: .utf8)
+            SteamLog.event("[steam-input] PlayStation setting restored to \(saved.previous ?? "unset")")
+        } catch {
+            SteamLog.event("[steam-input] PlayStation setting not restored: \(error.localizedDescription)")
+        }
+        try? FileManager.default.removeItem(at: note)
+    }
+
+    private struct Layout: Error, LocalizedError { var errorDescription: String? { "unexpected localconfig.vdf layout" } }
+
+    /// The `{` and matching `}` line indices of UserLocalConfigStore.
+    private static func block(_ lines: [String]) throws -> (Int, Int) {
+        guard let name = lines.firstIndex(where: { $0.trimmingCharacters(in: .whitespaces) == "\"UserLocalConfigStore\"" }),
+              name + 1 < lines.count, lines[name + 1].trimmingCharacters(in: .whitespaces) == "{" else { throw Layout() }
+        var level = 0
+        for i in (name + 1)..<lines.count {
+            let t = lines[i].trimmingCharacters(in: .whitespaces)
+            if t == "{" { level += 1 } else if t == "}" { level -= 1; if level == 0 { return (name + 1, i) } }
+        }
+        throw Layout()
+    }
+
+    /// The indices of the block's top-level lines (not inside a nested block).
+    private static func top(_ lines: [String], open: Int, close: Int) -> [Int] {
+        var level = 0, out: [Int] = []
+        for i in (open + 1)..<close {
+            let t = lines[i].trimmingCharacters(in: .whitespaces)
+            if t == "{" { level += 1 } else if t == "}" { level -= 1 } else if level == 0 { out.append(i) }
+        }
+        return out
+    }
+
+    /// The value when `line` is `"SteamController_PSSupport" "v"`.
+    private static func entry(_ line: String) -> String? {
+        let parts = line.trimmingCharacters(in: .whitespaces).components(separatedBy: "\"")
+        // "", key, whitespace, "", value, ""
+        guard parts.count == 5, parts[0].isEmpty, parts[1] == key, parts[2].trimmingCharacters(in: .whitespaces).isEmpty,
+              parts[4].isEmpty else { return nil }
+        return parts[3]
+    }
+}
