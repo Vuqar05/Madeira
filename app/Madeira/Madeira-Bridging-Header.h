@@ -37,6 +37,12 @@ void madeira_capture_request(int frames);
 // low QoS class (efficiency cores, lower clocks) to save the SoC burst budget.
 void madeira_set_eco(int on);
 int madeira_get_eco(void);
+// Microphone (WineProcessBridge.m): 0 off, 1 on, 2 headset. The in-game menu's switch;
+// it changes the audio session and the driver's capture stream under a running game.
+// madeira_mic_listed() is 0 when iOS access was refused: games are offered no microphone.
+void madeira_mic_set_mode(int mode);
+int madeira_mic_mode(void);
+int madeira_mic_listed(void);
 // ml1136: live GPU encoder-sync mode (winemetal_unix.c): 1, 5, 6; 7 = mode 0 (no fences).
 // The D3D12 runtime applies it at the next Present, for lists that start after that.
 void madeira_set_fence_mode(int mode);

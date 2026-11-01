@@ -23,6 +23,7 @@ stream = cut("struct ios_stream {", "/* ml739: one stream object per client")
 cap_dev = cut("struct ios_capture_device {", "static struct ios_capture_device g_cap;")
 store = cut("static void ios_cap_store(", "/* Append n microphone samples")
 feed = cut("static void ios_cap_feed(", "/* The queue's thread.")
+silence = cut("static int ios_cap_silent(", "/* The app's microphone switch")
 
 harness = r"""
 #include <stdio.h>
@@ -33,7 +34,9 @@ harness = r"""
 #include <math.h>
 typedef unsigned char BYTE; typedef uint16_t WORD; typedef uint32_t UINT32, DWORD, UInt32;
 typedef void *HANDLE; typedef void *AudioQueueRef;
-""" + stream + cap_dev + "static struct ios_capture_device g_cap;\n" + store + feed + r"""
+static uint64_t fake_ns; static uint64_t mach_absolute_time(void) { return fake_ns; }
+static uint64_t mach_to_ns(uint64_t m) { return m; }
+""" + stream + cap_dev + "static struct ios_capture_device g_cap;\n" + store + feed + silence + r"""
 static int fails;
 #define CHECK(c, ...) do { if (!(c)) { printf("FAIL " __VA_ARGS__); printf("\n"); fails++; } } while (0)
 
@@ -138,6 +141,42 @@ int main(void)
     ios_cap_feed(&s, in, 480, 48000);
     CHECK(atomic_load(&s.write_pos) == 0, "stopped client got %llu frames", (unsigned long long)atomic_load(&s.write_pos));
 
+    /* muted: silence in real time, at the client's rate and in its format */
+    client(&s, 16000, 2, 16, 0, 16000);
+    atomic_store(&g_cap.muted, 1);
+    fake_ns = 5000000000ull;
+    ios_cap_silence(&s);                                   /* first call only sets the clock */
+    CHECK(atomic_load(&s.write_pos) == 0, "muted: first call wrote %llu", (unsigned long long)atomic_load(&s.write_pos));
+    fake_ns += 10000000ull;                                /* 10 ms -> 160 frames */
+    ios_cap_silence(&s);
+    CHECK(atomic_load(&s.write_pos) == 160, "muted: 10 ms gave %llu frames", (unsigned long long)atomic_load(&s.write_pos));
+    /* polled every 0.625 ms (10 frames): no time is lost to rounding, 100 polls = 1000 frames */
+    for (k = 0; k < 100; k++) { fake_ns += 625000; ios_cap_silence(&s); }
+    CHECK(atomic_load(&s.write_pos) == 1160, "muted: polling gave %llu frames, want 1160", (unsigned long long)atomic_load(&s.write_pos));
+    for (f = 0; f < atomic_load(&s.write_pos); f++)
+        if (ring16(&s, f, 0) != 0 || ring16(&s, f, 1) != 0) { CHECK(0, "muted frame %u not silent", f); break; }
+    { uint64_t w = atomic_load(&s.write_pos);
+      fake_ns += 5000000000ull;                            /* the client stops reading for 5 s */
+      ios_cap_silence(&s);
+      CHECK(atomic_load(&s.write_pos) == w + 14840 && atomic_load(&s.cap_dropped) == 80000 - 14840,
+            "muted overrun: write_pos %llu dropped %u", (unsigned long long)atomic_load(&s.write_pos), atomic_load(&s.cap_dropped)); }
+    client(&s, 48000, 1, 8, 0, 480);                       /* 8-bit PCM silence is 0x80 */
+    atomic_store(&g_cap.muted, 1);
+    fake_ns = 1; ios_cap_silence(&s); fake_ns += 1000000; ios_cap_silence(&s);
+    CHECK(atomic_load(&s.write_pos) == 48 && s.ring[0] == 0x80 && s.ring[47] == 0x80, "muted 8-bit: %llu frames, first byte %u",
+          (unsigned long long)atomic_load(&s.write_pos), s.ring[0]);
+    atomic_store(&g_cap.in_cb, 1);                         /* the queue callback still inside: wait */
+    { uint64_t w = atomic_load(&s.write_pos); fake_ns += 1000000; ios_cap_silence(&s);
+      CHECK(atomic_load(&s.write_pos) == w, "muted: wrote while the callback was in flight"); }
+    atomic_store(&g_cap.in_cb, 0);
+    atomic_store(&g_cap.muted, 0);                         /* unmuted and the queue fine: no silence from here */
+    { uint64_t w = atomic_load(&s.write_pos); fake_ns += 1000000; ios_cap_silence(&s);
+      CHECK(atomic_load(&s.write_pos) == w, "unmuted: silence still written"); }
+    atomic_store(&g_cap.start_failed, 1);                  /* the queue would not start: silence too */
+    { uint64_t w = atomic_load(&s.write_pos); fake_ns += 1000000; ios_cap_silence(&s);
+      CHECK(atomic_load(&s.write_pos) > w, "start failed: no silence"); }
+    atomic_store(&g_cap.start_failed, 0);
+
     /* the peak the 10 s report prints */
     CHECK(atomic_load(&g_cap.peak_bits) != 0, "peak not recorded");
     return fails != 0;
@@ -152,4 +191,5 @@ with tempfile.TemporaryDirectory() as d:
     print(r.stdout, end="")
     assert r.returncode == 0, "capture checks failed"
 print("PASS: microphone samples reach 48k/16k/44.1k clients resampled without gaps, on every channel, "
-      "in float32 and 8/16/24/32-bit PCM; a full ring drops and counts; a stopped client gets nothing")
+      "in float32 and 8/16/24/32-bit PCM; a full ring drops and counts; a stopped client gets nothing; "
+      "a muted microphone delivers silence in real time in the client's format, and never alongside the queue")

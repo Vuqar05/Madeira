@@ -4315,6 +4315,31 @@ struct LaunchFlagChips: View {
     }
 }
 
+/// The in-game menu's microphone switch (docs/MICROPHONE.md): Off, On (the phone's
+/// microphone) and Headset (a Bluetooth headset's). Applies at once, to a game that is
+/// already recording, and is kept in madeira.cfg for the next start.
+struct MicrophoneChoice: View {
+    @State private var mode = Int(madeira_mic_mode())
+    private let listed = madeira_mic_listed() != 0
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Picker("Microphone", selection: Binding(get: { mode }, set: { new in
+                mode = new
+                madeira_mic_set_mode(Int32(new))
+                MadeiraConfig.set("env.MADEIRA_MICROPHONE", new == 0 ? "0" : new == 2 ? "bluetooth" : nil)
+                LogStore.shared.log("[microphone] menu: \(["off", "on", "headset"][new])")
+            })) {
+                Text("Off").tag(0); Text("On").tag(1); Text("Headset").tag(2)
+            }.pickerStyle(.segmented).disabled(!listed)
+            Text(listed
+                 ? "On uses this device's microphone. Headset records through a Bluetooth headset, at phone-call sound quality while a game is recording. Off silences it. Applies at once; the orange indicator is on only while a game is recording."
+                 : "Microphone access is off for Madeira. Turn it on in iOS Settings › Privacy & Security › Microphone, then open Madeira again.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+}
+
 struct FPSChoice: View {
     @Binding var mode: Int
     var body: some View {
@@ -5223,6 +5248,9 @@ struct LibraryHUD: View {
                 Toggle("Eco mode", isOn: Binding(get: { eco }, set: { on in eco = on; madeira_set_eco(on ? 1 : 0) }))
                 Text("Runs the game's threads at a low priority, on the efficiency cores: cooler and slower. Use it while a game loads and turn it off to play.")
                     .font(.caption).foregroundStyle(.secondary)
+                Divider()
+                Text("Microphone").font(.headline)
+                MicrophoneChoice()
                 Divider()
                 Text("Mouse & pointer").font(.headline)
                 LibraryPointerSettings()

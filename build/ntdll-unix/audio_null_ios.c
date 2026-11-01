@@ -27,8 +27,9 @@
  * AVAudioSession activation happens app-side (WineProcessBridge.m).
  *
  * CAPTURE: one microphone endpoint, fed by an AudioQueue input (see
- * "Capture: the microphone" below). It is listed only when the app's audio
- * session can record (MADEIRA_AUDIO_INPUT=1, set by WineProcessBridge.m).
+ * "Capture: the microphone" below). It is listed unless the app was refused
+ * microphone access (MADEIRA_AUDIO_INPUT=1, set by WineProcessBridge.m), and
+ * the app turns it off and on while a game runs (ios_audio_mic_set_active).
  */
 
 #include <stdint.h>
@@ -371,6 +372,8 @@ struct ios_stream {
      * AudioQueue thread writes it (write_pos) and get_capture_buffer reads it
      * (play_pos = frames the client has released). */
     int capture;                   /* an eCapture stream */
+    _Atomic uint64_t cap_sil_ns;   /* muted: time up to which silence has been delivered */
+    _Atomic int cap_sil_busy;      /* muted: a caller is writing silence */
     UINT32 period_frames;          /* frames per capture packet */
     UINT32 getbuf_last;            /* frames handed out by get_capture_buffer, not yet released */
     double cap_phase;              /* resampler position, in input samples past cap_prev */
@@ -1019,6 +1022,8 @@ struct ios_capture_device {
     AudioQueueRef q;               /* non-NULL while some capture client is started */
     int failed;                    /* AudioQueueNewInput failed; stay silent */
     _Atomic int running;           /* the callback re-enqueues its buffer */
+    _Atomic int muted;             /* the app turned the microphone off: no queue, clients get silence */
+    _Atomic int start_failed;      /* the last AudioQueueStart failed: clients get silence */
     _Atomic int in_cb;             /* callbacks in flight; ios_cap_detach waits for 0 */
     _Atomic uint32_t peak_bits;    /* largest |sample| since the last report, as float bits */
 };
@@ -1029,9 +1034,9 @@ static _Atomic(struct ios_stream *) g_cap_streams[IOS_MAX_STREAMS];
 
 static REFERENCE_TIME ios_engine_period(void);
 
-/* WineProcessBridge.m sets MADEIRA_AUDIO_INPUT=1 when the session it activated
- * can record: env.MADEIRA_MICROPHONE is not 0, the category is PlayAndRecord,
- * an input is available and the user has not refused the microphone. */
+/* WineProcessBridge.m sets MADEIRA_AUDIO_INPUT=1 unless the user has refused
+ * the microphone. Off in the app's menu mutes the endpoint (ios_cap_silent)
+ * but does not remove it: a game that has found its microphone keeps it. */
 static int ios_capture_available(void)
 {
     static int cached = -1;
@@ -1128,7 +1133,7 @@ static void ios_cap_input_cb(void *user, AudioQueueRef q, AudioQueueBufferRef bu
     (void)user; (void)ts; (void)npackets; (void)desc;
 
     atomic_fetch_add(&g_cap.in_cb, 1);
-    if (n)
+    if (n && !atomic_load(&g_cap.muted))
         for (i = 0; i < IOS_MAX_STREAMS; i++) {
             struct ios_stream *s = atomic_load(&g_cap_streams[i]);
             if (s) ios_cap_feed(s, (const int16_t *)buf->mAudioData, n, IOS_CAP_RATE);
@@ -1200,7 +1205,7 @@ static void ios_cap_start(void)
     int i;
 
     pthread_mutex_lock(&g_cap_lock);
-    if (g_cap.q || g_cap.failed) goto out;
+    if (g_cap.q || g_cap.failed || atomic_load(&g_cap.muted)) goto out;
 
     asbd.mSampleRate = IOS_CAP_RATE;
     asbd.mFormatID = kAudioFormatLinearPCM;
@@ -1216,6 +1221,7 @@ static void ios_cap_start(void)
         fprintf(stderr, "[ios_audio] mic AudioQueueNewInput: %d -- capture stays silent\n", (int)err);
         g_cap.q = NULL;
         g_cap.failed = 1;
+        atomic_store(&g_cap.start_failed, 1);
         goto out;
     }
     for (i = 0; i < IOS_CAP_BUFFERS; i++) {
@@ -1224,9 +1230,11 @@ static void ios_cap_start(void)
             AudioQueueEnqueueBuffer(g_cap.q, b, 0, NULL);
     }
     atomic_store(&g_cap.running, 1);
+    atomic_store(&g_cap.start_failed, 0);   /* before the callback can run: one producer at a time */
     if ((err = AudioQueueStart(g_cap.q, NULL))) {
         /* not marked failed: an interrupted session can record again later */
         fprintf(stderr, "[ios_audio] mic AudioQueueStart: %d -- capture stays silent\n", (int)err);
+        atomic_store(&g_cap.start_failed, 1);
         atomic_store(&g_cap.running, 0);
         AudioQueueDispose(g_cap.q, true);
         g_cap.q = NULL;
@@ -1238,26 +1246,120 @@ out:
     pthread_mutex_unlock(&g_cap_lock);
 }
 
-/* Stop and dispose the queue once no capture client is started. Synchronous:
- * after AudioQueueStop(.., true) no callback is running, and the callback
- * never takes g_cap_lock, so holding it here cannot deadlock. */
+/* Stop and dispose the queue. Synchronous: after AudioQueueStop(.., true) no
+ * callback is running, and the callback never takes g_cap_lock, so holding it
+ * here cannot deadlock. The microphone indicator goes off with the queue.
+ * Caller holds g_cap_lock. */
+static void ios_cap_dispose_locked(const char *why)
+{
+    if (!g_cap.q) return;
+    atomic_store(&g_cap.running, 0);
+    AudioQueueStop(g_cap.q, true);
+    AudioQueueDispose(g_cap.q, true);
+    g_cap.q = NULL;
+    fprintf(stderr, "[ios_audio] mic OFF (%s)\n", why);
+}
+
+static int ios_cap_any_started(void)
+{
+    int i;
+    for (i = 0; i < IOS_MAX_STREAMS; i++) {
+        struct ios_stream *m = atomic_load(&g_cap_streams[i]);
+        if (m && m->started) return 1;
+    }
+    return 0;
+}
+
+/* ... once no capture client is started. */
 static void ios_cap_stop_if_idle(void)
 {
-    int i, any = 0;
+    pthread_mutex_lock(&g_cap_lock);
+    if (!ios_cap_any_started()) ios_cap_dispose_locked("no capture client running");
+    pthread_mutex_unlock(&g_cap_lock);
+}
 
+/* Whether the clients get silence from ios_cap_silence rather than sound from
+ * the queue: the app muted the microphone, or the queue would not start. The
+ * queue callback and ios_cap_silence are never both producers: the callback
+ * skips every pass while muted, and start_failed is cleared before a start. */
+static int ios_cap_silent(void)
+{
+    return atomic_load(&g_cap.muted) || atomic_load(&g_cap.start_failed);
+}
+
+/* A microphone that is off still behaves like one: it delivers a packet every
+ * period of silence, in real time, so a game that waits on its clock or its
+ * packets (voice chat reports "no signal", it does not stall). Called before
+ * every read of the ring, from whichever Wine thread the client is on; a
+ * caller that finds another one writing leaves it to them. */
+static void ios_cap_silence(struct ios_stream *s)
+{
+    uint64_t now, last, n, wr, rd, room;
+    UINT32 cap = s->buffer_frames, fb = s->frame_bytes, rate = s->sample_rate;
+
+    if (!s->capture || !s->started || !s->ring || !cap || !fb || !rate || !ios_cap_silent()) return;
+    if (atomic_load(&g_cap.in_cb)) return;   /* the queue callback is still inside its last pass */
+    if (atomic_exchange(&s->cap_sil_busy, 1)) return;
+
+    now = mach_to_ns(mach_absolute_time());
+    last = atomic_load(&s->cap_sil_ns);
+    if (!last || now < last) {
+        atomic_store(&s->cap_sil_ns, now);
+    } else {
+        uint64_t total = (now - last) * rate / 1000000000ull;
+        n = total;
+        if (n) {
+            rd = atomic_load_explicit(&s->play_pos, memory_order_acquire);
+            wr = atomic_load_explicit(&s->write_pos, memory_order_relaxed);
+            room = (wr > rd ? wr - rd : 0) < cap ? cap - (wr > rd ? wr - rd : 0) : 0;
+            if (n > room) {   /* the client is not reading: an overrun, as with a real device */
+                atomic_fetch_add_explicit(&s->cap_dropped, (uint32_t)(n - room), memory_order_relaxed);
+                n = room;
+            }
+            {
+                uint64_t i;
+                int unsigned8 = !s->is_float && s->sample_bits == 8;
+                for (i = 0; i < n; i++)
+                    memset(s->ring + (size_t)((wr + i) % cap) * fb, unsigned8 ? 0x80 : 0, fb);
+            }
+            atomic_store_explicit(&s->write_pos, wr + n, memory_order_release);
+            /* advance by the time the delivered and dropped frames cover; the rest stays for next time */
+            atomic_store(&s->cap_sil_ns, last + total * 1000000000ull / rate);
+        }
+    }
+    atomic_store(&s->cap_sil_busy, 0);
+}
+
+/* The app's microphone switch (Off / On / Headset in the in-game menu; see
+ * madeira_mic_set_mode in WineProcessBridge.m). 0: mute, stop and dispose the
+ * queue now, so the indicator goes out, and give clients silence. 1: unmute and
+ * start the queue again if a client is recording. The app changes the audio
+ * session between the two, because a category change under a running input
+ * queue invalidates it. */
+void ios_audio_mic_set_active(int active)
+{
+    int i, spins = 0;
+
+    if (!active) {
+        atomic_store(&g_cap.muted, 1);
+        /* a callback that began before the flag was set finishes first */
+        while (atomic_load(&g_cap.in_cb) && ++spins <= 500) usleep(1000);
+        pthread_mutex_lock(&g_cap_lock);
+        ios_cap_dispose_locked("microphone muted");
+        pthread_mutex_unlock(&g_cap_lock);
+        return;
+    }
     pthread_mutex_lock(&g_cap_lock);
     for (i = 0; i < IOS_MAX_STREAMS; i++) {
         struct ios_stream *m = atomic_load(&g_cap_streams[i]);
-        if (m && m->started) { any = 1; break; }
+        if (m) { atomic_store(&m->cap_sil_ns, 0); m->cap_phase = 0; m->cap_prev = 0; }
     }
-    if (!any && g_cap.q) {
-        atomic_store(&g_cap.running, 0);
-        AudioQueueStop(g_cap.q, true);
-        AudioQueueDispose(g_cap.q, true);
-        g_cap.q = NULL;
-        fprintf(stderr, "[ios_audio] mic OFF (no capture client running)\n");
-    }
+    g_cap.failed = 0;
+    atomic_store(&g_cap.start_failed, 0);
+    atomic_store(&g_cap.muted, 0);
     pthread_mutex_unlock(&g_cap_lock);
+    fprintf(stderr, "[ios_audio] mic unmuted\n");
+    if (ios_cap_any_started()) ios_cap_start();
 }
 
 /* ---------------------------------------------------------------- */
@@ -1518,7 +1620,7 @@ static NTSTATUS ios_start(void *args) {
          * already sees this client. */
         s->start_mach = mach_absolute_time();
         s->started = 1;
-        if (s->capture) ios_cap_start();
+        if (s->capture) { atomic_store(&s->cap_sil_ns, 0); ios_cap_start(); }
         else ios_dev_start();
     }
     p->result = S_OK;
@@ -1855,6 +1957,7 @@ static NTSTATUS ios_get_capture_buffer(void *args) {
     if (s->getbuf_last) { p->result = IOS_AUDCLNT_E_OUT_OF_ORDER; return STATUS_SUCCESS; }
 
     n = s->period_frames;
+    ios_cap_silence(s);
     avail = s->capture ? ios_cap_avail(s) : 0;
     if (!n || avail < n || !s->ring || !s->render_scratch || s->scratch_frames < n) {
         p->result = IOS_AUDCLNT_S_BUFFER_EMPTY;
@@ -1896,6 +1999,7 @@ static NTSTATUS ios_get_capture_buffer(void *args) {
             if (last)
                 fprintf(stderr, "[ios_audio] mic stream=%p: %u packets of %u frames, input peak %.3f%s\n",
                         (void *)s, packets, n, peak,
+                        ios_cap_silent() ? " (microphone off)" :
                         peak == 0.0f ? " (silence: microphone access refused?)" : "");
             last = time(NULL);
             packets = 0;
@@ -2029,6 +2133,7 @@ static NTSTATUS ios_get_current_padding(void *args) {
     if (!s) { if (p->padding) *p->padding = 0; p->result = AUDCLNT_E_NOT_INITIALIZED; return STATUS_SUCCESS; }
     if (p->padding) {
         if (s->capture) {
+            ios_cap_silence(s);
             *p->padding = (UINT32)ios_cap_avail(s);   /* frames waiting to be read */
         } else if (ios_stream_is_live(s)) {
             uint64_t pad = atomic_load(&s->write_pos) - atomic_load(&s->play_pos);
@@ -2045,6 +2150,7 @@ static NTSTATUS ios_get_next_packet_size(void *args) {
     struct get_next_packet_size_params *p = args;
     struct ios_stream *s = stream_from_handle(p->stream);
     if (!s) { if (p->frames) *p->frames = 0; p->result = AUDCLNT_E_NOT_INITIALIZED; return STATUS_SUCCESS; }
+    ios_cap_silence(s);
     if (p->frames)
         *p->frames = s->capture && s->period_frames && ios_cap_avail(s) >= s->period_frames
                      ? s->period_frames : 0;
