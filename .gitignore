@@ -208,6 +208,11 @@ app/Madeira/i386-windows/*
 app/Madeira/arm64ec-windows/dockhost.exe
 app/Madeira/arm64ec-windows/dock-notices.txt
 
+# SDL3.dll for Dock's 64-bit Steam client: build/sdl3/build.sh
+app/Madeira/arm64ec-windows/SDL3.dll
+app/Madeira/arm64ec-windows/sdl3-notices.txt
+build/sdl3/work/
+
 # faultrep.dll: build/faultrep/build.sh (its install goes into the tracked farm)
 build/faultrep/out/
 
