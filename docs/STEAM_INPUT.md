@@ -116,6 +116,21 @@ stages it as `system32\SDL3.dll` next to `dockhost.exe`. It exports the same
 1,271 functions as Valve's 32-bit copy. Steam tries its own folder first, which
 fails, and then the search by name finds this copy.
 
+### Device results 2 to 9 (2026-11-01)
+- Polling `GetNumConnectedControllers` once a second broke up the game's
+  audio. One call, 15 s after the launch, does not.
+- `<appid>\UseSteamControllerConfig` (IClientUser store 1) set to 2 gives
+  "Opted-in Controller Mask Forced On" for the game.
+- The client-wide mask (`AppId 0`), which decides which pads the client
+  opens, stays `1000` without the PlayStation setting. `SetConfigInt` for
+  `SteamController_PSSupport` never reached the client's reader in any store.
+- Desktop Steam (a CrossOver bottle) writes that setting to
+  `userdata/<account>/config/localconfig.vdf`, at the top level of
+  `UserLocalConfigStore`, and the client reads it when it starts. Madeira now
+  writes `"SteamController_PSSupport" "2"` there before a Steam Input launch and
+  puts the line back when the Dock session ends (`DockSteamInput` in
+  `MadeiraDock.swift`).
+
 ### Phase 2: switch it on
 - If the count is 0: trace the client's HID enumeration (Wine `+hid,+setupapi`
   for the Dock process) and fill what Madeira's HID device misses.
