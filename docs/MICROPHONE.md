@@ -19,7 +19,7 @@ the choice is kept for the next start.
 |---|---|---|
 | On (default) | PlayAndRecord, speaker by default, Bluetooth in A2DP | The phone's own. Bluetooth headphones keep full-quality sound. |
 | Headset | as On, plus Bluetooth HFP | The headset's. Sound drops to telephone quality while a game is recording. |
-| Off | Playback, as before this feature | Games still see the device, but it delivers silence and nothing is recording, so the indicator is off. |
+| Off | Playback, as before this feature, when the session starts Off. A session that is already recording stays as it is. | Games still see the device, but it delivers silence and nothing is recording, so the indicator is off. |
 
 The starting mode is **Settings › All settings › Audio › Microphone at start**
 (`env.MADEIRA_MICROPHONE`: unset = On, `bluetooth` = Headset, `0` = Off).
@@ -38,8 +38,16 @@ through your microphone, so use headphones.
   `madeira_mic_set_mode` (the menu's switch) runs on its own queue: it mutes the
   driver (`ios_audio_mic_set_active(0)`: the input queue is stopped and disposed
   first, because a category change under a running queue invalidates it),
-  changes the category and the IO slice, and unmutes, which starts the queue
+  changes the audio session and the IO slice, and unmutes, which starts the queue
   again if a game is recording.
+- Changing the audio session's *category* is slow and blocks the app's main
+  thread (with Bluetooth it measured 2.5 to 6 s, and the game froze with its
+  sound). So it is changed as little as possible: Off and On never change it
+  once the session records; Headset adds Bluetooth HFP to the category once,
+  and from then on On and Headset differ only in the preferred input (the
+  built-in microphone or the headset's). If iOS keeps the output on HFP with
+  the phone's microphone, the HFP option is dropped again. Every switch logs
+  `[microphone] a -> b: input stopped N ms, session N ms; route in X, out Y`.
 - `build/ntdll-unix/audio_null_ios.c` then lists the capture endpoint. The
   microphone is read through an AudioQueue (16-bit mono, 48 kHz), not through
   the RemoteIO output unit: enabling input on RemoteIO means
