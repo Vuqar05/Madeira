@@ -218,6 +218,23 @@ static enum server_fd_type hidpad_file_get_fd_type( struct fd *fd )
     return FD_TYPE_DEVICE;
 }
 
+
+/* The first HIDPAD_LOG_LIMIT opens of each process are logged (up to 8
+ * processes): a game that opens the pad many times at launch must not hide a
+ * later open by another process (Valve's client in Madeira Dock, Steam Input). */
+static int hidpad_log_open( unsigned int pid )
+{
+    static unsigned int pids[8], counts[8];
+    unsigned int i;
+
+    for (i = 0; i < 8; i++)
+    {
+        if (!counts[i]) pids[i] = pid;
+        if (pids[i] == pid) return counts[i]++ < HIDPAD_LOG_LIMIT;
+    }
+    return 0;
+}
+
 static struct object *hidpad_device_open_file( struct object *obj, unsigned int access,
                                                unsigned int sharing, unsigned int options )
 {
@@ -239,7 +256,8 @@ static struct object *hidpad_device_open_file( struct object *obj, unsigned int 
     }
     allow_fd_caching( file->fd );
 
-    if (device->opens++ < HIDPAD_LOG_LIMIT)
+    device->opens++;
+    if (hidpad_log_open( current ? current->process->id : 0 ))
         fprintf( stderr, "[hid-pad] ml2101 open #%u pid=%04x access=%#x options=%#x\n", device->opens,
                  current ? current->process->id : 0, access, options );
     return &file->obj;
