@@ -131,6 +131,18 @@ fails, and then the search by name finds this copy.
   puts the line back when the Dock session ends (`DockSteamInput` in
   `MadeiraDock.swift`).
 
+### Device results 10 to 13 (2026-11-01)
+- With `SteamController_PSSupport` 2 in localconfig.vdf the client-wide mask
+  is `1001` (PlayStation pads in), and the game's mask is "Forced On".
+- The client's `CSteamController::CHIDIO Thread` lists the virtual DualSense
+  and reads its attributes, caps and strings, but never opens it for input.
+- Wine's `CM_Get_Parent` was a stub, so SDL's HIDAPI saw no bus. With
+  `CM_Get_Parent` reading a `Parent` value (wine branch
+  `madeira-cm-get-parent`) and a registered USB composite parent, the client
+  now detects USB and finds the USB device among
+  `GUID_DEVINTERFACE_USB_DEVICE` interfaces, and still does not open the
+  pad. The next check is inside the client's own HID code (not SDL).
+
 ### Phase 2: switch it on
 - If the count is 0: trace the client's HID enumeration (Wine `+hid,+setupapi`
   for the Dock process) and fill what Madeira's HID device misses.
