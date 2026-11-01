@@ -5,9 +5,12 @@ already hosts, handle the controller for Steam games, instead of Madeira
 re-implementing Steam Input (the community-layout importer in
 `SteamInputLayouts.swift` / `PadKeyboardMouse.swift`).
 
-Status: the January client opens the virtual DualSense on device. End-to-end
-Xbox output is still under device validation. The notes below include earlier
-experiments; a queued cache load is not evidence that a working binding exists.
+Status: end-to-end gamepad input through the January client is verified for the
+tested game/controller combination. The current remaining-work plan is
+[Finish Steam Input integration](STEAM_INPUT_INTEGRATION_PLAN.md), covering game
+defaults, community downloads and personal layouts. The notes and phased plan
+below include earlier experiments; a queued cache load alone is not evidence
+that a working binding exists.
 The exact client SHA-256 remains pinned (`71b391fe…f640`).
 
 ## How Steam Input works on Windows (from the client DLL)
