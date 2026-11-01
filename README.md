@@ -44,6 +44,7 @@ Wine's server runs as a thread instead of a separate program.
   on-screen touch controls.
 - **Keyboard, mouse and trackpad** passed through to games as real input.
 - **Video and audio** for cutscenes and music, through FFmpeg, VideoToolbox and AudioToolbox.
+- **Microphone** for games' voice chat ([details](docs/MICROPHONE.md)).
 
 ## Requirements
 

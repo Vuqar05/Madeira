@@ -12,6 +12,9 @@
 #import <AVFoundation/AVFoundation.h>
 #import <AudioToolbox/AudioToolbox.h>
 #include <unistd.h>
+#include <stdatomic.h>
+#include <math.h>
+#include <time.h>
 #include <pwd.h>
 #include <fcntl.h>
 #include <sys/socket.h>
@@ -1285,6 +1288,172 @@ static int madeira_split_launch_args(const char *input, char *storage, size_t st
     return (int)argc;
 }
 
+/* ---- Microphone (docs/MICROPHONE.md) ----
+ * Three modes, chosen at start from env.MADEIRA_MICROPHONE and live from the
+ * in-game menu (madeira_mic_set_mode): 0 off, 1 on, 2 headset.
+ *   on       PlayAndRecord, speaker by default, Bluetooth in A2DP: the phone's own
+ *            microphone, and Bluetooth headphones keep full-quality sound.
+ *   headset  as on, plus Bluetooth HFP: the headset's microphone, at the cost of
+ *            telephone-quality sound while a game is recording.
+ *   off      Playback, as before the microphone existed. The driver still lists
+ *            the device (a game that found it keeps it) but delivers silence and
+ *            holds no input queue, so the microphone indicator is off.
+ * A game that is recording when the mode changes keeps recording: the driver
+ * stops its queue before the session changes (a category change under a running
+ * input queue invalidates it) and starts it again after. */
+extern void ios_audio_mic_set_active(int active);   /* build/ntdll-unix/audio_null_ios.c */
+static _Atomic int g_mic_mode = 1;
+
+static int madeira_mic_parse_mode(const char *v)
+{
+    if (v && v[0] == '0' && !v[1]) return 0;
+    if (v && !strcasecmp(v, "bluetooth")) return 2;
+    return 1;
+}
+
+/* A route change that is not a category change. Changing the category (or its
+ * options) makes iOS rebuild the whole audio session: with a Bluetooth device that
+ * took 2 to 6 s, during which the app's main thread waits on the same session lock
+ * and the game freezes with its sound. Choosing another input of the same session is
+ * far lighter. So the category is set up as rarely as possible:
+ *   - On <-> Off: no session change at all once recording is possible (Off is the
+ *     driver's mute); only a session that began in Off changes, once.
+ *   - On <-> Headset: the category gains HFP once, then the two differ in the
+ *     preferred input only (the built-in microphone, or the headset's). */
+static AVAudioSessionPortDescription *madeira_mic_input_port(AVAudioSession *session, int mode)
+{
+    NSArray<NSString *> *types = mode == 2
+        ? @[AVAudioSessionPortBluetoothHFP, AVAudioSessionPortHeadsetMic, AVAudioSessionPortUSBAudio]
+        : @[AVAudioSessionPortBuiltInMic];
+    for (NSString *t in types)
+        for (AVAudioSessionPortDescription *port in session.availableInputs)
+            if ([port.portType isEqualToString:t]) return port;
+    return nil;
+}
+
+static BOOL madeira_mic_output_is_hfp(AVAudioSession *session)
+{
+    for (AVAudioSessionPortDescription *port in session.currentRoute.outputs)
+        if ([port.portType isEqualToString:AVAudioSessionPortBluetoothHFP]) return YES;
+    return NO;
+}
+
+/* Sets PlayAndRecord with these options unless the session already has them. */
+static BOOL madeira_mic_set_record_category(AVAudioSession *session, AVAudioSessionCategoryOptions opts)
+{
+    NSError *aerr = nil;
+    if ([session.category isEqualToString:AVAudioSessionCategoryPlayAndRecord] && session.categoryOptions == opts)
+        return YES;
+    if (![session setCategory:AVAudioSessionCategoryPlayAndRecord mode:AVAudioSessionModeDefault
+                      options:opts error:&aerr]) {
+        LOG("AVAudioSession PlayAndRecord failed: %{public}s", aerr.localizedDescription.UTF8String);
+        return NO;
+    }
+    return YES;
+}
+
+/* The audio session for a mode, and the IO slice. Returns the mode in force:
+ * PlayAndRecord that iOS refuses leaves the session on Playback, off. */
+static int madeira_mic_configure_session(int mode)
+{
+    NSError *aerr = nil;
+    AVAudioSession *session = [AVAudioSession sharedInstance];
+    const AVAudioSessionCategoryOptions base = AVAudioSessionCategoryOptionDefaultToSpeaker |
+                                               AVAudioSessionCategoryOptionAllowBluetoothA2DP;
+    BOOL recording = [session.category isEqualToString:AVAudioSessionCategoryPlayAndRecord];
+
+    if (mode == 2) {
+        if (!madeira_mic_set_record_category(session, base | AVAudioSessionCategoryOptionAllowBluetoothHFP)) mode = 0;
+        else {
+            AVAudioSessionPortDescription *port = madeira_mic_input_port(session, 2);
+            if (![session setPreferredInput:port error:&aerr])   /* nil: the system's choice */
+                LOG("microphone: setPreferredInput(headset) failed: %{public}s", aerr.localizedDescription.UTF8String);
+            if (!port) LOG("microphone: no headset input is connected; the system chooses");
+        }
+    } else if (mode == 1) {
+        /* The session as it was before the headset existed, unless it already allows
+         * HFP: then the phone's microphone is asked for by name and, if iOS still
+         * moves the output to HFP (telephone quality), the HFP option is dropped. */
+        if (recording && (session.categoryOptions & AVAudioSessionCategoryOptionAllowBluetoothHFP)) {
+            [session setPreferredInput:madeira_mic_input_port(session, 1) error:&aerr];
+            if (madeira_mic_output_is_hfp(session)) {
+                LOG("microphone: the output stayed on HFP with the phone's microphone; leaving HFP");
+                if (!madeira_mic_set_record_category(session, base)) mode = 0;
+                else [session setPreferredInput:nil error:&aerr];
+            }
+        } else if (!madeira_mic_set_record_category(session, base)) mode = 0;
+    }
+    if (mode == 0) {
+        /* A session that records stays as it is (Off is the driver's mute); one that
+         * does not is Playback, as before the microphone existed. */
+        if (!recording || ![session.category isEqualToString:AVAudioSessionCategoryPlayAndRecord]) {
+            [session setCategory:AVAudioSessionCategoryPlayback error:&aerr];
+            if (aerr) LOG("AVAudioSession setCategory failed: %{public}s",
+                          aerr.localizedDescription.UTF8String);
+        }
+    }
+    /* A shared-mode client that keeps only one 10 ms engine period queued
+     * (IAudioClient3 low latency) loses audio when RemoteIO pulls a larger
+     * slice per callback (iOS's default is ~1024 frames, 21 ms): every
+     * callback empties the queue and plays silence for the rest. Ask for a
+     * 5 ms slice; the driver reports an engine period of at least two
+     * slices (MADEIRA_AUDIO_IO_US, audio_null_ios.c). MADEIRA_AUDIO_IO_MS
+     * sets the slice; 0 keeps the system's. A category change can reset it, so
+     * this is asked again after one; when the session already has it, the
+     * request is skipped (it is a round trip to the audio server). */
+    {
+        const char *io = getenv("MADEIRA_AUDIO_IO_MS");
+        double ms = io && *io ? atof(io) : 5.0;
+        if (ms > 0 && fabs(session.preferredIOBufferDuration - ms / 1000.0) > 1e-6) {
+            aerr = nil;
+            if (![session setPreferredIOBufferDuration:ms / 1000.0 error:&aerr])
+                LOG("AVAudioSession setPreferredIOBufferDuration(%.1fms) failed: %{public}s",
+                    ms, aerr.localizedDescription.UTF8String);
+        }
+    }
+    return mode;
+}
+
+int madeira_mic_mode(void) { return atomic_load(&g_mic_mode); }
+
+/* Whether games are offered a microphone at all: not when iOS access is refused
+ * (changing that takes Settings, which restarts Madeira). */
+int madeira_mic_listed(void)
+{
+    const char *e = getenv("MADEIRA_AUDIO_INPUT");
+    return e && e[0] == '1';
+}
+
+/* The in-game menu's microphone switch. Off the main thread: changing the
+ * session's category takes a moment and the route changes under the game. */
+void madeira_mic_set_mode(int mode)
+{
+    static dispatch_queue_t queue;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ queue = dispatch_queue_create("madeira.microphone", DISPATCH_QUEUE_SERIAL); });
+    mode = mode < 0 ? 0 : mode > 2 ? 2 : mode;
+    dispatch_async(queue, ^{
+        int old = atomic_load(&g_mic_mode);
+        if (mode == old) return;
+        double t0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1e9;
+        ios_audio_mic_set_active(0);
+        double t1 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1e9;
+        int got = madeira_mic_configure_session(mode);
+        double t2 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1e9;
+        atomic_store(&g_mic_mode, got);
+        AVAudioSession *session = [AVAudioSession sharedInstance];
+        static const char *names[] = { "off", "on", "headset" };
+        /* stderr as well as os_log: it lands in the session's log file */
+        fprintf(stderr, "[microphone] %s -> %s (wanted %s): input stopped %.0f ms, session %.0f ms; "
+                        "route in %s, out %s, %.0f Hz, io-buffer %.2f ms\n",
+                names[old], names[got], names[mode], (t1 - t0) * 1000, (t2 - t1) * 1000,
+                session.currentRoute.inputs.firstObject.portType.UTF8String ?: "none",
+                session.currentRoute.outputs.firstObject.portType.UTF8String ?: "none",
+                session.sampleRate, session.IOBufferDuration * 1000.0);
+        if (got) ios_audio_mic_set_active(1);
+    });
+}
+
 static void *wine_process_thread(void *arg) {
     @autoreleasepool {
         /* Perf: the guest main thread runs ON this pthread. Promote to
@@ -1449,25 +1618,15 @@ static void *wine_process_thread(void *arg) {
         {
             NSError *aerr = nil;
             AVAudioSession *session = [AVAudioSession sharedInstance];
-            [session setCategory:AVAudioSessionCategoryPlayback error:&aerr];
-            if (aerr) LOG("AVAudioSession setCategory failed: %{public}s",
-                          aerr.localizedDescription.UTF8String);
-            aerr = nil;
-            /* A shared-mode client that keeps only one 10 ms engine period queued
-             * (IAudioClient3 low latency) loses audio when RemoteIO pulls a larger
-             * slice per callback (iOS's default is ~1024 frames, 21 ms): every
-             * callback empties the queue and plays silence for the rest. Ask for a
-             * 5 ms slice; the driver reports an engine period of at least two
-             * slices (MADEIRA_AUDIO_IO_US, audio_null_ios.c). MADEIRA_AUDIO_IO_MS
-             * sets the slice; 0 keeps the system's. */
-            {
-                const char *io = getenv("MADEIRA_AUDIO_IO_MS");
-                double ms = io && *io ? atof(io) : 5.0;
-                if (ms > 0 && ![session setPreferredIOBufferDuration:ms / 1000.0 error:&aerr])
-                    LOG("AVAudioSession setPreferredIOBufferDuration(%.1fms) failed: %{public}s",
-                        ms, aerr.localizedDescription.UTF8String);
-                aerr = nil;
-            }
+            /* The microphone's starting mode (madeira_mic_set_mode changes it live).
+             * This runs before the env.* lines are exported, so the cfg line is
+             * read here directly. */
+            const char *mic = getenv("MADEIRA_MICROPHONE");
+            char mic_cfg[16];
+            if (!mic && madeira_cfg_get("env.MADEIRA_MICROPHONE", mic_cfg, sizeof(mic_cfg))) mic = mic_cfg;
+            int mic_mode = madeira_mic_configure_session(madeira_mic_parse_mode(mic));
+            atomic_store(&g_mic_mode, mic_mode);
+            ios_audio_mic_set_active(mic_mode != 0);
             [session setActive:YES error:&aerr];
             if (aerr) LOG("AVAudioSession setActive failed: %{public}s",
                           aerr.localizedDescription.UTF8String);
@@ -1476,6 +1635,19 @@ static void *wine_process_thread(void *arg) {
             char io_us[32];
             snprintf(io_us, sizeof io_us, "%lld", (long long)(session.IOBufferDuration * 1e6));
             setenv("MADEIRA_AUDIO_IO_US", io_us, 1);
+            /* The driver lists a microphone unless iOS access was refused. A user who
+             * has not been asked yet is asked by iOS when a game first listens. */
+            {
+                AVAudioApplicationRecordPermission perm = [AVAudioApplication sharedInstance].recordPermission;
+                BOOL listed = perm != AVAudioApplicationRecordPermissionDenied;
+                LOG("microphone: %{public}s, input %{public}s, permission %{public}s, %{public}s",
+                    mic_mode == 0 ? "off" : mic_mode == 2 ? "headset" : "on",
+                    session.isInputAvailable ? "available" : "unavailable",
+                    perm == AVAudioApplicationRecordPermissionGranted ? "granted" :
+                    perm == AVAudioApplicationRecordPermissionDenied ? "refused (Settings > Privacy > Microphone)" :
+                    "not asked yet", listed ? "listed for games" : "not listed");
+                setenv("MADEIRA_AUDIO_INPUT", listed ? "1" : "0", 1);
+            }
         }
 
         /* 2026-07-04 BISECT RESULT: arm A (this env set, all handler fixes
