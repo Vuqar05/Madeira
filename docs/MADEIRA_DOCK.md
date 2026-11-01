@@ -593,3 +593,23 @@ client still checks the account and the game license.
 
 Rebuild the Dock host with these source changes. The source tests and the
 Windows cross-build do not establish Steam startup or gameplay on a device.
+
+
+### Steam Input integration
+
+`docs/STEAM_INPUT.md` records the experimental January-client controller path.
+The Dock runtime component builds/stages x64 SDL3 and its notices as well as the
+host executable. Controller templates come from Valve's pinned public_all
+package; a Steam Input launch can add them to an existing verified client
+installation. First-account PlayStation opt-in setup and CRLF restoration are
+covered by `tests/host/check-dock-steam-input.py`. Dock's sanitizer tests cover
+late connection, asynchronous cache readiness, refocus and reconnection. A queued
+mapping or activation request alone does not establish game input. Device
+diagnostics now confirm a connected, changing Xbox state in Valve's output
+stream. The remaining game-side failure was a denied current-process
+`WriteProcessMemory` call during overlay hook installation. Madeira's local
+write path now handles the current-process pseudo-handle, including W^X aliases,
+without enabling cross-process writes; its host tests pass. The user confirmed
+working input in the installed iPad build. Final logs show successful local hook
+writes, no overlay write failures, and a connected Windows.Gaming.Input gamepad.
+This verifies the tested game/controller combination, not all layout/output types.

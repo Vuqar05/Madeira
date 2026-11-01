@@ -5,9 +5,10 @@ already hosts, handle the controller for Steam games, instead of Madeira
 re-implementing Steam Input (the community-layout importer in
 `SteamInputLayouts.swift` / `PadKeyboardMouse.swift`).
 
-Status: research done, phase 1 (probe) implemented, phases 2 to 4 need device
-results. Analysis was static only (PE/RTTI and disassembly of the pinned January
-`steamclient64.dll`, SHA-256 `71b391fe…f640`). No Valve code was executed.
+Status: the January client opens the virtual DualSense on device. End-to-end
+Xbox output is still under device validation. The notes below include earlier
+experiments; a queued cache load is not evidence that a working binding exists.
+The exact client SHA-256 remains pinned (`71b391fe…f640`).
 
 ## How Steam Input works on Windows (from the client DLL)
 
@@ -33,8 +34,8 @@ All of Steam Input lives in `steamclient64.dll`, the library Dock already loads.
   - Virtual Xbox pad: not a driver. The client writes pad state into a shared
     memory stream (`CXInputSteamMemStream`, `controllerxinput_win.cpp`) and
     `GameOverlayRenderer64.dll`, injected into the game, hooks XInput and reads
-    it (`CXInputGameMemStream`, `ISpoofControllerXInput`). Without the overlay
-    in the game there is no virtual Xbox pad.
+    it (`CXInputGameMemStream`, `ISpoofControllerXInput`). The overlay must both
+    load in the game and successfully install its XInput hooks.
   - Native Steam Input games (`ISteamInput`, action manifests): the game asks
     the client over Steam IPC. No overlay needed.
 
@@ -173,3 +174,78 @@ output reaches the game (virtual XInput needs the overlay).
 ### Phase 4: retire the imitation
 - Once phases 2 and 3 work, the community-layout importer and
   `PadKeyboardMouse` become the fallback for non-Steam games only.
+
+## Loader and installation corrections (2026-11-02)
+
+The pinned January client's `LoadConfigFromVDFString` and `SetFocusedWindow`
+return **void**. The old bool declarations produced arbitrary values (including
+255) in success logs. The report now distinguishes `layout-queued`,
+`mapping-cached` (HasGameMapping, slot 128) and `activation-requested`; none
+asserts that the overlay has delivered input to a game.
+
+Dock now checks the indexed `IsControllerConnected(0, false)` before loading,
+asks `GetConfigForAppAndController` for the selection key, resolves its bare
+template name or account-local autosave (also accepting legacy template URLs
+and Steam-local files), waits for the asynchronous mapping cache, then
+resets the enable cache, warms and activates. Focus changes re-request activation
+without overwriting or reloading a user's selection. Late enumeration, failed
+SDL initialization, bounded file/cache retries and reconnection no longer depend
+on the first foreground-PID change. Full controller enumeration remains one-shot
+because it previously interrupted audio.
+
+Reproducible installation also needs:
+
+- Valve's pinned `public_all` package (including `controller_base`), with its
+  size and full SHA-256 checked. Its 3,832 ZIP entries exceed the old 256-entry
+  reader limit; the bounded limit is now 4,096. Fresh setup includes it, and a
+  Steam Input launch adds missing controller files to an existing verified
+  client installation without replacing differing files.
+- The x64 SDL3 DLL and notices in the Dock runtime build/cache contract, excluded
+  from Wine's DLL-source inventory. `build/sdl3/windows-x64.cmake` keeps the
+  Windows cross-target during CMake regeneration.
+- A PlayStation opt-in file for first-time accounts. The single-key editor
+  accepts and preserves CRLF, and failed restoration retains its recovery note.
+  Setup errors abort preparation instead of silently starting a controllerless
+  session.
+
+Validation: Dock's C lifecycle tests run under ASan/UBSan, the client ABI checker
+verifies every called slot against the actual pinned DLL, Swift settings tests
+exercise CRLF/first-account/recovery cases, and the ZIP test extracts the real
+pinned public package. An isolated, unsigned-in Windows parser probe accepted
+Valve's PS5 Gamepad template and reported XInput feature 1. The full iOS Debug
+build succeeds. The first two device retests stopped before loading: the first
+guard required a template URL, and the second accepted paths but still rejected
+bare names. Inspection of January SteamUI.dll's resolver (`0x544440`) established
+that the client returns selection keys, including bare template names and
+`AC-app-device` autosave keys. The resolver now handles both, with host tests
+checking the actual file paths.
+
+The next device run confirmed the selected autosave was queued, cached and
+activated. A read-only diagnostic of the January client's `SteamXInput` shared
+stream then confirmed slot 0 was reserved, connected and producing changing
+gamepad state. Steam's controller engine is producing output; this does not
+establish delivery to the game.
+
+### Game-side hook writes (2026-11-02)
+
+The overlay log prints `XInput Hooked` even when its preceding
+`WriteProcessMemory` failed. Madeira's `NtWriteVirtualMemory` sent every write
+through the wineserver, whose iOS pseudo-processes deliberately have no task
+port for writes. Consequently even the overlay's writes to its own process
+were denied. Earlier notes treating `XInput Hooked` as a successful hook were
+incorrect.
+
+The current-process pseudo-handle now uses a local, protected copy in
+`build/ntdll-unix/virtual_ios.c`, matching the local read path. JIT destinations
+use their writable aliases; other process handles still take the unchanged
+server path. The host test exercises ordinary, overlapping and aliased writes,
+read-only and overflowing destinations, and denial for another process handle
+under ASan/UBSan. The full iOS runtime and app build succeed.
+
+Device verification: the user confirmed the controller works in the game.
+The final overlay log contains nine XInput hook reports and zero
+`WriteProcessMemory` failures; the app log records successful local five-byte
+writes and a connected Windows.Gaming.Input gamepad for XInput slot 0.
+The Dock report confirms connected, changing Steam output. This establishes
+end-to-end input for the tested game/controller combination; it does not
+establish every layout type, controller model or rumble path.
