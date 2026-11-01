@@ -2692,7 +2692,7 @@ struct ContentView: View {
         MadeiraConfig.migrateLegacy { self.logStore.log($0) }
         MadeiraConfig.deleteLegacyFiles { self.logStore.log($0) }   /* ml1096: the old files go once the cfg exists */
         /* ml2100: XInput (default) or the HID controller; before the wineserver starts. */
-        GamepadInput.shared.beginPadSession()
+        GamepadInput.shared.beginPadSession(steamInput: GamepadInput.keyboardMouseAvailable && profile?.usesSteamInput == true)
         /* ml1990: player 1 exists before the game enumerates XInput. */
         GamepadInput.shared.reserveSessionSlot(touchControls: TouchControlsModel.shared.offersControllerInput)
         if MadeiraConfig.present {

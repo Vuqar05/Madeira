@@ -466,6 +466,9 @@ struct LibraryEntry: Codable, Identifiable {
 
     /// A Steam game that starts as its own program ("Start with: The game").
     var startsSteamGameDirectly: Bool { steamAppID != nil && steamStart == "game" }
+    /// Controller: Steam Input. Only a Steam game started through Madeira Dock has
+    /// Valve's client running, so only that launch can use it (docs/STEAM_INPUT.md).
+    var usesSteamInput: Bool { controllerMode == "steam" && steamAppID != nil && !startsSteamGameDirectly }
     /// What a launch starts, relative to drive_c: "The game"'s program inside the
     /// install folder, else `relativePath`.
     var launchRelativePath: String {
@@ -560,6 +563,10 @@ struct LibraryEntry: Codable, Identifiable {
         // own value still applies to the other choices.
         if GamepadInput.keyboardMouseAvailable, controllerMode == "dinput" { setenv("MADEIRA_DINPUT_PAD", "1", 1) }
         else if MadeiraConfig.get("env.MADEIRA_DINPUT_PAD") == nil { unsetenv("MADEIRA_DINPUT_PAD") }
+        // "steam": Madeira Dock asks Valve's client about Steam Input (madeira-dock
+        // src/steam_input.c); beginPadSession already made player 1 a HID DualSense.
+        if GamepadInput.keyboardMouseAvailable, usesSteamInput { setenv("MADEIRA_DOCK_STEAM_INPUT", "1", 1) }
+        else if MadeiraConfig.get("env.MADEIRA_DOCK_STEAM_INPUT") == nil { unsetenv("MADEIRA_DOCK_STEAM_INPUT") }
         if let anisotropyLimit, [1, 2, 4, 8].contains(anisotropyLimit) { setenv("DXMT_D9_ANISO_LIMIT", String(anisotropyLimit), 1) }
         else { unsetenv("DXMT_D9_ANISO_LIMIT") }
         // Set or unset, so a previous session's choice never stays.
@@ -3553,7 +3560,8 @@ struct LibraryDetail: View {
     private func summary(_ page: Page) -> String? {
         switch page {
         case .display: return entry.metalFXUpscale.map { "\(entry.resolution) · MetalFX \($0 == 2 ? "2" : "1.5")×" } ?? entry.resolution
-        case .controls: return entry.controllerMode == "keys" ? "Keyboard and mouse" : entry.controllerMode == "dinput" ? "XInput and DirectInput" : nil
+        case .controls: return entry.controllerMode == "keys" ? "Keyboard and mouse" : entry.controllerMode == "dinput" ? "XInput and DirectInput"
+            : entry.usesSteamInput ? "Steam Input" : nil
         case .launch: return entry.usesLaunchOptions ? (entry.runsInDesktop ? "Wine desktop" : "Directly") : nil
         case .steam: return entry.startsSteamGameDirectly ? "The game" : "Madeira Dock"
         case .advanced: return Self.configSummary(bcd.configText)   // madeira-bcd: the game's own config file
@@ -3626,9 +3634,12 @@ struct LibraryDetail: View {
     @ViewBuilder private var controlsPage: some View {
         Section("On screen") {
             if GamepadInput.keyboardMouseAvailable {
-                ControllerModeChoice(mode: $entry.controllerMode)
+                ControllerModeChoice(mode: $entry.controllerMode, steamInput: entry.steamAppID != nil && !entry.startsSteamGameDirectly)
                 if entry.controllerMode == "dinput" {
                     Text("For older games that read the pad through DirectInput.").font(.caption).foregroundStyle(.secondary)
+                }
+                if entry.usesSteamInput {
+                    Text("Valve's Steam client reads the pad and applies your Steam Input layout. Experimental.").font(.caption).foregroundStyle(.secondary)
                 }
                 if entry.controllerMode == "keys" {
                     Text("The pad acts as keyboard and mouse. Change keys in Controller binds.").font(.caption).foregroundStyle(.secondary)
@@ -4251,12 +4262,15 @@ struct DockOfflineMark: View {
 /// Game details and the Session menu: how a physical controller reaches the game.
 struct ControllerModeChoice: View {
     @Binding var mode: String?
+    /// Offer Steam Input: a Steam game started through Madeira Dock.
+    var steamInput = false
     var body: some View {
         LabeledContent("Controller") {
             Picker("Controller", selection: Binding(get: { mode ?? "" }, set: { mode = $0.isEmpty ? nil : $0 })) {
                 Text("Game's own support").tag("")
                 Text("XInput and DirectInput").tag("dinput")
                 Text("Keyboard and mouse").tag("keys")
+                if steamInput || mode == "steam" { Text("Steam Input").tag("steam") }
             }.pickerStyle(.menu).labelsHidden()
         }
     }
@@ -5218,12 +5232,16 @@ struct LibraryHUD: View {
                 LabeledContent("Size") { Slider(value: $controls.sizeScale, in: 0.5...2) }
                 Button("Edit controls", systemImage: "slider.horizontal.3") { controls.visible = true; controls.editing = true; model.menu = false }
                 if GamepadInput.keyboardMouseAvailable {
-                    ControllerModeChoice(mode: Binding(get: { model.controllerMode }, set: { model.controllerMode = $0; model.saveCurrentProfile() }))
+                    ControllerModeChoice(mode: Binding(get: { model.controllerMode }, set: { model.controllerMode = $0; model.saveCurrentProfile() }),
+                                         steamInput: model.entries.first { $0.id == model.current }.map { $0.steamAppID != nil && !$0.startsSteamGameDirectly } ?? false)
                     if model.controllerMode == "keys" {
                         Button("Controller binds", systemImage: "gamecontroller") { bindsPage = true }
                     } else if model.controllerMode == "dinput" {
                         // ml1240: the DirectInput device exists only from the launch on.
                         Text("XInput and DirectInput applies to the next launch.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else if model.controllerMode == "steam" {
+                        Text("Steam Input applies to the next launch.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
