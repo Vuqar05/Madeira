@@ -97,8 +97,11 @@ final class GamepadInput: @unchecked Sendable {
     /// wineserver starts (ContentView.runWineFullSequence): the wineserver and
     /// the first Wine process read MADEIRA_HIDPAD to create the device and its
     /// registry entries. In XInput mode it only unsets that and logs.
-    @MainActor func beginPadSession() {
-        let mode = Self.configuredPadMode()
+    /// `steamInput` (the game's Controller: Steam Input): player 1 is a DualSense,
+    /// whatever madeira.cfg says, so the HIDAPI driver in Valve's client finds a pad
+    /// it supports (docs/STEAM_INPUT.md).
+    @MainActor func beginPadSession(steamInput: Bool = false) {
+        let mode = steamInput ? (value: "dualsense", source: "steam-input") : Self.configuredPadMode()
         let output = Self.configuredPadOutput()
         unsetenv("MADEIRA_HIDPAD"); unsetenv("MADEIRA_HIDPAD_NAME")
         // An earlier session in this app run may have taken player 1 off XInput.

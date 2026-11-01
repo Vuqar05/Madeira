@@ -179,6 +179,12 @@ the mouse. The bindings follow the layout on screen and are rebuilt when it
 changes. The choice is saved with the game. While the Session menu is open, or
 when the app resigns active, everything the mode holds is released.
 
+For a Steam game started through Madeira Dock the picker also offers **Steam
+Input** (`controllerMode = "steam"`, experimental): player 1 is a HID DualSense
+for that launch, whatever `env.MADEIRA_PAD_MODE` says, and Dock asks Valve's
+client whether its own Steam Input sees the pad (`MADEIRA_DOCK_STEAM_INPUT=1`,
+`[dock-report] steam-input-*`). See `docs/STEAM_INPUT.md`.
+
 `MADEIRA_PAD_KBM=0` removes the choice; `[pad-kbm]` logs the mode switching on
 and off and its releases.
 
