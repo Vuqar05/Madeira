@@ -7,7 +7,8 @@
 # it in the app bundle with its notices:
 #   app/Madeira/arm64ec-windows/dockhost.exe
 #   app/Madeira/arm64ec-windows/dock-notices.txt
-# Both are build outputs (gitignored). The app starts dockhost.exe as
+# SDL3.dll and sdl3-notices.txt are also built/staged by this entry point.
+# These are build outputs (gitignored). The app starts dockhost.exe as
 # C:\windows\system32\dockhost.exe; without it, Madeira Dock stays hidden.
 #
 # Usage: build/madeira-dock/build.sh [--check]
@@ -26,6 +27,13 @@ OUT="$REPO_ROOT/app/Madeira/arm64ec-windows"
 [ -f "$SRC/src/main.c" ] || { echo "madeira-dock is missing: git submodule update --init madeira-dock" >&2; exit 1; }
 [ -x "$CC" ] || { echo "missing cross compiler: $CC (set LLVM_MINGW)" >&2; exit 1; }
 
+# A directly built app must have the same controller dependency as the runtime
+# component build. Without x64 SDL, Steam cannot enumerate the virtual pad.
+bash "$REPO_ROOT/build/sdl3/build.sh"
+[ -s "$OUT/SDL3.dll" ] && [ -s "$OUT/sdl3-notices.txt" ] || {
+    echo "SDL3 runtime dependency was not staged" >&2; exit 1;
+}
+
 if [ "${1:-}" = "--check" ]; then
     (cd "$SRC" && bash tools/check.sh)
 fi
@@ -33,10 +41,22 @@ fi
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
+# Explicit opt-in for the bounded revision/mapping experiment. Ordinary builds
+# cannot execute the diagnostic command, even if a fixture is present.
+PROBE_DEFINE=-DSH_STEAM_INPUT_REVISION_PROBE=0
+if [ "${DOCK_REVISION_PROBE:-0}" = 1 ]; then
+    PROBE_DEFINE=-DSH_STEAM_INPUT_REVISION_PROBE=1
+fi
+
+LOCAL_APPLY_DEFINE=-DSH_STEAM_INPUT_LOCAL_APPLY=0
+if [ "${DOCK_LOCAL_APPLY:-0}" = 1 ]; then
+    LOCAL_APPLY_DEFINE=-DSH_STEAM_INPUT_LOCAL_APPLY=1
+fi
+
 # Same flags as Dock's own tools/build.sh: warnings are errors, the runtime is
 # linked statically (its notices go into dock-notices.txt) and symbols are
 # stripped. -Wl,--no-insert-timestamp keeps the output reproducible.
-"$CC" -std=c11 -O2 -Wall -Wextra -Werror -Wno-cast-function-type \
+"$CC" "$PROBE_DEFINE" "$LOCAL_APPLY_DEFINE" -std=c11 -O2 -Wall -Wextra -Werror -Wno-cast-function-type \
     -static -Wl,--strip-all -Wl,--no-insert-timestamp \
     -o "$TMP/dockhost.exe" "$SRC"/src/*.c -ladvapi32 -luser32
 

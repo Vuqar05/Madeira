@@ -110,6 +110,22 @@ class RuntimeTests(unittest.TestCase):
                     archive.write(path, 'Payload/Madeira.app/' + path.relative_to(bundle).as_posix())
         return ipa
 
+    def test_dock_requires_x64_sdl_and_its_notice(self):
+        # The same failure seen on device must fail before an IPA is installed.
+        runtime.check_binary('arm64ec-windows/SDL3.dll', pe(0x8664))
+        for wrong in [0x14c, 0xa641, 0xaa64]:
+            with self.assertRaises(ValueError):
+                runtime.check_binary('arm64ec-windows/SDL3.dll', pe(wrong))
+        bundle = self.root / 'app/Madeira'
+        for missing in ['arm64ec-windows/SDL3.dll', 'arm64ec-windows/sdl3-notices.txt']:
+            path = bundle / missing
+            original = path.read_bytes()
+            path.unlink()
+            with self.assertRaises((ValueError, FileNotFoundError)):
+                runtime.snapshot('dock', self.sdk)
+            path.write_bytes(original)
+        runtime.snapshot('dock', self.sdk)
+
     def test_missing_runtime_imports_are_rejected(self):
         files = {'caller.dll': pe(0x8664, ['needed.dll']), 'apisetschema.dll': pe(0x8664)}
         self.assertEqual(runtime.missing_imports(files), {'needed.dll'})

@@ -89,3 +89,6 @@ int madeira_d3d12_canary_run_log(const char *fixture_dir, const char *dylib_path
  * what was applied, for the [hwinput] log. */
 void madeira_phone_pointer_setup(void);
 const char *madeira_phone_pointer_status(void);
+
+// Shared bounded Steam Input metadata/transaction code; compiled for iOS too.
+#include "../../madeira-dock/src/steam_input_service.h"
