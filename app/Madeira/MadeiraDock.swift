@@ -337,6 +337,12 @@ enum MadeiraDock {
         "steam-input-mapping-cached", "steam-input-layout-source", "steam-input-layout-queued", "steam-input-layout-unavailable", "steam-input-connected",
         "steam-input-output-stream", "steam-input-output-reserved", "steam-input-output-connected", "steam-input-output-changed",
         "steam-input-activation-requested", "steam-input-focus-reported",
+        "steam-input-config-loaded-events", "steam-input-config-loaded-major",
+        "steam-input-config-loaded-minor", "steam-input-config-loaded-flags",
+        "steam-input-layout-revision-known", "steam-input-layout-revision",
+        "steam-input-load-result-events", "steam-input-load-result-completed",
+        "steam-input-load-result-revision", "steam-input-load-result-matches-revision",
+        "steam-input-probe-phase",
         "launch-client-error", "launch-option-index", "launch-option-invalid", "launch-option-missing",
         "launch-update-wait", "launch-update-retry", "launch-update-ready",
         "launch-config-wait", "launch-config-gave-up", "launch-session-wait", "launch-session-gave-up",
@@ -385,6 +391,7 @@ enum MadeiraDock {
 
     /// Reads C:\madeira-dock.txt and logs fields that changed ([dock-report]).
     @MainActor static func pollReport() -> Report {
+        DockSteamInputService.refresh()
         let url = drive.appendingPathComponent("madeira-dock.txt")
         guard let file = try? FileHandle(forReadingFrom: url) else { return lastReport }
         defer { try? file.close() }
@@ -414,6 +421,7 @@ enum MadeiraDock {
 
     /// Removes an unconsumed transfer (session end, sign-out, app start).
     @MainActor static func cleanup() {
+        DockSteamInputService.end()
         if let url = transferURL { try? FileManager.default.removeItem(at: url) }
         unsetenv("MADEIRA_DOCK_AUTH_FILE")
         unsetenv("MADEIRA_DOCK_OFFLINE")
@@ -447,6 +455,7 @@ enum MadeiraDock {
         do {
             try fm.setAttributes([.protectionKey: FileProtectionType.complete], ofItemAtPath: url.path)
             try file.write(contentsOf: data); try file.close()
+            DockSteamInputService.begin(accountID: UInt32(truncatingIfNeeded: try subject(token)), appID: UInt32(appID))
             setenv("MADEIRA_DOCK_AUTH_FILE", handoffGuestPath(url), 1)
             SteamLog.event("[dock-handoff] protected-file-ready=1")
         } catch { try? file.close(); cleanup(); throw error }
@@ -630,6 +639,521 @@ enum DockOffline {
         NotificationCenter.default.post(name: changed, object: nil)
     }
     static let changed = Notification.Name("MadeiraDockOfflineChanged")
+}
+
+/// Version 1 of Dock's bounded, session-scoped read-only layout service.
+/// Wire integers are little endian; native memory layouts are never serialized.
+enum DockSteamInputWire {
+    static let headerSize = 72
+    static let maxFeedSize = headerSize + 4096
+    enum Action: UInt32 { case query = 1, sources, apply, restoreDefault }
+    enum State: UInt32 { case idle, disconnected, queued, cached, activationRequested, failed, active }
+    struct Snapshot: Equatable {
+        let session: [UInt8]
+        let appID: UInt32
+        let epoch: UInt32
+        let sequence: UInt32
+        let result: UInt32
+        let state: State
+        let sources: UInt32
+        let flags: UInt32
+        let workshopID: UInt64
+        /// Supported transport groups: buttons, sticks, triggers, touch click.
+        /// Motion, touch positions and extra Deck/Steam Controller inputs absent.
+        let forwardedInputs: UInt32
+        let selection: String
+        var connected: Bool { flags & 2 != 0 }
+        /// Cache presence for the game, independent of the selected revision.
+        var mappingCached: Bool { flags & 4 != 0 }
+    }
+    static func parse(_ data: Data) -> Snapshot? {
+        guard data.count >= headerSize, data.count <= maxFeedSize else { return nil }
+        let b = [UInt8](data)
+        guard Array(b[0..<8]) == Array("MSIFEED1".utf8) else { return nil }
+        func u32(_ at: Int) -> UInt32 { (0..<4).reduce(0) { $0 | UInt32(b[at + $1]) << (8 * $1) } }
+        func u64(_ at: Int) -> UInt64 { (0..<8).reduce(0) { $0 | UInt64(b[at + $1]) << (8 * $1) } }
+        let length = Int(u32(68))
+        guard u32(24) > 0, u32(28) == 0, u32(40) <= 8,
+              u32(48) & ~UInt32(1) == 0, u32(52) & ~UInt32(63) == 0,
+              u32(64) & ~UInt32(15) == 0,
+              let state = State(rawValue: u32(44)), length <= 4096,
+              b.count == headerSize + length,
+              b[8..<24].contains(where: { $0 != 0 }),
+              let key = String(bytes: b[headerSize...], encoding: .utf8),
+              !key.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { return nil }
+        return Snapshot(session: Array(b[8..<24]), appID: u32(24), epoch: u32(32),
+                        sequence: u32(36), result: u32(40), state: state, sources: u32(48),
+                        flags: u32(52), workshopID: u64(56), forwardedInputs: u32(64), selection: key)
+    }
+    static func command(_ action: Action, snapshot: Snapshot, sequence: UInt32) -> Data? {
+        guard snapshot.session.count == 16, snapshot.session.contains(where: { $0 != 0 }),
+              snapshot.appID > 0, sequence > 0 else { return nil }
+        var bytes = Array("MSICMD01".utf8) + snapshot.session
+        for value in [snapshot.appID, 0, snapshot.epoch, sequence, action.rawValue] {
+            for shift in 0..<4 { bytes.append(UInt8(truncatingIfNeeded: value >> (8 * shift))) }
+        }
+        return Data(bytes)
+    }
+}
+
+/// The single Madeira virtual DualSense transport currently occupies slot 0.
+/// This identity describes that bridge, not a paired controller's hardware ID.
+/// Physical per-device identity/player assignment remains to be implemented.
+@MainActor enum DockSteamInputService {
+    static let controllerID = UUID(uuidString: "77F4893A-244E-4808-994C-617331E9DC25")!
+    private(set) static var snapshot: DockSteamInputWire.Snapshot?
+    private(set) static var selection: DockSteamInputSelection?
+    /// Pending journal work requires explicit recovery; never reapply it just
+    /// because a new launch or controller connection appeared.
+    private(set) static var recovery: DockSteamInputJournal.Pending?
+    private(set) static var prepared: DockSteamInputJournal.Pending?
+    private static var journal: DockSteamInputJournal?
+    private static var preparedChoice: DockSteamInputSelection.Revision?
+    private static var preparedReapplication = false
+    private static var preparedClearOverride = false
+#if DEBUG
+    private static var diagnosticSequence: UInt32 = 0
+#endif
+    private static var restartAttempted = false
+    private static var restartEpoch: UInt32?
+    private static var restartWaitStarted: Date?
+    private(set) static var activeChoice: DockSteamInputSelection.Revision?
+    private struct Submission {
+        let work: DockSteamInputJournal.Pending
+        let request: DockSteamInputJournal.Request
+        let choice: DockSteamInputSelection.Revision
+        let generation: UInt64
+        let reapplication: Bool
+        let clearOverride: Bool
+        let previousChoice: DockSteamInputSelection.Revision?
+        let sent: Date
+    }
+    private static var submission: Submission?
+    private(set) static var receipt: DockSteamInputTransport.Receipt?
+    private static var session: [UInt8] = []
+    private static var appID: UInt32 = 0
+    private static var accountID: UInt32 = 0
+    private static var sequence: UInt32 = 0
+    private static var epoch: UInt32?
+    private static var attempts = 0
+    private static var pending: (sequence: UInt32, sent: Date)?
+    private static var storage: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("MadeiraDock", isDirectory: true)
+    }
+    private static var feed: URL { MadeiraDock.drive.appendingPathComponent("madeira-steam-input.bin") }
+    private static var command: URL { MadeiraDock.drive.appendingPathComponent("madeira-steam-input-cmd.bin") }
+
+    private static var payloadFile: URL { MadeiraDock.drive.appendingPathComponent("madeira-steam-input-apply.bin") }
+    private static var receiptFile: URL { MadeiraDock.drive.appendingPathComponent("madeira-steam-input-tx.bin") }
+    private static var baselineFile: URL { MadeiraDock.drive.appendingPathComponent("madeira-steam-input-baseline.bin") }
+
+    static func begin(accountID: UInt32, appID: UInt32) {
+        end()
+        self.accountID = accountID; self.appID = appID
+        let hex = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+        session = stride(from: 0, to: 32, by: 2).map { offset in
+            let start = hex.index(hex.startIndex, offsetBy: offset)
+            return UInt8(hex[start..<hex.index(start, offsetBy: 2)], radix: 16)!
+        }
+        // This random launch identifier is not a credential. Never log it.
+        setenv("MADEIRA_DOCK_INPUT_SESSION", hex, 1)
+        do {
+            let store = try DockSteamInputJournal(root: storage,
+                scope: .init(accountID: accountID, appID: appID, controllerID: controllerID))
+            try store.interrupt()
+            let record = try store.snapshot()
+            journal = store
+            if record.pending?.phase == .interrupted { recovery = record.pending }
+        } catch {
+            SteamLog.event("[steam-input] layout journal unavailable")
+        }
+        do {
+            selection = try DockSteamInputSelection.load(in: storage, accountID: accountID, appID: appID, controllerID: controllerID)
+        } catch {
+            // Do not replace an incompatible/corrupt record with an empty one.
+            SteamLog.event("[steam-input] saved selection unavailable")
+        }
+    }
+    static func end() {
+        do { try journal?.interrupt() }
+        catch { SteamLog.event("[steam-input] layout interruption not saved") }
+        journal = nil; recovery = nil; prepared = nil; submission = nil; receipt = nil
+        preparedChoice = nil; preparedReapplication = false; preparedClearOverride = false; activeChoice = nil
+#if DEBUG
+        diagnosticSequence = 0
+        try? FileManager.default.removeItem(at: MadeiraDock.drive.appendingPathComponent("madeira-steam-input-local-test.bin"))
+#endif
+        restartAttempted = false; restartEpoch = nil; restartWaitStarted = nil
+        unsetenv("MADEIRA_DOCK_INPUT_SESSION")
+        session = []; snapshot = nil; selection = nil; pending = nil
+        sequence = 0; epoch = nil; attempts = 0; appID = 0; accountID = 0
+        try? FileManager.default.removeItem(at: feed)
+        try? FileManager.default.removeItem(at: command)
+        try? FileManager.default.removeItem(at: payloadFile)
+        try? FileManager.default.removeItem(at: receiptFile)
+        try? FileManager.default.removeItem(at: baselineFile)
+    }
+    /// Stage an explicit local template/personal choice without touching Steam.
+    /// The caller supplies source and observed baseline bytes, never paths. Live
+    /// submission will require the matching session-scoped transaction bridge.
+    static func prepareLocal(source: Data, baseline: Data, choice: DockSteamInputSelection.Revision) throws -> DockSteamInputJournal.Pending {
+        guard let snapshot, snapshot.connected, snapshot.flags & 1 != 0,
+              pending == nil, recovery == nil, prepared == nil,
+              let journal, var saved = selection,
+              choice.source == .template || choice.source == .personal else { throw DockSteamInputJournal.Failure.busy }
+        let hash = DockSteamInputNative.contentHash(source)
+        if let expected = choice.contentHash, expected != hash { throw DockSteamInputJournal.Failure.invalid }
+        let resolved = DockSteamInputSelection.Revision(source: choice.source, identity: choice.identity, contentHash: hash)
+        let captureBaseline = saved.requested == nil
+        try saved.request(resolved)
+        let work = try journal.prepareLocal(source: source, baseline: baseline, captureSteamBaseline: captureBaseline)
+        do { try saved.save(in: storage) }
+        catch {
+            try? journal.finish(work.reservation, phase: .failed, hash: nil, revision: nil)
+            throw error
+        }
+        selection = saved; prepared = work; receipt = nil
+        preparedChoice = resolved; preparedReapplication = false; preparedClearOverride = false; restartAttempted = true
+        return work
+    }
+    /// Submit only to a host advertising the gated local-apply capability. The
+    /// journal is durable before the command can be consumed. Acceptance alone
+    /// never updates lastActivated; only a matching hash-bound receipt can.
+    static func submitPrepared() throws {
+        guard let current = snapshot, current.connected, current.flags & 16 != 0,
+              pending == nil, submission == nil, recovery == nil,
+              let work = prepared, let journal, let saved = selection, let choice = preparedChoice,
+              let content = work.content, choice.contentHash == content.sourceHash,
+              (preparedReapplication ? saved.lastActivated == choice : saved.requested == choice) else { throw DockSteamInputJournal.Failure.busy }
+        sequence = max(sequence, current.sequence)
+        guard sequence < UInt32.max else { throw DockSteamInputJournal.Failure.exhausted }
+        sequence += 1
+        let request = DockSteamInputJournal.Request(session: session.map { String(format: "%02x", $0) }.joined(),
+                                                   epoch: current.epoch, sequence: sequence)
+        let bytes = try DockSteamInputTransport.envelope(session: session, appID: appID, epoch: current.epoch,
+            sequence: sequence, reservation: work.reservation, apply: journal.content(content.applyHash), rollback: journal.content(content.rollbackHash))
+        guard let commandBytes = DockSteamInputWire.command(.apply, snapshot: current, sequence: sequence) else { throw DockSteamInputJournal.Failure.invalid }
+        try journal.markQueued(work.reservation, request: request)
+        receipt = nil
+        submission = Submission(work: work, request: request, choice: choice, generation: saved.generation,
+            reapplication: preparedReapplication, clearOverride: preparedClearOverride, previousChoice: activeChoice, sent: Date())
+        activeChoice = nil
+        do {
+            try bytes.write(to: payloadFile, options: .atomic)
+            try commandBytes.write(to: command, options: .atomic)
+        } catch {
+            try? journal.interrupt()
+            recovery = try? journal.snapshot().pending
+            prepared = nil; submission = nil
+            throw error
+        }
+    }
+    private static func refreshSubmission(_ current: DockSteamInputWire.Snapshot) {
+        guard let sent = submission, let journal else { return }
+        if current.sequence == sent.request.sequence, current.result != 0, current.result != 1 {
+            do {
+                try journal.finish(sent.work.reservation, phase: .failed, hash: nil, revision: nil)
+                activeChoice = sent.previousChoice
+                submission = nil; prepared = nil; preparedChoice = nil
+            } catch { SteamLog.event("[steam-input] rejected layout result not saved") }
+            return
+        }
+        if let file = try? FileHandle(forReadingFrom: receiptFile) {
+            defer { try? file.close() }
+            if let bytes = try? file.read(upToCount: 97), let value = DockSteamInputTransport.receipt(bytes),
+               value.session == session, value.appID == appID, value.epoch == sent.request.epoch,
+               value.sequence == sent.request.sequence,
+               value.applyRevision == sent.work.reservation.applyRevision,
+               value.rollbackRevision == sent.work.reservation.rollbackRevision {
+                if value.phase == .confirmed || value.phase == .rolledBack {
+                    let rolledBack = value.phase == .rolledBack
+                    guard let content = sent.work.content,
+                          value.workingHash == (rolledBack ? content.rollbackHash : content.applyHash) else { return }
+                    receipt = value
+                    do {
+                        var updated = selection
+                        guard var saved = updated, saved.generation == sent.generation else { return }
+                        if !rolledBack {
+                            if sent.reapplication {
+                                guard saved.lastActivated == sent.choice else { return }
+                            } else { try saved.acknowledge(sent.choice, generation: sent.generation) }
+                            if sent.clearOverride { try saved.clearRequest() }
+                            updated = saved
+                        }
+                        try journal.finish(sent.work.reservation, phase: rolledBack ? .rolledBack : .confirmed,
+                            hash: value.workingHash, revision: value.workingRevision, request: sent.request)
+                        activeChoice = rolledBack ? sent.previousChoice : sent.choice
+                        submission = nil; prepared = nil; preparedChoice = nil
+                        if !rolledBack, !sent.reapplication, let saved = updated {
+                            try saved.save(in: storage); selection = saved
+                        }
+                    } catch { SteamLog.event("[steam-input] layout receipt not saved") }
+                    return
+                } else if value.phase == .failed {
+                    receipt = value
+                    do {
+                        try journal.finish(sent.work.reservation, phase: .failed, hash: nil, revision: nil)
+                        submission = nil; prepared = nil
+                    } catch { SteamLog.event("[steam-input] layout failure not saved") }
+                    return
+                } else { receipt = value }
+            }
+        }
+        if Date().timeIntervalSince(sent.sent) > 60 {
+            try? journal.interrupt()
+            recovery = try? journal.snapshot().pending
+            submission = nil; prepared = nil
+        }
+    }
+    private static func refreshRestart(_ current: DockSteamInputWire.Snapshot) {
+        guard !restartAttempted, attempts == 3, pending == nil, submission == nil, prepared == nil,
+              current.connected, current.flags & 48 == 48, current.result == 1,
+              let journal, let saved = selection else { return }
+        guard (saved.requested != nil && saved.lastActivated != nil) || recovery != nil else { restartAttempted = true; return }
+        if restartWaitStarted == nil { restartWaitStarted = Date() }
+        guard let file = try? FileHandle(forReadingFrom: baselineFile) else {
+            expireRestartWait(); return
+        }
+        defer { try? file.close() }
+        guard let bytes = try? file.read(upToCount: (1 << 20) + 44),
+              let baseline = DockSteamInputTransport.baseline(bytes, session: session, appID: appID, epoch: current.epoch) else {
+            expireRestartWait(); return
+        }
+        do {
+            if let interrupted = recovery {
+                try journal.abandonInterrupted(interrupted.reservation,
+                    newSession: session.map { String(format: "%02x", $0) }.joined())
+                recovery = nil
+            }
+            restartAttempted = true
+            guard saved.requested != nil, let choice = saved.lastActivated, let hash = choice.contentHash else { return }
+            let source = try journal.reapplicationSource(hash: hash)
+            let work = try journal.prepareLocal(source: source, baseline: baseline)
+            prepared = work; preparedChoice = choice; preparedReapplication = true; preparedClearOverride = false
+            try submitPrepared()
+        } catch { restartAttempted = true; SteamLog.event("[steam-input] confirmed layout restart unavailable") }
+    }
+    private static func expireRestartWait() {
+        if let started = restartWaitStarted, Date().timeIntervalSince(started) > 30 {
+            restartAttempted = true
+            SteamLog.event("[steam-input] working baseline unavailable for restart")
+        }
+    }
+#if DEBUG
+    /// Scoped test mailbox for exercising the real app journal/submit/restart
+    /// path before the layout UI exists. No arbitrary source names or paths.
+    /// Action 1 selects the fixed synthetic fixture only with no explicit choice;
+    /// action 2 restores the captured Steam baseline and clears the test override
+    /// only after its exact successful receipt. Release builds omit this code.
+    private static func refreshLocalDiagnostic(_ current: DockSteamInputWire.Snapshot) {
+        guard attempts == 3, pending == nil, submission == nil, prepared == nil, recovery == nil,
+              current.connected, current.flags & 48 == 48, let journal, let saved = selection else { return }
+        let marker = MadeiraDock.drive.appendingPathComponent("madeira-steam-input-local-test.bin")
+        guard let markerFile = try? FileHandle(forReadingFrom: marker) else { return }
+        let bytes = try? markerFile.read(upToCount: 45); try? markerFile.close()
+        guard let bytes, bytes.count == 44 else { try? FileManager.default.removeItem(at: marker); return }
+        var request = sh_input_command()
+        let valid = bytes.withUnsafeBytes { sh_input_command_parse($0.baseAddress!.assumingMemoryBound(to: UInt8.self), bytes.count, &request) }
+        let nonce = withUnsafeBytes(of: request.session) { Array($0) }
+        guard valid, nonce == session, request.appid == appID, request.controller == 0,
+              request.epoch == current.epoch, request.sequence > diagnosticSequence else {
+            try? FileManager.default.removeItem(at: marker); return
+        }
+        guard let file = try? FileHandle(forReadingFrom: baselineFile) else { return }
+        let frame = try? file.read(upToCount: (1 << 20) + 44); try? file.close()
+        guard let frame, let baseline = DockSteamInputTransport.baseline(frame, session: session, appID: appID, epoch: current.epoch) else { return }
+        diagnosticSequence = request.sequence
+        try? FileManager.default.removeItem(at: marker)
+        do {
+            if request.action == 1 {
+                guard saved.requested == nil else { throw DockSteamInputJournal.Failure.busy }
+                let fixture = MadeiraDock.clientRoot.appendingPathComponent("controller_base/templates/madeira_m1_revision_probe.vdf")
+                let sourceFile = try FileHandle(forReadingFrom: fixture); defer { try? sourceFile.close() }
+                guard let source = try sourceFile.read(upToCount: 1 << 20), source.count < 1 << 20 else { throw DockSteamInputJournal.Failure.invalid }
+                _ = try prepareLocal(source: source, baseline: baseline,
+                    choice: .init(source: .template, identity: "madeira_m1_revision_probe.vdf", contentHash: nil))
+            } else if request.action == 2 {
+                guard saved.requested?.identity == "madeira_m1_revision_probe.vdf",
+                      activeChoice?.identity == "madeira_m1_revision_probe.vdf" else { throw DockSteamInputJournal.Failure.stale }
+                let original = try journal.steamBaseline()
+                _ = try prepareLocal(source: original, baseline: baseline,
+                    choice: .init(source: .personal, identity: "0EBD445F-87AE-46F2-96BB-042CB53B35E1", contentHash: nil))
+                preparedClearOverride = true
+            } else { throw DockSteamInputJournal.Failure.invalid }
+            try submitPrepared()
+        } catch { SteamLog.event("[steam-input] local diagnostic request unavailable") }
+    }
+#endif
+    static func refresh() {
+        guard session.count == 16, let file = try? FileHandle(forReadingFrom: feed) else { return }
+        defer { try? file.close() }
+        guard let data = try? file.read(upToCount: DockSteamInputWire.maxFeedSize + 1),
+              let current = DockSteamInputWire.parse(data), current.session == session,
+              current.appID == appID else { return }
+        snapshot = current
+        if !current.connected || current.state == .failed { activeChoice = nil; receipt = nil }
+        if epoch != current.epoch {
+            if prepared != nil {
+                do {
+                    try journal?.interrupt()
+                    recovery = try journal?.snapshot().pending
+                } catch {
+                    journal = nil
+                    SteamLog.event("[steam-input] layout connection recovery unavailable")
+                }
+                prepared = nil; preparedChoice = nil; submission = nil; receipt = nil
+            }
+            activeChoice = nil
+            if let initial = restartEpoch, initial != current.epoch { restartAttempted = true }
+            if restartEpoch == nil, current.connected { restartEpoch = current.epoch }
+            epoch = current.epoch; attempts = 0; pending = nil
+        }
+        sequence = max(sequence, current.sequence)
+        refreshSubmission(current)
+        if let request = pending {
+            if current.sequence == request.sequence {
+                pending = nil
+                if current.result == 1, current.connected, current.flags & 8 == 0,
+                   (!current.selection.isEmpty || current.workshopID != 0), var saved = selection {
+                    saved.retainSteamSelection(.init(key: current.selection, workshopID: current.workshopID))
+                    do { try saved.save(in: storage); selection = saved }
+                    catch { SteamLog.event("[steam-input] selection migration not saved") }
+                }
+                // A successful empty selection is also a finished query. Failure
+                // is explicit; do not repeatedly enumerate or alter the choice.
+                attempts = 3
+            } else if Date().timeIntervalSince(request.sent) > 10 { pending = nil }
+        }
+        refreshRestart(current)
+#if DEBUG
+        refreshLocalDiagnostic(current)
+#endif
+        guard pending == nil, submission == nil, attempts < 3, current.connected, current.flags & 1 != 0,
+              sequence < UInt32.max else { return }
+        sequence += 1; attempts += 1
+        guard let bytes = DockSteamInputWire.command(.query, snapshot: current, sequence: sequence) else { return }
+        do {
+            try bytes.write(to: command, options: .atomic)
+            pending = (sequence, Date())
+        } catch { SteamLog.event("[steam-input] query not written") }
+    }
+}
+
+/// Persisted Steam Input choices are independent of ControllerSetup and Steam's
+/// own selection. This store does not claim that queuing a layout activates it.
+struct DockSteamInputSelection: Codable, Equatable {
+    enum Source: String, Codable { case gameDefault, community, personal, template }
+    struct Revision: Codable, Equatable {
+        let source: Source
+        /// Workshop ID, personal UUID or template key; nil for Game default.
+        let identity: String?
+        /// SHA-256 of the exact VDF bytes, absent until a source is resolved.
+        let contentHash: String?
+    }
+    struct SteamSelection: Codable, Equatable {
+        let key: String
+        let workshopID: UInt64
+    }
+    let version: Int
+    let accountID: UInt32
+    let appID: UInt32
+    /// Stable Madeira controller identity, never a transient Steam slot index.
+    let controllerID: UUID
+    private(set) var generation: UInt64
+    private(set) var requested: Revision?
+    private(set) var observedSteamSelection: SteamSelection?
+    private(set) var lastActivated: Revision?
+
+    init(accountID: UInt32, appID: UInt32, controllerID: UUID) {
+        version = 1
+        self.accountID = accountID
+        self.appID = appID
+        self.controllerID = controllerID
+        generation = 0
+    }
+
+    /// Migration records what Steam selected without manufacturing a Madeira
+    /// choice or overwriting an earlier observation.
+    mutating func retainSteamSelection(_ selection: SteamSelection) {
+        if observedSteamSelection == nil { observedSteamSelection = selection }
+    }
+
+    mutating func request(_ revision: Revision) throws {
+        guard Self.valid(revision), generation < UInt64.max else { throw StoreError.invalid }
+        generation += 1
+        requested = revision
+    }
+
+    /// Relinquish an explicit override after a verified restoration. Historical
+    /// acknowledgement remains separate; nil intent does not reapply on restart.
+    mutating func clearRequest() throws {
+        guard generation < UInt64.max else { throw StoreError.invalid }
+        generation += 1; requested = nil
+    }
+
+    /// Only a verified active-revision response may call this. A generic cache
+    /// hit or ActivateConfig invocation is insufficient. Stale replies cannot
+    /// change the last working revision.
+    mutating func acknowledge(_ revision: Revision, generation: UInt64) throws {
+        guard generation == self.generation, requested == revision,
+              revision.contentHash != nil else { throw StoreError.stale }
+        lastActivated = revision
+    }
+
+    enum StoreError: Error { case invalid, stale, unsupportedVersion }
+
+    private static func valid(_ revision: Revision) -> Bool {
+        if let hash = revision.contentHash {
+            guard hash.utf8.count == 64,
+                  hash.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else { return false }
+        }
+        if revision.source == .gameDefault { return revision.identity == nil }
+        guard let identity = revision.identity, !identity.isEmpty,
+              identity.utf8.count <= 256,
+              !identity.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { return false }
+        if revision.source == .community {
+            guard let id = UInt64(identity), id > 0, String(id) == identity else { return false }
+        }
+        if revision.source == .personal { return UUID(uuidString: identity) != nil }
+        return true
+    }
+
+    private func validate() throws {
+        guard version == 1 else { throw StoreError.unsupportedVersion }
+        guard accountID > 0, appID > 0,
+              requested.map(Self.valid) ?? true,
+              lastActivated.map({ Self.valid($0) && $0.contentHash != nil }) ?? true,
+              observedSteamSelection.map({ $0.key.utf8.count <= 4096 }) ?? true else { throw StoreError.invalid }
+    }
+
+    /// Caller supplies a private app storage root. Scope is encoded in the
+    /// filename; no layout keys or externally supplied paths are used as paths.
+    private func file(in root: URL) -> URL {
+        root.appendingPathComponent("steam-input-selections", isDirectory: true)
+            .appendingPathComponent("\(accountID)-\(appID)-\(controllerID.uuidString).json")
+    }
+
+    func save(in root: URL) throws {
+        try validate()
+        let url = file(in: root)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try JSONEncoder().encode(self).write(to: url, options: .atomic)
+    }
+
+    static func load(in root: URL, accountID: UInt32, appID: UInt32, controllerID: UUID) throws -> Self {
+        let empty = Self(accountID: accountID, appID: appID, controllerID: controllerID)
+        try empty.validate()
+        let url = empty.file(in: root)
+        guard FileManager.default.fileExists(atPath: url.path) else { return empty }
+        let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? Int.max
+        guard size <= 16384 else { throw StoreError.invalid }
+        let stored = try JSONDecoder().decode(Self.self, from: Data(contentsOf: url))
+        try stored.validate()
+        guard stored.accountID == accountID, stored.appID == appID,
+              stored.controllerID == controllerID else { throw StoreError.invalid }
+        return stored
+    }
 }
 
 /// Steam Input's PlayStation setting for a Dock launch (docs/STEAM_INPUT.md).

@@ -598,3 +598,179 @@ without enabling cross-process writes; its host tests pass. The user confirmed
 working input in the installed iPad build. Final logs show successful local hook
 writes, no overlay write failures, and a connected Windows.Gaming.Input gamepad.
 This verifies the tested game/controller combination, not all layout/output types.
+
+
+### Steam Input selection service foundation (2026-11-02)
+
+The app starts a session-bound read-only layout service with the authenticated
+handoff. `DockSteamInputWire` validates the bounded local feed; the existing
+report poll queries once per observed slot-0 connection, with bounded retries.
+`DockSteamInputSelection` atomically retains the original Steam selection and
+any explicit Madeira request separately by account/game/controller UUID. A
+Dock-selected generic fallback is not migrated as an existing Steam choice;
+corrupt/unknown records are kept without overwriting. The UUID currently denotes
+Madeira's virtual DualSense bridge, not the physical controller.
+
+Dock's version-1 protocol and transport capability bits are documented in its
+README. Commands have a launch nonce, App ID, controller index, observed
+connection epoch and monotonic sequence. Apply/reset explicitly report that
+active-revision acknowledgement is unavailable and leave layouts unchanged.
+Queueing, generic cache presence and activation request remain distinct from
+confirmed active revisions. Motion, touch coordinates and extra Deck/Steam
+Controller inputs are not forwarded by this transport.
+
+`check-steam-input-service.py` cross-checks production C/Swift encoding and
+session/migration behavior; `check-steam-input-selection.py` checks persistence,
+isolation and stale acknowledgements. Both and the existing settings/recovery
+checks pass, as do Dock's sanitizer suites, x64/x86 cross-builds, pinned January
+binary check and privacy scan. App and Dock must be rebuilt together. No host
+was staged or device/full-app validation performed for this change; applying,
+restoring and rolling back a verified revision remain milestone-1 work.
+
+
+The full Debug iOS app including this service and a bounded public
+configuration-loaded callback observer now builds, and the signed
+`Steam Input M1 · 11-02` build is installed on the connected iPad. The bundled
+host matches the newly staged host by SHA-256. JIT/game/controller testing is
+pending. The observer logs counts, action-manifest revisions and output-type
+flags only; it deliberately skips creator identity. It does not acknowledge a
+VDF content revision. The investigated private configuration/revision getters
+operate on binding objects, so neither is enabled as an active-controller getter.
+
+
+The first M1 device feed was valid but disconnected, with zero controllers and
+no SDL-init event. The direct test build had omitted x64 SDL3. The direct Dock
+build script now builds/stages that dependency and its notice, matching the
+runtime component contract; runtime tests require x64 SDL3 and reject missing
+DLL/notice files. All 13 contract tests and the Dock suites pass. The corrected
+`Steam Input M1 R2 · 11-02` app is installed with all four required Dock files
+verified in its bundle. Query/migration and callback delivery remain pending
+its device run; the first disconnected feed is not acceptance evidence.
+
+
+R2 device verification now confirms SDL/controller initialization, successful
+layout query, observed-selection migration, connected/changing Valve output and
+public configuration-loaded callback delivery. Live source-query and stale/
+replay/malformed command tests pass; reserved apply/default return result 7 and
+preserve the connected layout. A normal relaunch/reconnect check is pending.
+The public manifest revision remains 0/0 for this test and is not a VDF content
+acknowledgement. Exact-revision apply/restore/rollback remain incomplete; the
+pinned private load-completion callback is the next investigation lead.
+
+
+R2 acceptance correction: the owner observed PlayStation glyphs and working
+physical reconnect input. The submodule sources/pins match the earlier verified
+worktree, but this checkout's ignored native archives were stale. The linked R2
+app lacked the overlay's local current-process write fix and the server HID-owner
+restriction, so its engine/query/migration checks do not establish Steam-to-game
+input delivery. Both native libraries were rebuilt from source and the full app
+relinked. `tools/check-steam-input-runtime.py` rejects the old bundle and passes
+the rebuilt app; the IPA packaging path now runs it. The corrected signed
+`Steam Input M1 R3 · 11-02` build is installed; glyph/overlay/game-input validation
+is pending. After normal relaunch the service has a fresh nonce, a successful
+query and the same selected autosave. Virtual epoch 1 persisted: physical
+reconnect is not proof of a virtual-controller lease transition.
+
+
+R3 device result: the owner confirms controller input with Xbox glyphs. The
+overlay log has nine XInput hook reports and zero memory-write failures; Dock
+reports initialized SDL, gamepad configuration-load notification and connected,
+changing Xbox output. The linked native runtime passes the new capability
+preflight. This restores Steam-to-game input for the tested combination. The
+reference and current worktrees already have the same submodule pins; ignored
+native build outputs were the mismatch and were rebuilt from source here.
+Exact-VDF-revision acknowledgement and fixture apply/restore/rollback remain
+outstanding; working Xbox input alone does not close milestone 1.
+
+
+R4 is installed for an opt-in native document-revision experiment. The private
+load-result callback carries the VDF `revision`, distinct from public manifest
+major/minor values; its exact layout and source were checked against the pinned
+binary. A bounded reader compares it with queued bytes without altering them.
+An explicitly compiled one-shot action-5 diagnostic applies a synthetic
+face-button-only A/B swap (revision 731) and attempts original-byte restoration
+after the observation window. Ordinary builds reject it; normal apply/default
+commands remain disabled. Sanitizers, C/Swift regressions, cross-builds, full
+Debug app build and native capability checks pass. The owner confirmed the
+live A/B swap and automatic restoration in a fresh-session menu test. Completed
+callbacks reported revision 731 then original revision 0, and the selected VDF
+remained byte-for-byte unchanged. This verifies the serialized diagnostic path;
+ordinary apply/default, persistence and rollback remain unimplemented. See Dock
+README/HANDOFF for the protocol and test boundaries.
+
+The next diagnostic prepares private apply/restore copies with distinct native
+document revisions greater than both originals. Only root revision metadata
+changes; source files and unknown binding bytes stay untouched. Matching the
+old startup revision cannot acknowledge restoration. Bounded materialization
+and delayed-callback rejection are covered by host tests. R5 device validation
+passed: the owner observed the swap and restoration, completed callbacks reported
+732 then 733, and the original selected VDF remained byte-for-byte unchanged.
+Ordinary apply/default remain disabled pending production transaction handling.
+
+Local transaction preparation is implemented separately from live application.
+A portable coordinator serializes revision reservations and requires a matching
+private completion plus activation request; timeout initiates a single bounded
+rollback and a failed rollback leaves only a historical working receipt. The
+app uses the same C metadata code to prepare queue copies. Its scoped journal
+synchronizes revision reservations and records immutable SHA-256-addressed
+source, baseline, apply and rollback objects. Receipts must match reservation,
+launch nonce, epoch, sequence, hash and revision. Launch/end/reconnect interrupt
+unfinished work instead of replaying it or treating it as active. Local
+preparation can persist an explicit requested template/personal layout; it sends
+no native mutation. Ordinary apply/default and startup reapplication remain
+outstanding. Host tests cover coordinator and real filesystem recovery behavior;
+these additions do not extend the installed R5 device evidence to production
+application.
+
+The local submission/receipt bridge now connects the coordinator and journal,
+behind `DOCK_LOCAL_APPLY=1` (ordinary builds stay disabled). Capability flag 16
+advertises it. Action 3 consumes a scoped, bounded two-layout envelope with native
+revisions and SHA-256 digests, verifies those digests and the current rollback
+baseline, and waits for exact completion before activation. Atomic transaction
+receipts distinguish accepted, applying, confirmed, rollback and unknown working
+state. Swift journals before sending and only updates lastActivated for a fully
+matching receipt; generic acceptance/state/cache observations cannot do that.
+Host tests cover the endpoint, CryptoAPI boundary, failed/overlapping requests,
+rollback/late callbacks, cleanup, and C-to-Swift receipt persistence. Device
+validation, startup reapplication and held-output recovery remain outstanding.
+
+R6 native endpoint device validation passed: command-based apply revision 732 and
+separate restore revision 734 each returned their expected SHA-256 receipts.
+The owner observed the button swap and restoration; the original selected VDF
+remained byte-for-byte unchanged. The sender was an external test tool, so app
+journal persistence, startup reapplication and device failure/held-output recovery
+remain unverified. The production build gate remains in place.
+
+Startup reapplication is now implemented behind the existing local-apply gate.
+Capability 32 advertises an atomic, scoped exact working-layout snapshot. The
+app waits for that fresh baseline and a completed query, proves stored source
+bytes against a historical confirmed queue, then uses normal preparation,
+submission and hash-bound receipts to reapply the last confirmed choice once
+per fresh launch. It preserves newer unconfirmed requests, consumes no old
+revision twice, and cannot mark historical acknowledgement active before a new
+receipt. A bounded source-confirmation history survives fallback to Steam's
+baseline. Interrupted old-launch reservations can be retired only with a new
+scoped baseline; same-launch connection recovery remains explicit. Clearing an
+explicit request preserves history and delegates subsequent startup to Steam.
+Host coverage includes persistence/relaunch, wrong nonce/baseline rejection,
+newer-intent preservation, rollback history and the scoped Debug-only fixture
+trigger that will exercise app-side persistence on iPad. Device validation and
+held-output/failure recovery remain outstanding; R6 is still the last installed
+validated build until R7 is installed/tested.
+
+R7 app-side device validation passed: the app persisted fixture acknowledgement
+at revision 732, automatically reapplied it after normal relaunch with a fresh
+nonce at revision 734, then restored the captured original mapping at revision
+736 and persisted cleared explicit intent. The owner confirmed swapped behavior
+after relaunch and normal behavior after restore; the original selected VDF was
+byte-for-byte unchanged. Cleared-intent relaunch and fault/held-output recovery
+remain to be verified before production enablement.
+
+The final R7 cleared-intent relaunch also passed on device. A fresh nonce, native
+state activation-requested and sequence/result 1/1 established query-only startup;
+the journal retained the previous launch's restore receipt rather than adding a
+new transaction. Explicit intent remained nil, the exported native baseline
+exactly matched the pre-test original VDF, and the original selected source was
+unchanged. The owner confirmed buttons remained normal. Persistence, relaunch,
+restoration and override cleanup are device-validated; fault/reconnect and
+held-output behavior remain outstanding before ordinary-build enablement.
