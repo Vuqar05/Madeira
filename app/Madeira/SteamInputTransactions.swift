@@ -287,15 +287,16 @@ import Darwin
             return source
         }
     }
-    /// Called only after a fresh nonce-bound native baseline proves the old
-    /// launch has ended. Keep history/content and consume the old reservation;
-    /// never accept its delayed receipt or retry its unconfirmed candidate.
-    func abandonInterrupted(_ reservation: Reservation, newSession: String) throws {
+    /// Called only after a fresh launch or newer virtual-controller lease
+    /// native baseline proves the old request is no longer in flight. Keep
+    /// history/content and consume the old reservation; never accept its
+    /// delayed receipt or retry its unconfirmed candidate.
+    func abandonInterrupted(_ reservation: Reservation, newSession: String, newEpoch: UInt32 = 1) throws {
         try locked {
-            guard Self.validRequest(.init(session: newSession, epoch: 1, sequence: 1)) else { throw Failure.invalid }
+            guard Self.validRequest(.init(session: newSession, epoch: newEpoch, sequence: 1)) else { throw Failure.invalid }
             var record = try readRecord()
             guard let pending = record.pending, pending.reservation == reservation, pending.phase == .interrupted,
-                  pending.request?.session != newSession else { throw Failure.stale }
+                  pending.request.map({ $0.session != newSession || newEpoch > $0.epoch }) ?? true else { throw Failure.stale }
             record.pending?.phase = .failed
             try writeRecord(record)
         }

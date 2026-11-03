@@ -160,11 +160,19 @@ func require(_ value: @autoclosure () throws -> Bool) { precondition(try! value(
     require(try bridge.reapplicationSource(hash: payload.sourceHash) == apply) // prior confirmed choice survives a fresh-launch rollback
     do { try local.abandonInterrupted(prepared.reservation, newSession: request.session); fatalError("same-launch recovery accepted") }
     catch Journal.Failure.stale {}
+    let sameLaunchQueued = try bridge.prepareLocal(source: apply, baseline: baseline)
+    let sameLaunchReq = Journal.Request(session: String(repeating: "c", count: 32), epoch: 1, sequence: 3)
+    try bridge.markQueued(sameLaunchQueued.reservation, request: sameLaunchReq)
+    try bridge.interrupt()
+    do { try bridge.abandonInterrupted(sameLaunchQueued.reservation, newSession: sameLaunchReq.session, newEpoch: 1); fatalError("same-epoch recovery accepted") }
+    catch Journal.Failure.stale {}
+    try bridge.abandonInterrupted(sameLaunchQueued.reservation, newSession: sameLaunchReq.session, newEpoch: 3)
+    require(try bridge.snapshot().pending?.phase == .failed)
     let oldFloor = try local.snapshot().highWater
     try local.abandonInterrupted(prepared.reservation, newSession: String(repeating: "b", count: 32))
     require(try local.snapshot().pending?.phase == .failed && local.snapshot().highWater == oldFloor)
     require(try local.reserve(sourceFloor: 0).applyRevision > oldFloor)
-    print("PASS: durable revision reservations, restart recovery, scope isolation, immutable hashed bytes, receipt binding, writer lock, corruption and exhaustion")
+    print("PASS: durable revision reservations, restart/reconnect recovery, scope isolation, immutable hashed bytes, receipt binding, writer lock, corruption and exhaustion")
 }
 try MainActor.assumeIsolated { try checks() }
 '''
