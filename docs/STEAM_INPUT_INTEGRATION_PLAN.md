@@ -169,17 +169,65 @@ query, loaded the exact original native baseline and left the selected source
 unchanged; the owner confirmed normal buttons. Fault/reconnect and held-output
 cases remain to be verified.
 
+Fault/reconnect, interrupted-transaction and held-output implementation (R8,
+device-validated): same-session virtual controller lease changes clear the
+previous epoch's load completion, reload the new epoch's baseline when no active
+transaction is in flight (including after `.cancelled`), republish a fresh
+`MSIBAS02` working snapshot once the new epoch settles, and allow
+`abandonInterrupted` across a newer epoch in the same launch (`newEpoch > request.epoch`)
+while still rejecting same-session same-epoch retirement. Physical controller
+disconnect/reconnect on iOS updates the neutral/live report state of the permanent
+virtual DualSense (`\Device\MadeiraHidPad0`) without a virtual lease change; the owner
+physically disconnected and reconnected the controller in-game and confirmed the swapped
+mapping and normal operation survived without stuck buttons. App-side baseline
+restoration uses `prepareBaselineRestore`, leaving `selection.requested` untouched
+until a matching confirmed receipt arrives so an interrupted or rejected restore
+never replaces saved user intent. Exhausting the five `HasGameMapping` cache-wait
+retries during an applying or rolling-back transaction immediately invokes
+`sh_input_tx_fail` rollback or terminal failure rather than waiting out the 15-second
+completion deadline. Held inputs and outputs are gated on both sides:
+`DockSteamInputService` exposes `inputQuiesced` while a layout change is prepared or
+in flight so `GamepadInput.sample()` publishes a connected DualSense at rest and
+latches held buttons until physical release after confirmation, rollback or failure;
+natively, `observe_output` tracks live `SteamXInput_mem-IPCWrapper` button and axis
+values beyond standard XInput deadzones (`output_held`) and defers transaction
+`ActivateConfig` until XInput output returns to rest, bounded by the 15-second
+transaction deadline. In `#if DEBUG`, the diagnostic mailbox exercises action 1
+(apply probe fixture), action 2 (restore baseline), action 3 (deliberate baseline-mismatch
+rejection) and action 4 (interrupted local preparation).
+
+R8 device verification passed on the connected iPad. Applying the revision probe
+confirmed at revision 738 (native sequence 2, epoch 1) with the owner confirming
+swapped buttons and no stuck inputs. Action 3 verified fault recovery: Dock returned
+`SH_INPUT_BAD_COMMAND` (feed result 6), the journal transitioned to `.failed` at
+revision 746, and `activeChoice` and saved requested intent were strictly preserved.
+Action 4 verified interrupted-preparation recovery: the interrupted reservation was
+automatically retired and reapplied at higher revision 750 (native sequence 4, epoch 1)
+on the next settled poll. Held-output deferral was verified when holding button A
+deferred `ActivateConfig` and safely triggered timeout rollback to revision 755 without
+corrupting intent. Calibrating `observe_output` to check true button presses, triggers
+and analog stick axes outside standard XInput deadzones (7849/8689) resolved false
+held-state on resting analog sticks for full templates (`controller_ps5.vdf`). Action 2
+baseline restoration confirmed on device at revision 762 (native sequence 3, epoch 1),
+cleared `selection.requested`, confirmed `lastActivated` as the baseline restore identity,
+republished working baseline `MSIBAS02` at revision 762, and verified byte-for-byte
+identity of the original VDF on disk (`original_unchanged: true`). Ordinary builds in
+`build/madeira-dock/build.sh` and `madeira-dock/tools/build.sh` now enable
+`SH_STEAM_INPUT_LOCAL_APPLY=1` by default. Host sanitizers, C/Swift regressions,
+`build/madeira-dock/build.sh --check` and `tools/check-steam-input-runtime.py` pass.
+Milestone 1 is complete.
+
 - [x] Add a versioned per-game selection model: Game default, Community item,
   Personal layout, or explicitly selected template. Record controller identity,
   source, revision/content hash and last successfully activated revision.
 - [x] Distinguish an explicit choice in Madeira from an existing Steam selection.
   On migration, retain both and avoid replacing either without an explicit choice.
-- [ ] Define the bridge between Madeira and Dock for querying the current layout,
+- [x] Define the bridge between Madeira and Dock for querying the current layout,
   listing available sources, applying a revision and restoring the game default.
   Reuse the existing session-command transport where suitable after inspecting it.
 - [x] Bind each command to the current session, game and controller; include a
   sequence ID and structured result. Reject stale commands and unsafe file paths.
-- [ ] Separate requested, downloading, validated, queued, cached and active states.
+- [x] Separate requested, downloading, validated, queued, cached and active states.
   An activation request or generic cache presence is not an acknowledgement that
   the requested layout revision became active.
   - [x] Determine the pinned native document-revision completion and verify it
@@ -190,9 +238,11 @@ cases remain to be verified.
     receipts; host-test acceptance versus activation, rejection and rollback.
   - [x] Device-validate native local apply/restore commands and matching
     hash-bound receipts through a distinctive changed mapping.
-  - [ ] Device-validate app submission/persistence and recovery, then enable
-    ordinary builds before publishing production active state.
-- [ ] Route startup selection and live changes through the same service. Preserve
+  - [x] Device-validate app submission, persisted acknowledgement, fresh-launch
+    reapplication and baseline restoration with override clear.
+  - [x] Device-validate fault/rejection, interrupted-transaction and held-output
+    recovery, then enable ordinary builds before publishing production active state.
+- [x] Route startup selection and live changes through the same service. Preserve
   the last working revision on failure and serialize conflicting apply requests.
   - [x] Implement fresh-launch reapplication through the same preparation,
     journal, submission and receipt path, without replacing newer unconfirmed intent.
@@ -202,7 +252,11 @@ cases remain to be verified.
     automatic reapplication, restoration and persisted override clear on iPad.
   - [x] Verify cleared-intent relaunch delegates to the unchanged original Steam
     selection without an app layout submission.
-  - [ ] Verify fault/reconnect and held-output behavior.
+  - [x] Implement and host-test same-session virtual reconnect recovery,
+    non-mutating baseline restore preparation, cache-timeout rollback and
+    held-button/output quiescing across layout transitions.
+  - [x] Verify fault/reconnect, interrupted-transaction and held-output behavior
+    on device.
 - [x] Inventory physical inputs that Madeira actually forwards to the virtual
   controller; expose compatibility accurately, including Deck/Steam Controller
   inputs that the current device cannot provide.

@@ -774,3 +774,29 @@ exactly matched the pre-test original VDF, and the original selected source was
 unchanged. The owner confirmed buttons remained normal. Persistence, relaunch,
 restoration and override cleanup are device-validated; fault/reconnect and
 held-output behavior remain outstanding before ordinary-build enablement.
+
+R8 fault/reconnect, interrupted preparation, held-output validation and ordinary
+build enablement are now complete. On-device testing verified:
+- Apply confirmation at revision 738 (native sequence 2, epoch 1) while holding
+  button A, with no stuck input and confirmed swapped buttons.
+- In-game physical controller disconnect and reconnect with swapped mappings and
+  normal input retained.
+- Deliberate baseline-mismatch rejection (Action 3) with `SH_INPUT_BAD_COMMAND`
+  (feed result 6), transitioning to phase `.failed` at revision 746 while strictly
+  preserving requested user intent and lastActivated.
+- Interrupted preparation recovery (Action 4) automatically retiring and reapplying
+  at higher revision 750 (native sequence 4, epoch 1) on the next settled poll.
+- Held-output safety and deadzone calibration: holding button A during apply deferred
+  `ActivateConfig` and safely triggered timeout rollback to revision 755 without
+  corrupting intent; calibrating `observe_output` to check true button presses,
+  triggers and analog stick axes beyond standard XInput deadzones (7849/8689)
+  resolved false held-state on resting analog sticks for full templates (`controller_ps5.vdf`).
+- Baseline restoration (Action 2) confirming on device at revision 762 (native sequence
+  3, epoch 1), clearing `selection.requested`, acknowledging the restore receipt,
+  republishing working baseline `MSIBAS02` at revision 762, and confirming that the
+  original VDF on disk was byte-for-byte unchanged (`original_unchanged: true`).
+
+Ordinary builds in `build/madeira-dock/build.sh` and `madeira-dock/tools/build.sh`
+now enable `SH_STEAM_INPUT_LOCAL_APPLY=1` by default (`DOCK_LOCAL_APPLY=0` opts out).
+Host sanitizers, C/Swift regressions, `build/madeira-dock/build.sh --check` and
+`tools/check-steam-input-runtime.py` pass. Milestone 1 is complete.

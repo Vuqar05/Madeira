@@ -718,6 +718,16 @@ enum DockSteamInputWire {
     private static var restartEpoch: UInt32?
     private static var restartWaitStarted: Date?
     private(set) static var activeChoice: DockSteamInputSelection.Revision?
+    private(set) static var inputQuiesced = false
+    static var onInputQuiescedChanged: ((Bool) -> Void)?
+    static let baselineRestoreIdentity = "0EBD445F-87AE-46F2-96BB-042CB53B35E1"
+
+    private static func updateInputQuiesced() {
+        let next = prepared != nil || submission != nil
+        guard next != inputQuiesced else { return }
+        inputQuiesced = next
+        onInputQuiescedChanged?(next)
+    }
     private struct Submission {
         let work: DockSteamInputJournal.Pending
         let request: DockSteamInputJournal.Request
@@ -780,6 +790,7 @@ enum DockSteamInputWire {
         catch { SteamLog.event("[steam-input] layout interruption not saved") }
         journal = nil; recovery = nil; prepared = nil; submission = nil; receipt = nil
         preparedChoice = nil; preparedReapplication = false; preparedClearOverride = false; activeChoice = nil
+        updateInputQuiesced()
 #if DEBUG
         diagnosticSequence = 0
         try? FileManager.default.removeItem(at: MadeiraDock.drive.appendingPathComponent("madeira-steam-input-local-test.bin"))
@@ -815,6 +826,22 @@ enum DockSteamInputWire {
         }
         selection = saved; prepared = work; receipt = nil
         preparedChoice = resolved; preparedReapplication = false; preparedClearOverride = false; restartAttempted = true
+        updateInputQuiesced()
+        return work
+    }
+    /// Stage restoring the captured Steam baseline without mutating saved user
+    /// intent before confirmation. Only a confirmed receipt clears the override.
+    static func prepareBaselineRestore(baseline: Data) throws -> DockSteamInputJournal.Pending {
+        guard let snapshot, snapshot.connected, snapshot.flags & 1 != 0,
+              pending == nil, recovery == nil, prepared == nil,
+              let journal, let saved = selection, saved.requested != nil else { throw DockSteamInputJournal.Failure.busy }
+        let original = try journal.steamBaseline()
+        let hash = DockSteamInputNative.contentHash(original)
+        let resolved = DockSteamInputSelection.Revision(source: .personal, identity: baselineRestoreIdentity, contentHash: hash)
+        let work = try journal.prepareLocal(source: original, baseline: baseline, captureSteamBaseline: false)
+        prepared = work; receipt = nil
+        preparedChoice = resolved; preparedReapplication = false; preparedClearOverride = true; restartAttempted = true
+        updateInputQuiesced()
         return work
     }
     /// Submit only to a host advertising the gated local-apply capability. The
@@ -825,7 +852,7 @@ enum DockSteamInputWire {
               pending == nil, submission == nil, recovery == nil,
               let work = prepared, let journal, let saved = selection, let choice = preparedChoice,
               let content = work.content, choice.contentHash == content.sourceHash,
-              (preparedReapplication ? saved.lastActivated == choice : saved.requested == choice) else { throw DockSteamInputJournal.Failure.busy }
+              (preparedReapplication ? saved.lastActivated == choice : (preparedClearOverride ? saved.requested != nil : saved.requested == choice)) else { throw DockSteamInputJournal.Failure.busy }
         sequence = max(sequence, current.sequence)
         guard sequence < UInt32.max else { throw DockSteamInputJournal.Failure.exhausted }
         sequence += 1
@@ -839,6 +866,7 @@ enum DockSteamInputWire {
         submission = Submission(work: work, request: request, choice: choice, generation: saved.generation,
             reapplication: preparedReapplication, clearOverride: preparedClearOverride, previousChoice: activeChoice, sent: Date())
         activeChoice = nil
+        updateInputQuiesced()
         do {
             try bytes.write(to: payloadFile, options: .atomic)
             try commandBytes.write(to: command, options: .atomic)
@@ -846,6 +874,7 @@ enum DockSteamInputWire {
             try? journal.interrupt()
             recovery = try? journal.snapshot().pending
             prepared = nil; submission = nil
+            updateInputQuiesced()
             throw error
         }
     }
@@ -856,6 +885,7 @@ enum DockSteamInputWire {
                 try journal.finish(sent.work.reservation, phase: .failed, hash: nil, revision: nil)
                 activeChoice = sent.previousChoice
                 submission = nil; prepared = nil; preparedChoice = nil
+                updateInputQuiesced()
             } catch { SteamLog.event("[steam-input] rejected layout result not saved") }
             return
         }
@@ -877,14 +907,20 @@ enum DockSteamInputWire {
                         if !rolledBack {
                             if sent.reapplication {
                                 guard saved.lastActivated == sent.choice else { return }
-                            } else { try saved.acknowledge(sent.choice, generation: sent.generation) }
-                            if sent.clearOverride { try saved.clearRequest() }
+                            } else if sent.clearOverride {
+                                try saved.request(sent.choice)
+                                try saved.acknowledge(sent.choice, generation: saved.generation)
+                                try saved.clearRequest()
+                            } else {
+                                try saved.acknowledge(sent.choice, generation: sent.generation)
+                            }
                             updated = saved
                         }
                         try journal.finish(sent.work.reservation, phase: rolledBack ? .rolledBack : .confirmed,
                             hash: value.workingHash, revision: value.workingRevision, request: sent.request)
-                        activeChoice = rolledBack ? sent.previousChoice : sent.choice
+                        activeChoice = rolledBack ? sent.previousChoice : (sent.clearOverride ? nil : sent.choice)
                         submission = nil; prepared = nil; preparedChoice = nil
+                        updateInputQuiesced()
                         if !rolledBack, !sent.reapplication, let saved = updated {
                             try saved.save(in: storage); selection = saved
                         }
@@ -894,7 +930,9 @@ enum DockSteamInputWire {
                     receipt = value
                     do {
                         try journal.finish(sent.work.reservation, phase: .failed, hash: nil, revision: nil)
-                        submission = nil; prepared = nil
+                        activeChoice = sent.previousChoice
+                        submission = nil; prepared = nil; preparedChoice = nil
+                        updateInputQuiesced()
                     } catch { SteamLog.event("[steam-input] layout failure not saved") }
                     return
                 } else { receipt = value }
@@ -903,12 +941,13 @@ enum DockSteamInputWire {
         if Date().timeIntervalSince(sent.sent) > 60 {
             try? journal.interrupt()
             recovery = try? journal.snapshot().pending
-            submission = nil; prepared = nil
+            submission = nil; prepared = nil; preparedChoice = nil
+            updateInputQuiesced()
         }
     }
     private static func refreshRestart(_ current: DockSteamInputWire.Snapshot) {
         guard !restartAttempted, attempts == 3, pending == nil, submission == nil, prepared == nil,
-              current.connected, current.flags & 48 == 48, current.result == 1,
+              current.connected, current.flags & 48 == 48,
               let journal, let saved = selection else { return }
         guard (saved.requested != nil && saved.lastActivated != nil) || recovery != nil else { restartAttempted = true; return }
         if restartWaitStarted == nil { restartWaitStarted = Date() }
@@ -923,7 +962,8 @@ enum DockSteamInputWire {
         do {
             if let interrupted = recovery {
                 try journal.abandonInterrupted(interrupted.reservation,
-                    newSession: session.map { String(format: "%02x", $0) }.joined())
+                    newSession: session.map { String(format: "%02x", $0) }.joined(),
+                    newEpoch: current.epoch)
                 recovery = nil
             }
             restartAttempted = true
@@ -931,6 +971,7 @@ enum DockSteamInputWire {
             let source = try journal.reapplicationSource(hash: hash)
             let work = try journal.prepareLocal(source: source, baseline: baseline)
             prepared = work; preparedChoice = choice; preparedReapplication = true; preparedClearOverride = false
+            updateInputQuiesced()
             try submitPrepared()
         } catch { restartAttempted = true; SteamLog.event("[steam-input] confirmed layout restart unavailable") }
     }
@@ -976,10 +1017,21 @@ enum DockSteamInputWire {
             } else if request.action == 2 {
                 guard saved.requested?.identity == "madeira_m1_revision_probe.vdf",
                       activeChoice?.identity == "madeira_m1_revision_probe.vdf" else { throw DockSteamInputJournal.Failure.stale }
-                let original = try journal.steamBaseline()
-                _ = try prepareLocal(source: original, baseline: baseline,
-                    choice: .init(source: .personal, identity: "0EBD445F-87AE-46F2-96BB-042CB53B35E1", contentHash: nil))
-                preparedClearOverride = true
+                _ = try prepareBaselineRestore(baseline: baseline)
+            } else if request.action == 3 {
+                guard saved.requested?.identity == "madeira_m1_revision_probe.vdf",
+                      activeChoice?.identity == "madeira_m1_revision_probe.vdf" else { throw DockSteamInputJournal.Failure.stale }
+                _ = try prepareBaselineRestore(baseline: Data("controller_mappings { revision 0 wrong baseline }".utf8))
+            } else if request.action == 4 {
+                guard saved.requested?.identity == "madeira_m1_revision_probe.vdf",
+                      activeChoice?.identity == "madeira_m1_revision_probe.vdf" else { throw DockSteamInputJournal.Failure.stale }
+                _ = try prepareBaselineRestore(baseline: baseline)
+                try journal.interrupt()
+                recovery = try journal.snapshot().pending
+                prepared = nil; preparedChoice = nil; preparedReapplication = false; preparedClearOverride = false
+                updateInputQuiesced()
+                restartAttempted = false; restartWaitStarted = nil
+                return
             } else { throw DockSteamInputJournal.Failure.invalid }
             try submitPrepared()
         } catch { SteamLog.event("[steam-input] local diagnostic request unavailable") }
@@ -994,7 +1046,7 @@ enum DockSteamInputWire {
         snapshot = current
         if !current.connected || current.state == .failed { activeChoice = nil; receipt = nil }
         if epoch != current.epoch {
-            if prepared != nil {
+            if prepared != nil || submission != nil {
                 do {
                     try journal?.interrupt()
                     recovery = try journal?.snapshot().pending
@@ -1003,10 +1055,14 @@ enum DockSteamInputWire {
                     SteamLog.event("[steam-input] layout connection recovery unavailable")
                 }
                 prepared = nil; preparedChoice = nil; submission = nil; receipt = nil
+                updateInputQuiesced()
             }
             activeChoice = nil
-            if let initial = restartEpoch, initial != current.epoch { restartAttempted = true }
-            if restartEpoch == nil, current.connected { restartEpoch = current.epoch }
+            if current.connected {
+                restartAttempted = false
+                restartEpoch = current.epoch
+                restartWaitStarted = nil
+            }
             epoch = current.epoch; attempts = 0; pending = nil
         }
         sequence = max(sequence, current.sequence)

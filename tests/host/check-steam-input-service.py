@@ -147,9 +147,12 @@ func put32(_ data: inout Data, _ at: Int, _ value: UInt32) {
     require(DockSteamInputService.selection?.lastActivated?.contentHash == work.content?.sourceHash)
     require(DockSteamInputService.prepared == nil)
     let persisted = try DockSteamInputSelection.load(in: storage, accountID: 7, appID: 480, controllerID: DockSteamInputService.controllerID)
-    require(persisted.lastActivated == persisted.requested)
+    require(persisted.lastActivated == persisted.requested && !DockSteamInputService.inputQuiesced)
+    var quiescedLog: [Bool] = []
+    DockSteamInputService.onInputQuiescedChanged = { quiescedLog.append($0) }
     _ = try DockSteamInputService.prepareLocal(source: localBytes, baseline: localBytes,
         choice: .init(source: .template, identity: "next.vdf", contentHash: nil))
+    require(DockSteamInputService.inputQuiesced && quiescedLog == [true])
     // Reconnect creates a new lease, invalidating the previous reply and any
     // staged layout prepared from the previous connection's baseline.
 
@@ -157,7 +160,38 @@ func put32(_ data: inout Data, _ at: Int, _ value: UInt32) {
     try feed.write(to: feedFile); DockSteamInputService.refresh()
     let requery = try Data(contentsOf: commandFile)
     require(requery[36] == 3 && requery[32] == 3)
-    require(DockSteamInputService.prepared == nil && DockSteamInputService.recovery?.phase == .interrupted)
+    require(DockSteamInputService.prepared == nil && !DockSteamInputService.inputQuiesced && quiescedLog == [true, false])
+    require(DockSteamInputService.recovery?.phase == .interrupted)
+    // Once the new epoch settles and exports a fresh baseline, same-session
+    // recovery retires the interrupted work and reapplies the last CONFIRMED
+    // choice while preserving the newer unconfirmed request.
+    try fm.removeItem(at: commandFile)
+    let baselineFile = MadeiraDock.drive.appendingPathComponent("madeira-steam-input-baseline.bin")
+    let freshBaseline = Data("controller_mappings { revision 0 native default }".utf8)
+    func baselineFrame(_ scope: Data, source: Data? = nil) -> Data {
+        let content = source ?? freshBaseline
+        var bytes = Data("MSIBAS02".utf8); bytes.append(scope[8..<36]); bytes.append(Data(repeating: 0, count: 8))
+        put32(&bytes, 36, try! DockSteamInputNative.revision(content)); put32(&bytes, 40, UInt32(content.count)); bytes.append(content)
+        return bytes
+    }
+    put32(&feed, 36, 3); put32(&feed, 40, 1); put32(&feed, 52, 51)
+    try baselineFrame(feed).write(to: baselineFile)
+    try feed.write(to: feedFile); DockSteamInputService.refresh()
+    require(DockSteamInputService.recovery == nil && DockSteamInputService.inputQuiesced)
+    let reconnectCommand = try Data(contentsOf: commandFile)
+    require(reconnectCommand[40] == 3 && reconnectCommand[36] == 4 && reconnectCommand[32] == 3)
+    let reconnectHost = Process(); reconnectHost.executableURL = testRoot.appendingPathComponent("fixture")
+    reconnectHost.arguments = ["receipt", payloadFile.path, receiptFile.path]
+    try reconnectHost.run(); reconnectHost.waitUntilExit(); require(reconnectHost.terminationStatus == 0)
+    try fm.removeItem(at: commandFile)
+    put32(&feed, 36, 4); put32(&feed, 44, 6)
+    try feed.write(to: feedFile); DockSteamInputService.refresh()
+    require(!DockSteamInputService.inputQuiesced && DockSteamInputService.activeChoice?.identity == "synthetic.vdf")
+    require(DockSteamInputService.selection?.requested?.identity == "next.vdf")
+    // Prepare another unconfirmed change and interrupt it across launch end.
+    _ = try DockSteamInputService.prepareLocal(source: localBytes, baseline: localBytes,
+        choice: .init(source: .template, identity: "next.vdf", contentHash: nil))
+    DockSteamInputService.onInputQuiescedChanged = nil
     DockSteamInputService.end()
     require(getenv("MADEIRA_DOCK_INPUT_SESSION") == nil)
     require(!fm.fileExists(atPath: feedFile.path) && !fm.fileExists(atPath: commandFile.path))
@@ -176,14 +210,6 @@ func put32(_ data: inout Data, _ at: Int, _ value: UInt32) {
     try freshFeed.write(to: feedFile); DockSteamInputService.refresh()
     try fm.removeItem(at: commandFile)
     put32(&freshFeed, 36, 1); put32(&freshFeed, 40, 1)
-    let baselineFile = MadeiraDock.drive.appendingPathComponent("madeira-steam-input-baseline.bin")
-    let freshBaseline = Data("controller_mappings { revision 0 native default }".utf8)
-    func baselineFrame(_ scope: Data, source: Data? = nil) -> Data {
-        let content = source ?? freshBaseline
-        var bytes = Data("MSIBAS02".utf8); bytes.append(scope[8..<36]); bytes.append(Data(repeating: 0, count: 8))
-        put32(&bytes, 36, try! DockSteamInputNative.revision(content)); put32(&bytes, 40, UInt32(content.count)); bytes.append(content)
-        return bytes
-    }
     try baselineFrame(feed).write(to: baselineFile) // previous launch nonce
     try freshFeed.write(to: feedFile); DockSteamInputService.refresh()
     require(!fm.fileExists(atPath: commandFile.path) && DockSteamInputService.activeChoice == nil)
@@ -293,16 +319,42 @@ func put32(_ data: inout Data, _ at: Int, _ value: UInt32) {
         scope: .init(accountID: 12, appID: 480, controllerID: DockSteamInputService.controllerID))
     let activeBytes = try diagnosticJournal.content(autoWork.content!.applyHash)
     try baselineFrame(diagnosticFeed, source: activeBytes).write(to: baselineFile)
-    try DockSteamInputWire.command(.sources, snapshot: DockSteamInputWire.parse(diagnosticFeed)!, sequence: 1)!.write(to: marker)
+    // Action 3 stages a baseline-mismatched submission; host rejection preserves activeChoice and saved intent.
+    let faultCmd = DockSteamInputWire.command(.apply, snapshot: DockSteamInputWire.parse(diagnosticFeed)!, sequence: 1)!
+    try faultCmd.write(to: marker)
     DockSteamInputService.refresh()
+    let rejectedApply = try Data(contentsOf: commandFile)
+    let rejectedSeq = UInt32(rejectedApply[36]) | UInt32(rejectedApply[37]) << 8
+    try fm.removeItem(at: commandFile)
+    put32(&diagnosticFeed, 36, rejectedSeq); put32(&diagnosticFeed, 40, 4)
+    try diagnosticFeed.write(to: feedFile); DockSteamInputService.refresh()
+    require(DockSteamInputService.activeChoice?.identity == "madeira_m1_revision_probe.vdf")
+    require(DockSteamInputService.selection?.requested?.identity == "madeira_m1_revision_probe.vdf")
+    require(!DockSteamInputService.inputQuiesced)
+    // Action 4 interrupts a staged local preparation and recovers on the next settled poll.
+    put32(&diagnosticFeed, 40, 1); try diagnosticFeed.write(to: feedFile); DockSteamInputService.refresh()
+    var interruptCmd = DockSteamInputWire.command(.query, snapshot: DockSteamInputWire.parse(diagnosticFeed)!, sequence: 2)!
+    interruptCmd[40] = 4
+    try interruptCmd.write(to: marker)
+    DockSteamInputService.refresh()
+    require(DockSteamInputService.recovery?.phase == .interrupted && !DockSteamInputService.inputQuiesced)
+    DockSteamInputService.refresh()
+    require(DockSteamInputService.recovery == nil && DockSteamInputService.prepared != nil)
     try acknowledgeDiagnostic(&diagnosticFeed)
-    require(DockSteamInputService.selection?.requested == nil)
+    require(DockSteamInputService.activeChoice?.identity == "madeira_m1_revision_probe.vdf")
+    try baselineFrame(diagnosticFeed, source: activeBytes).write(to: baselineFile)
+    // Action 2 restores the original baseline without mutating requested before confirmation.
+    try DockSteamInputWire.command(.sources, snapshot: DockSteamInputWire.parse(diagnosticFeed)!, sequence: 3)!.write(to: marker)
+    DockSteamInputService.refresh()
+    require(DockSteamInputService.selection?.requested?.identity == "madeira_m1_revision_probe.vdf")
+    try acknowledgeDiagnostic(&diagnosticFeed)
+    require(DockSteamInputService.selection?.requested == nil && DockSteamInputService.activeChoice == nil)
     require(DockSteamInputService.selection?.lastActivated?.contentHash == DockSteamInputNative.contentHash(freshBaseline))
     DockSteamInputService.end()
     _ = try diagnosticLaunch()
     require(!fm.fileExists(atPath: commandFile.path) && DockSteamInputService.activeChoice == nil)
     DockSteamInputService.end()
-    print("PASS: confirmed-choice restart, fresh baseline/nonce validation, preservation of newer intent, interruption recovery and C/Swift wire interoperability, malformed feeds, launch/lease isolation, explicit-choice migration and cleanup")
+    print("PASS: confirmed-choice restart, same-session reconnect recovery, held-input quiesce, fault/interruption recovery, fresh baseline/nonce validation, preservation of newer intent and C/Swift wire interoperability")
 }
 try MainActor.assumeIsolated { try checks() }
 '''

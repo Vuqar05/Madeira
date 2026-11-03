@@ -105,7 +105,8 @@ final class GamepadInput: @unchecked Sendable {
         let output = Self.configuredPadOutput()
         unsetenv("MADEIRA_HIDPAD"); unsetenv("MADEIRA_HIDPAD_NAME"); unsetenv("MADEIRA_HIDPAD_OWNER"); unsetenv("MADEIRA_XINPUT_FORWARD")
         // An earlier session in this app run may have taken player 1 off XInput.
-        queue.async { [self] in hidActive = false; hidKeepsXInput = false }
+        DockSteamInputService.onInputQuiescedChanged = nil
+        queue.async { [self] in hidActive = false; hidKeepsXInput = false; steamInputQuiesced = false; steamInputLatchedButtons = 0 }
         guard ["hid", "dualsense", "generic"].contains(mode.value) else {
             LogStore.shared.log("[hid-pad] ml2100 session mode=xinput source=\(mode.source)")
             beginPadOutput(xinput: output.xinput && Self.enabled, hid: false, value: output.value)
@@ -133,10 +134,14 @@ final class GamepadInput: @unchecked Sendable {
             // Steam's overlay hooks xinput1_4 only (its LoadLibrary hooks fail
             // here); every other XInput DLL forwards to it (wine xinput1_3/main.c).
             setenv("MADEIRA_XINPUT_FORWARD", "xinput1_4.dll", 1)
+            DockSteamInputService.onInputQuiescedChanged = { [weak self] quiesced in
+                self?.setSteamInputQuiesced(quiesced)
+            }
         }
         if kind == "generic", let name = first?.vendorName { setenv("MADEIRA_HIDPAD_NAME", name, 1) }
         let keepXInput = Self.optIn("MADEIRA_HIDPAD_XINPUT")
-        queue.async { [self] in hidActive = true; hidKeepsXInput = keepXInput; sample() }
+        let initialQuiesced = steamInput && DockSteamInputService.inputQuiesced
+        queue.async { [self] in hidActive = true; hidKeepsXInput = keepXInput; steamInputQuiesced = initialQuiesced; sample() }
         LogStore.shared.log("[hid-pad] ml2100 session mode=\(mode.value) source=\(mode.source) kind=\(kind) "
                             + "pad=\(first?.productCategory ?? "none") xinput-slot0=\(keepXInput ? "kept" : "off")")
         // Only the DualSense identity has output reports (the generic pad has none).
@@ -233,6 +238,16 @@ final class GamepadInput: @unchecked Sendable {
     private var hidActive = false
     /// MADEIRA_HIDPAD_XINPUT=1: player 1 stays an XInput pad as well.
     private var hidKeepsXInput = false
+    private var steamInputQuiesced = false
+    private var steamInputLatchedButtons: UInt16 = 0
+
+    func setSteamInputQuiesced(_ quiesced: Bool) {
+        queue.async { [self] in
+            guard steamInputQuiesced != quiesced else { return }
+            steamInputQuiesced = quiesced
+            sample()
+        }
+    }
     private var hidBattery: (level: UInt8, charging: UInt8) = (UInt8(WINIOS_HIDPAD_BATTERY_UNKNOWN), 0)
     private var hidBatteryCountdown = 0
     /// ml2170: when each XInput slot's battery is read next (uptime ns); 0 = at once.
@@ -465,6 +480,15 @@ final class GamepadInput: @unchecked Sendable {
                 state.lx = merged.lx; state.ly = merged.ly; state.rx = merged.rx; state.ry = merged.ry
             }
             if hid {
+                if steamInputQuiesced {
+                    steamInputLatchedButtons = state.buttons
+                    state = winios_gamepad()
+                    state.connected = 1
+                    hidLive = nil
+                } else if steamInputLatchedButtons != 0 {
+                    steamInputLatchedButtons &= state.buttons
+                    state.buttons &= ~steamInputLatchedButtons
+                }
                 publishHID(state, live: hidLive, pad: pad)
                 // One controller, one API: player 1 is not also an XInput pad,
                 // as a DualSense on Windows is not (MADEIRA_HIDPAD_XINPUT=1 keeps both).
