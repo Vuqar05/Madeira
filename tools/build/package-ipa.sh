@@ -44,6 +44,7 @@ xcodebuild \
 [[ -d "$APP" ]] || { echo "ERROR: xcodebuild succeeded but Madeira.app is missing" >&2; exit 1; }
 
 python3 "$ROOT/tools/build/runtime-components.py" bundle "$APP"
+python3 "$ROOT/tools/check-steam-input-runtime.py" "$APP"
 
 # Preserve Madeira's requested JIT/debug entitlements in the IPA. SideStore will
 # replace this ad-hoc signature with the user's development signature while

@@ -59,23 +59,151 @@ branch: `app/Madeira/{SteamInputLayouts,SteamInputLayoutsView}.swift`.
 
 ## Milestone 1 — Selection model and a reliable Dock layout service
 
-- [ ] Add a versioned per-game selection model: Game default, Community item,
+Implementation progress (2026-11-02, partial):
+
+- `DockSteamInputSelection` provides a versioned atomic store scoped by account,
+  App ID and controller UUID, keeping the explicit Madeira request, original
+  observed Steam selection and last acknowledged content revision separate.
+  Unknown schemas/mismatched scopes fail without replacing saved bytes.
+- The app now creates a launch nonce with the authenticated handoff, queries the
+  new Dock service once per observed connection (bounded retries), and retains
+  the Steam selection without replacing an explicit Madeira choice. Dock's
+  own startup generic fallback is flagged and excluded from migration.
+- `steam_input_service.{c,h}` defines a bounded LE command/feed protocol with
+  session, game, index, connection epoch, monotonic sequence and result. Query
+  and existing-source discovery work; apply/reset return an explicit no-ACK
+  result without mutating the layout. Commands accept no paths. Atomic feed
+  installation, command claiming, cleanup and publication retry are implemented.
+- Reports distinguish queued, generic cache presence and activation requested;
+  no observation is labelled an active revision. The transport input inventory
+  exposes buttons, sticks, triggers and optional Sony touch click, with motion,
+  touch positions and extra Deck/Steam Controller inputs absent.
+- The stable UUID currently identifies Madeira's single virtual DualSense bridge,
+  not a physical pad. Physical identity, additional controllers, source browsing,
+  UI and applying/restoring revisions through one service remain outstanding.
+
+Validation: Dock ASan/UBSan suites, C/Swift interoperability, selection and
+settings tests, normal x64/x86 cross-builds and the pinned January checker pass.
+R3 restored the verified Steam-to-game route after rebuilding stale native
+archives; Xbox glyphs/input and nine successful overlay hooks were confirmed.
+R4's device experiment passed: the owner observed the synthetic revision-731
+A/B mapping swap and its automatic restoration after the observation window.
+Private completed callbacks reported revision 731 and then baseline revision 0;
+the original selected VDF was byte-for-byte unchanged. The first run verified
+restoration/file preservation but lacked physical observation; a fresh-session
+retry supplied the distinctive mapping confirmation. This validates the pinned
+callback as evidence for this serialized queue/restore experiment, independently
+of public manifest revisions. It does not establish general callback ordering,
+held-input release, crash recovery or arbitrary layout persistence. Normal builds
+cannot run the diagnostic, and ordinary apply/default remain disabled.
+`madeira-dock/docs/CLIENT_LAYOUTS.md` records the pinned binary evidence.
+Milestone 1 remains incomplete: production application must bind unique document
+revisions to validated immutable content, serialize transactions, and implement
+acknowledged persistence, default restoration and rollback.
+
+Revision-tagged queue copies (R5, device validated): bounded native VDF
+materialization changes only root document revision metadata in private queue
+copies, preserving unknown bindings and source bytes. The one-shot diagnostic
+now reserves distinct apply and restore revisions above both source revisions,
+fails on exhaustion, and rejects a delayed startup completion during restore.
+This removes the baseline-revision reuse in the R4 experiment; it does not yet
+provide persistent revision allocation, content-hash binding or production apply.
+The owner confirmed the live swap and automatic restoration. Completed callbacks
+reported apply revision 732 and restore revision 733, probe phase reached 4,
+and the original selected VDF was byte-for-byte unchanged. This verifies native
+acceptance of both metadata-tagged copies; persistent transaction/content binding
+and ordinary apply/default remain outstanding.
+
+Production transaction preparation now has a portable coordinator and an app-side
+journal/content store. The coordinator reserves non-reused apply/rollback
+revisions, serializes changes, requires matching completion plus activation
+request, bounds rollback, invalidates old connections and retains historical
+working receipts without calling them current after failure. The journal scopes
+atomic, synchronized records by account/game/controller, preserves source and
+baseline bytes separately from tagged queue copies, rehashes immutable objects,
+and binds receipts to reservation, launch nonce, epoch, sequence, revision and
+hash. The same C metadata implementation is compiled into iOS, avoiding a second
+VDF transformer. Local preparation persists an explicit requested source but
+sends no apply command and never sets lastActivated. Launch/end/reconnect mark
+unfinished work interrupted; recovery requires an explicit later decision.
+The local submission/receipt bridge is implemented and host-tested behind the
+explicit `DOCK_LOCAL_APPLY=1` build gate. It consumes scoped, bounded payloads,
+verifies exact SHA-256 digests and the working rollback baseline, serializes
+native submission, and waits for matching completion before activation. Swift
+journals the command before sending and only updates lastActivated after a
+matching session/epoch/sequence/revision/hash receipt. Native rollback and late
+callbacks have lifecycle coverage. R6 device validation of the native endpoint
+passed: a scoped apply confirmed revision 732 with the expected SHA-256, and a
+separate restore confirmed revision 734 with its expected SHA-256. The owner
+observed the A/B swap and restoration, and the original selected VDF was
+byte-for-byte unchanged. This external-sender test validates the native command
+and receipt path, not app-side journal persistence or startup reapplication.
+Normal/probe/local sanitizers, C/Swift submission/receipt and journal/selection
+regressions, ordinary x64/i386 and gated x64 builds, pinned client/runtime checks
+and the iOS Debug build pass. App persistence/restart validation, held-output handling,
+failure recovery on device and enabling ordinary builds remain outstanding.
+
+Restart implementation (R7, app persistence/relaunch device-validated): the gated host
+publishes a nonce/game/epoch-bound exact working-layout snapshot only after it is
+settled (capability 32). The app validates that snapshot, proves cached source
+bytes reproduce a prior confirmed queue, and reapplies the last confirmed choice
+through the live transaction path with fresh revisions. Newer unconfirmed intent
+is preserved. A bounded confirmation history survives rollback to Steam's initial
+baseline. Interrupted old-launch work is retired without replay only after a
+new scoped native baseline, and same-launch/connection recovery stays blocked.
+Clearing an explicit request retains historical acknowledgement but delegates
+future startup to Steam's existing selection. A scoped Debug-only fixture trigger
+allows the next device check to exercise the real app journal, relaunch and
+baseline restoration without a layout UI; it is absent in Release builds.
+
+R7 is built and signed for that app-mediated persistence/relaunch test. Host
+sanitizers, C/Swift service/journal/selection checks, runtime component/settings
+regressions, ordinary and gated cross-builds, pinned client/runtime preflight and
+the iOS Debug build pass. R7 device testing confirmed app-mediated selection and persisted acknowledgement
+at revision 732, automatic reapplication after a normal game relaunch at revision
+734 with a fresh launch nonce, and app-mediated restoration at revision 736. The
+owner observed swapped buttons after relaunch and normal buttons after restore.
+The app persisted cleared explicit intent; the original selected VDF remained
+byte-for-byte unchanged. A further fresh launch kept explicit intent cleared, issued only the startup
+query, loaded the exact original native baseline and left the selected source
+unchanged; the owner confirmed normal buttons. Fault/reconnect and held-output
+cases remain to be verified.
+
+- [x] Add a versioned per-game selection model: Game default, Community item,
   Personal layout, or explicitly selected template. Record controller identity,
   source, revision/content hash and last successfully activated revision.
-- [ ] Distinguish an explicit choice in Madeira from an existing Steam selection.
+- [x] Distinguish an explicit choice in Madeira from an existing Steam selection.
   On migration, retain both and avoid replacing either without an explicit choice.
 - [ ] Define the bridge between Madeira and Dock for querying the current layout,
   listing available sources, applying a revision and restoring the game default.
   Reuse the existing session-command transport where suitable after inspecting it.
-- [ ] Bind each command to the current session, game and controller; include a
+- [x] Bind each command to the current session, game and controller; include a
   sequence ID and structured result. Reject stale commands and unsafe file paths.
 - [ ] Separate requested, downloading, validated, queued, cached and active states.
   An activation request or generic cache presence is not an acknowledgement that
-  the requested layout revision became active. Determine a reliable client-side
-  acknowledgement and verify it through a distinctive changed mapping.
+  the requested layout revision became active.
+  - [x] Determine the pinned native document-revision completion and verify it
+    through a distinctive changed mapping and automatic restoration on device.
+  - [x] Implement and host-test serialized transaction/content binding and a
+    persistent revision journal with immutable source/queue objects.
+  - [x] Connect coordinator/journal to scoped local submission and hash-bound
+    receipts; host-test acceptance versus activation, rejection and rollback.
+  - [x] Device-validate native local apply/restore commands and matching
+    hash-bound receipts through a distinctive changed mapping.
+  - [ ] Device-validate app submission/persistence and recovery, then enable
+    ordinary builds before publishing production active state.
 - [ ] Route startup selection and live changes through the same service. Preserve
   the last working revision on failure and serialize conflicting apply requests.
-- [ ] Inventory physical inputs that Madeira actually forwards to the virtual
+  - [x] Implement fresh-launch reapplication through the same preparation,
+    journal, submission and receipt path, without replacing newer unconfirmed intent.
+  - [x] Preserve bounded confirmed-source history across restart rollback and
+    retire interrupted old-launch reservations only after a fresh native baseline.
+  - [x] Verify app-side selection, persisted acknowledgement, fresh-launch
+    automatic reapplication, restoration and persisted override clear on iPad.
+  - [x] Verify cleared-intent relaunch delegates to the unchanged original Steam
+    selection without an app layout submission.
+  - [ ] Verify fault/reconnect and held-output behavior.
+- [x] Inventory physical inputs that Madeira actually forwards to the virtual
   controller; expose compatibility accurately, including Deck/Steam Controller
   inputs that the current device cannot provide.
 
@@ -227,3 +355,54 @@ the physical controller are separate extensions; publishing is not required to
 download community layouts or create personal layouts. Any selected layout feature
 that the supported hardware can supply must either work or be shown as unsupported
 before the user applies that layout.
+
+
+## Milestone 1 device evidence — R2 (2026-11-02)
+
+The corrected iPad build initializes SDL3, sees one controller, resolves the
+existing account-local autosave, queues it, observes the game cache and requests
+activation. Valve's output stream is connected and changing. Public callback
+2803 reaches Dock with manifest major/minor 0/0 and gamepad-output flag 2.
+The feed reports connection epoch 1 and a completed query (sequence/result 1/1).
+The app's stored version-1 record has the same game/key/Workshop selection as
+the feed, no manufactured explicit choice and no claimed active revision.
+
+Live nonmutating command checks passed with a valid source query as the positive
+delivery control: wrong nonce, old connection epoch, replayed sequence and
+oversized path-bearing payload are rejected. Reserved apply/default operations
+return result 7 while preserving the observed layout, connected state and cache.
+An earlier inconclusive probe used an older launch scope; it is not counted as
+rejection evidence. No personal selection keys, account identifiers or raw
+callback payloads are recorded in this plan.
+
+Persistence across a normal relaunch and controller reconnect is the next
+physical check. This evidence does not close fixture application, exact-revision
+acknowledgement, restoration or rollback. The next implementation investigation
+is the pinned client's private load-completion callback 1060003, including its
+payload semantics and correlation to binding objects; it is not decoded or
+used as an acknowledgement yet. See Dock CLIENT_LAYOUTS.md.
+
+
+R2 acceptance correction: the owner observed PlayStation glyphs and working
+physical reconnect input. The submodule sources/pins match the earlier verified
+worktree, but this checkout's ignored native archives were stale. The linked R2
+app lacked the overlay's local current-process write fix and the server HID-owner
+restriction, so its engine/query/migration checks do not establish Steam-to-game
+input delivery. Both native libraries were rebuilt from source and the full app
+relinked. `tools/check-steam-input-runtime.py` rejects the old bundle and passes
+the rebuilt app; the IPA packaging path now runs it. The corrected signed
+`Steam Input M1 R3 · 11-02` build is installed; glyph/overlay/game-input validation
+is pending. After normal relaunch the service has a fresh nonce, a successful
+query and the same selected autosave. Virtual epoch 1 persisted: physical
+reconnect is not proof of a virtual-controller lease transition.
+
+
+R3 device result: the owner confirms controller input with Xbox glyphs. The
+overlay log has nine XInput hook reports and zero memory-write failures; Dock
+reports initialized SDL, gamepad configuration-load notification and connected,
+changing Xbox output. The linked native runtime passes the new capability
+preflight. This restores Steam-to-game input for the tested combination. The
+reference and current worktrees already have the same submodule pins; ignored
+native build outputs were the mismatch and were rebuilt from source here.
+Exact-VDF-revision acknowledgement and fixture apply/restore/rollback remain
+outstanding; working Xbox input alone does not close milestone 1.

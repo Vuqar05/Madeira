@@ -85,7 +85,7 @@ def check_binary(path, data):
             expected = {0xa641, 0x8664}
         elif path.startswith('i386-windows/'):
             expected = {0x14c}
-        if path.endswith('/dockhost.exe'):
+        if path.endswith(('/dockhost.exe', '/SDL3.dll')):
             expected = {0x8664}
         if machine not in expected:
             raise ValueError(f'wrong PE architecture 0x{machine:x}: {path}')

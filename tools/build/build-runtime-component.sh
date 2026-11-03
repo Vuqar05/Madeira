@@ -29,7 +29,6 @@ case "${1:-}" in
 esac
 case "${1:-}" in
   dock)
-    bash "$ROOT/build/sdl3/build.sh"
     bash "$ROOT/build/madeira-dock/build.sh" --check
     ;;
   windows) bash "$ROOT/build/windows-runtime/build.sh" ;;
