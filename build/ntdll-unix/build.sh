@@ -44,6 +44,7 @@ compile_one() {
         -Wno-implicit-function-declaration -Wno-int-conversion \
         -include "$WINE_BUILD/include/config.h" \
         -include "$BUILD_DIR/shims/wine_ios_exit.h" \
+        -include "$BUILD_DIR/shims/pipe2_compat.h" \
         -I"$BUILD_DIR/shims" -I"$BUILD_DIR/../madsync" -DHAVE_LINUX_NTSYNC_H=1 \
         -I"$WINE_BUILD/dlls/ntdll" -I"$WINE_SRC/dlls/ntdll" -I"$WINE_SRC/dlls/ntdll/unix" \
         -I"$WINE_BUILD/include" -I"$WINE_SRC/include" \
@@ -85,6 +86,7 @@ compile_unixlib() {
         -Wno-implicit-function-declaration -Wno-int-conversion \
         -include "$WINE_BUILD/include/config.h" \
         -include "$BUILD_DIR/shims/wine_ios_exit.h" \
+        -include "$BUILD_DIR/shims/pipe2_compat.h" \
         -I"$BUILD_DIR/shims" -I"$BUILD_DIR/../madsync" -DHAVE_LINUX_NTSYNC_H=1 \
         -I"$WINE_BUILD/include" -I"$WINE_SRC/include" \
         -D__WINESRC__ -D_NTSYSTEM_ -D_ACRTIMP= -DWINBASEAPI= \
