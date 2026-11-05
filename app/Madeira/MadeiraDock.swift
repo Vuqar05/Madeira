@@ -723,9 +723,10 @@ enum DockSteamInputWire {
     private static var diagnosticSequence: UInt32 = 0
 #endif
     private static var restartAttempted = false
-    /// Steam's saved-selection query failed on every attempt for this
-    /// connection: nothing is loaded and no baseline exists.
-    private static var selectionUnavailable = false
+    /// Steam has no saved selection for this connection: the query failed on
+    /// every attempt, or it succeeded and named neither a layout nor a
+    /// Workshop item. Nothing is loaded and no baseline exists.
+    private static var noSavedSelection = false
     private static var bootstrapAutoTried = false
     /// One explicit layout handed to Dock so the game gets a working baseline.
     private struct Bootstrap {
@@ -826,7 +827,7 @@ enum DockSteamInputWire {
         try? FileManager.default.removeItem(at: MadeiraDock.drive.appendingPathComponent("madeira-steam-input-local-test.bin"))
 #endif
         restartAttempted = false; restartEpoch = nil; restartWaitStarted = nil
-        selectionUnavailable = false; bootstrapAutoTried = false; bootstrap = nil; bootstrapLastSend = nil
+        noSavedSelection = false; bootstrapAutoTried = false; bootstrap = nil; bootstrapLastSend = nil
         unsetenv("MADEIRA_DOCK_INPUT_SESSION")
         session = []; snapshot = nil; selection = nil; pending = nil
         sequence = 0; epoch = nil; attempts = 0; appID = 0; accountID = 0
@@ -873,7 +874,7 @@ enum DockSteamInputWire {
     static func requestGameDefault(_ recommendation: DockSteamInputDefault.Recommendation) throws {
         if !canChange, canBootstrap {
             try startBootstrap(source: recommendation.source,
-                choice: .init(source: .gameDefault, identity: nil, contentHash: DockSteamInputNative.contentHash(recommendation.source)),
+                choice: .init(source: .gameDefault, identity: nil, contentHash: recommendation.contentHash),
                 thenApply: true)
             return
         }
@@ -1075,12 +1076,23 @@ enum DockSteamInputWire {
     }
     /// True when Steam has no saved layout for this game, so nothing is loaded
     /// and no baseline exists, and the player may start from an explicit layout.
+    /// Interrupted work does not block a bootstrap when it belongs to an earlier
+    /// launch or connection lease: the bootstrapped layout's baseline is then a
+    /// fresh native baseline, which is what retiring it requires. Without this a
+    /// game with no saved selection could never get a baseline again.
     static var canBootstrap: Bool {
-        guard selectionUnavailable, bootstrap == nil, let snapshot, snapshot.connected,
+        guard noSavedSelection, bootstrap == nil, let snapshot, snapshot.connected,
               snapshot.flags & 16 != 0, snapshot.state == .failed,
-              pending == nil, submission == nil, prepared == nil, recovery == nil,
+              pending == nil, submission == nil, prepared == nil, recoveryRetirable(epoch: snapshot.epoch),
               journal != nil, selection != nil, workingBaseline() == nil else { return false }
         return true
+    }
+    private static var sessionHex: String { session.map { String(format: "%02x", $0) }.joined() }
+    /// Mirrors DockSteamInputJournal.abandonInterrupted: work from this launch
+    /// and connection lease may still be in flight and is never retired.
+    private static func recoveryRetirable(epoch: UInt32) -> Bool {
+        guard let request = recovery?.request else { return true }
+        return request.session != sessionHex || epoch > request.epoch
     }
     /// A bootstrap is in flight: the layout is being handed to Dock or loading.
     static var bootstrapping: Bool { bootstrap != nil }
@@ -1092,8 +1104,9 @@ enum DockSteamInputWire {
     private static func refreshBootstrap(_ current: DockSteamInputWire.Snapshot) {
         // A persisted, confirmed choice is the player's own: hand its exact
         // bytes over so the restart path can reapply it with a baseline.
-        if bootstrap == nil, !bootstrapAutoTried, selectionUnavailable, current.connected,
-           current.flags & 16 != 0, current.state == .failed, submission == nil, prepared == nil, recovery == nil,
+        if bootstrap == nil, !bootstrapAutoTried, noSavedSelection, current.connected,
+           current.flags & 16 != 0, current.state == .failed, submission == nil, prepared == nil,
+           recoveryRetirable(epoch: current.epoch),
            let saved = selection, saved.requested != nil, let choice = saved.lastActivated,
            let hash = choice.contentHash, let journal {
             bootstrapAutoTried = true
@@ -1139,6 +1152,19 @@ enum DockSteamInputWire {
         case .loading:
             // The layout is now Dock's loaded layout. Once it has settled and
             // published its baseline, the normal journal records the choice.
+            // That baseline is fresh native evidence for this launch, so older
+            // interrupted work is retired here; the restart path may already
+            // have given up waiting for a baseline and would never do it.
+            if let interrupted = recovery, let journal, workingBaseline() != nil {
+                do {
+                    try journal.abandonInterrupted(interrupted.reservation, newSession: sessionHex, newEpoch: current.epoch)
+                    recovery = nil
+                } catch {
+                    bootstrap = nil
+                    SteamLog.event("[steam-input] interrupted layout change not retired")
+                    return
+                }
+            }
             guard canChange, let baseline = workingBaseline() else { bootstrap = work; return }
             bootstrap = nil
             guard work.thenApply else { return }
@@ -1241,7 +1267,7 @@ enum DockSteamInputWire {
                 restartWaitStarted = nil
             }
             epoch = current.epoch; attempts = 0; pending = nil
-            selectionUnavailable = false; bootstrapAutoTried = false; bootstrap = nil
+            noSavedSelection = false; bootstrapAutoTried = false; bootstrap = nil
         }
         sequence = max(sequence, current.sequence)
         refreshSubmission(current)
@@ -1258,8 +1284,10 @@ enum DockSteamInputWire {
                 // An unavailable client answer may be transient; retry within
                 // the existing three-attempt bound without migrating its data.
                 if current.result != 4 { attempts = 3 }
-                if current.result == 4, attempts >= 3 { selectionUnavailable = true }
-                if current.result == 1 { selectionUnavailable = false }
+                if current.result == 4, attempts >= 3 { noSavedSelection = true }
+                // A named layout or Workshop item that Dock cannot read is still
+                // Steam's selection; only an empty answer means there is none.
+                if current.result == 1 { noSavedSelection = current.selection.isEmpty && current.workshopID == 0 }
             } else if Date().timeIntervalSince(request.sent) > 10 { pending = nil }
         }
         refreshBootstrap(current)
@@ -1449,8 +1477,7 @@ extension DockSteamInputPresentation {
         var actions = DefaultActions(note: DockSteamInputDefault.explanation(resolution))
         switch resolution {
         case .recommended(let value):
-            let current = active?.source == .gameDefault &&
-                active?.contentHash == DockSteamInputNative.contentHash(value.source)
+            let current = active?.source == .gameDefault && active?.contentHash == value.contentHash
             actions.offerDefault = !current
             if current { actions.note += " It is active." }
             else if active != nil { actions.note += " Another layout is active." }

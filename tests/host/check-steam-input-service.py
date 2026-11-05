@@ -567,7 +567,76 @@ func put32(_ data: inout Data, _ at: Int, _ value: UInt32) {
     DockSteamInputService.refresh()
     require(!DockSteamInputService.bootstrapping)
     require(DockSteamInputService.prepared != nil || fm.fileExists(atPath: commandFile.path)) // reapplication started
+    DockSteamInputService.end() // the game is quit before that reapplication's receipt
+    // That interrupted work must not lock a game with no Steam selection out of
+    // its only route to a baseline. The bootstrap provides a fresh native
+    // baseline for this launch; the old work is then retired, never replayed.
+    DockSteamInputService.begin(accountID: 21, appID: 480)
+    require(DockSteamInputService.recovery?.phase == .interrupted)
+    let stuckHex = String(cString: getenv("MADEIRA_DOCK_INPUT_SESSION"))
+    var stuckFeed = fixture
+    for i in 0..<16 {
+        let start = stuckHex.index(stuckHex.startIndex, offsetBy: i*2)
+        stuckFeed[8+i] = UInt8(stuckHex[start..<stuckHex.index(start, offsetBy: 2)], radix: 16)!
+    }
+    put32(&stuckFeed, 36, 0); put32(&stuckFeed, 40, 0); put32(&stuckFeed, 44, 5); put32(&stuckFeed, 52, 51)
+    try stuckFeed.write(to: feedFile); DockSteamInputService.refresh()
+    for sequence in UInt32(1)...3 {
+        try? fm.removeItem(at: commandFile)
+        put32(&stuckFeed, 36, sequence); put32(&stuckFeed, 40, 4)
+        try stuckFeed.write(to: feedFile); DockSteamInputService.refresh()
+    }
+    DockSteamInputService.refresh()
+    let stuckCommand = try Data(contentsOf: commandFile)
+    require(stuckCommand[40] == 6 && DockSteamInputService.bootstrapping)
+    require(DockSteamInputService.recovery != nil) // nothing retired before the baseline exists
+    let stuckSource = try Data(contentsOf: initialFile).suffix(from: 44)
+    try fm.removeItem(at: commandFile)
+    put32(&stuckFeed, 36, UInt32(stuckCommand[36])); put32(&stuckFeed, 40, 1); put32(&stuckFeed, 44, 2)
+    try stuckFeed.write(to: feedFile); DockSteamInputService.refresh()
+    require(DockSteamInputService.recovery != nil && DockSteamInputService.bootstrapping)
+    put32(&stuckFeed, 44, 4)
+    try stuckFeed.write(to: feedFile)
+    try baselineFrame(stuckFeed, source: Data(stuckSource)).write(to: baselineFile)
+    DockSteamInputService.refresh()
+    require(DockSteamInputService.recovery == nil && !DockSteamInputService.bootstrapping)
+    let stuckApply = try Data(contentsOf: commandFile)
+    require(stuckApply[40] == 3) // the confirmed choice is reapplied with fresh revisions
+    // A query that succeeds but names neither a layout nor a Workshop item also
+    // means Steam has no saved selection; a named one never does.
     DockSteamInputService.end()
+    DockSteamInputService.begin(accountID: 22, appID: 480)
+    let emptyHex = String(cString: getenv("MADEIRA_DOCK_INPUT_SESSION"))
+    var emptyFeed = Data(fixture.prefix(72))
+    for i in 0..<16 {
+        let start = emptyHex.index(emptyHex.startIndex, offsetBy: i*2)
+        emptyFeed[8+i] = UInt8(emptyHex[start..<emptyHex.index(start, offsetBy: 2)], radix: 16)!
+    }
+    for i in 56..<64 { emptyFeed[i] = 0 }
+    put32(&emptyFeed, 68, 0)
+    put32(&emptyFeed, 36, 0); put32(&emptyFeed, 40, 0); put32(&emptyFeed, 44, 5); put32(&emptyFeed, 52, 51)
+    try emptyFeed.write(to: feedFile); DockSteamInputService.refresh()
+    require(!DockSteamInputService.canBootstrap)
+    try fm.removeItem(at: commandFile)
+    put32(&emptyFeed, 36, 1); put32(&emptyFeed, 40, 1)
+    try emptyFeed.write(to: feedFile); DockSteamInputService.refresh()
+    require(DockSteamInputService.canBootstrap && !fm.fileExists(atPath: commandFile.path)) // one query is enough
+    DockSteamInputService.end()
+    DockSteamInputService.begin(accountID: 23, appID: 480)
+    let namedHex = String(cString: getenv("MADEIRA_DOCK_INPUT_SESSION"))
+    var namedFeed = fixture
+    for i in 0..<16 {
+        let start = namedHex.index(namedHex.startIndex, offsetBy: i*2)
+        namedFeed[8+i] = UInt8(namedHex[start..<namedHex.index(start, offsetBy: 2)], radix: 16)!
+    }
+    put32(&namedFeed, 36, 0); put32(&namedFeed, 40, 0); put32(&namedFeed, 44, 5); put32(&namedFeed, 52, 51)
+    try namedFeed.write(to: feedFile); DockSteamInputService.refresh()
+    try fm.removeItem(at: commandFile)
+    put32(&namedFeed, 36, 1); put32(&namedFeed, 40, 1)
+    try namedFeed.write(to: feedFile); DockSteamInputService.refresh()
+    require(!DockSteamInputService.canBootstrap) // an unreadable named selection is never replaced
+    DockSteamInputService.end()
+    print("PASS: first-use bootstrap after interrupted earlier-launch work, and for an empty successful selection only")
     print("PASS: confirmed-choice restart, same-session reconnect recovery, held-input quiesce, fault/interruption recovery, fresh baseline/nonce validation, preservation of newer intent and C/Swift wire interoperability")
 }
 try MainActor.assumeIsolated { try checks() }

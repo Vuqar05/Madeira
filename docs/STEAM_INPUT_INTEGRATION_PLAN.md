@@ -322,6 +322,12 @@ the UI does not claim an unconfirmed Steam selection is active.
     actions layout `controller_standard_ps5.vdf`, revision 69): "Use game default"
     loaded it and the controller works in the game's menu and its buttons work in the
     game (only briefly played: performance was poor, tracked separately).
+    R3 fixes (host-tested, device test pending): work interrupted in an earlier launch
+    or connection lease had blocked the bootstrap permanently, because only a baseline
+    can retire it and only a bootstrap gives such a game one; it is now retired once
+    the bootstrapped baseline exists. A successful but empty selection query (no key,
+    no Workshop item) now also counts as "no saved selection" in Dock and the app; a
+    named selection Dock cannot read is still never replaced.
   - [x] Explicit generic template on a game with no recommendation: device-verified on
     Lethal Company (template index 2, unresolved); the pad works after the tap.
   - [ ] Offline reuse of a cached default: host-tested only. Not testable on the device

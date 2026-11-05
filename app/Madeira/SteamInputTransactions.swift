@@ -520,6 +520,12 @@ enum DockSteamInputDefault {
         enum Origin: Equatable { case actionManifest, steamTemplate }
         let source: Data
         let origin: Origin
+        /// SHA-256 of `source`, computed once; the status UI compares it every second.
+        let contentHash: String
+        init(source: Data, origin: Origin) {
+            self.source = source; self.origin = origin
+            contentHash = DockSteamInputNative.contentHash(source)
+        }
     }
     enum Reason: String, Equatable {
         case dataUnavailable, notInstalled, manifestUnreadable, manifestUnsupported

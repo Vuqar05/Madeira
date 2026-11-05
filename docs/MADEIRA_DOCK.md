@@ -655,8 +655,14 @@ reported as "no recommendation". The cache is used first, also offline.
 The Controls page and Session menu offer "Use game default" for a resolved
 recommendation (also the way back after another choice) and, only when none was
 resolved, an explicitly generic Gamepad template. Both use the common journal and
-receipt path and need a settled working baseline; a game with no saved Steam
-selection has none yet, so first-use bootstrap is pending. The pages also show
+receipt path and need a settled working baseline. A game with no saved Steam
+selection (the query fails three times, or succeeds and names neither a layout nor
+a Workshop item) has none, so the first such choice is handed to Dock with
+`BOOTSTRAP` (one explicit layout, no Steam selection written) and then recorded
+through the journal once its baseline exists; a confirmed choice is handed over
+again automatically at relaunch. Work interrupted in an earlier launch or
+connection lease does not block this: the bootstrapped baseline is the fresh
+native evidence that retires it, without replaying it. The pages also show
 confirmed current-session choices, reported Steam selections and unconfirmed requests
 separately. A path a running game sets at runtime is not observed.
 

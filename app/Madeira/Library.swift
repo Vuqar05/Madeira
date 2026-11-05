@@ -4965,6 +4965,9 @@ private struct SteamInputStatusView: View {
             let active = DockSteamInputService.activeChoice
             let lines = DockSteamInputPresentation.lines(appID: appID, snapshot: snapshot,
                 active: active, selection: DockSteamInputService.selection)
+            // Each of these reads and parses Dock's baseline file: once per tick.
+            let canChange = snapshot?.appID == appID && DockSteamInputService.canChange
+            let canBootstrap = snapshot?.appID == appID && !canChange && DockSteamInputService.canBootstrap
             VStack(alignment: .leading, spacing: 3) {
                 ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
                     Text(line).font(.caption).foregroundStyle(.secondary)
@@ -4974,27 +4977,27 @@ private struct SteamInputStatusView: View {
                     Text(actions.note).font(.caption).foregroundStyle(.secondary)
                     if actions.offerDefault, case .recommended(let value)? = resolution {
                         Button("Use game default") { request { try DockSteamInputService.requestGameDefault(value) } }
-                            .disabled(!(DockSteamInputService.canChange || DockSteamInputService.canBootstrap))
+                            .disabled(!(canChange || canBootstrap))
                     }
                     if actions.offerGeneric {
                         Button("Use generic Gamepad template") {
                             request { try DockSteamInputService.requestGenericTemplate(clientRoot: MadeiraDock.clientRoot) }
-                        }.disabled(!(DockSteamInputService.canChange || DockSteamInputService.canBootstrap))
+                        }.disabled(!(canChange || canBootstrap))
                     }
                     if DockSteamInputService.bootstrapping {
                         Text("Loading the layout into Steam Input. This can take about half a minute.")
                             .font(.caption).foregroundStyle(.secondary)
-                    } else if DockSteamInputService.canBootstrap {
+                    } else if canBootstrap {
                         Text("Steam has no saved layout for this game, so the controller does nothing yet. Choosing a layout here loads it for this game.")
                             .font(.caption).foregroundStyle(.secondary)
-                    } else if (actions.offerDefault || actions.offerGeneric), !DockSteamInputService.canChange {
+                    } else if (actions.offerDefault || actions.offerGeneric), !canChange {
                         Text("Changes become available once Steam's layout has loaded and settled.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
 #if DEBUG
                     Button("Debug: apply default Gamepad layout with A and B swapped") {
                         request { try DockSteamInputService.requestDebugOverride(clientRoot: MadeiraDock.clientRoot) }
-                    }.disabled(!DockSteamInputService.canChange)
+                    }.disabled(!canChange)
 #endif
                     if let failure { Text(failure).font(.caption).foregroundStyle(.red) }
                 }
