@@ -17,6 +17,36 @@ func require(_ value: @autoclosure () throws -> Bool) { precondition(try! value(
 @MainActor func checks() throws {
     typealias Journal = DockSteamInputJournal
     let root = URL(fileURLWithPath: CommandLine.arguments[1])
+    let game = root.appendingPathComponent("bundled-game", isDirectory: true)
+    let config = game.appendingPathComponent("config", isDirectory: true)
+    try FileManager.default.createDirectory(at: config.appendingPathComponent("layouts"), withIntermediateDirectories: true)
+    let manifest = Data("\"Action Manifest\" { configurations { controller_ps5 { 0 { path layouts/pad.vdf } } } }".utf8)
+    let layout = Data("controller_mappings { revision 1 }".utf8)
+    let templates = root.appendingPathComponent("steam/controller_base/templates", isDirectory: true)
+    try FileManager.default.createDirectory(at: templates, withIntermediateDirectories: true)
+    try layout.write(to: templates.appendingPathComponent("controller_ps5_gamepad_joystick.vdf"))
+    require(try DockSteamInputBundledManifest.januaryPS5Template(clientRoot: root.appendingPathComponent("steam"), index: 4) == layout)
+    require(try DockSteamInputBundledManifest.januaryPS5Template(clientRoot: root.appendingPathComponent("steam"), index: 2) == nil)
+    try manifest.write(to: config.appendingPathComponent("actions.vdf"))
+    try layout.write(to: config.appendingPathComponent("layouts/pad.vdf"))
+    let candidate = try DockSteamInputBundledManifest.candidate(gameDirectory: game, manifestPath: "config/actions.vdf")!
+    require(candidate.manifest == manifest && candidate.layout == layout && candidate.relativePath == "config/layouts/pad.vdf")
+    do { _ = try DockSteamInputBundledManifest.candidate(gameDirectory: game, manifestPath: "../escape"); fatalError("escaped game root") }
+    catch Journal.Failure.invalid {}
+    let link = config.appendingPathComponent("link")
+    try FileManager.default.createSymbolicLink(at: link, withDestinationURL: config.appendingPathComponent("layouts"))
+    let linked = Data("\"Action Manifest\" { configurations { controller_ps5 { 0 { path link/pad.vdf } } } }".utf8)
+    try linked.write(to: config.appendingPathComponent("actions.vdf"))
+    do { _ = try DockSteamInputBundledManifest.candidate(gameDirectory: game, manifestPath: "config/actions.vdf"); fatalError("followed symlink") }
+    catch Journal.Failure.corrupt {}
+    let absentManifest = Data("\"Action Manifest\" { configurations { } }".utf8)
+    try absentManifest.write(to: config.appendingPathComponent("actions.vdf"))
+    require(try DockSteamInputBundledManifest.candidate(gameDirectory: game, manifestPath: "config/actions.vdf") == nil)
+    try FileManager.default.createSymbolicLink(at: config.appendingPathComponent("linked.vdf"), withDestinationURL: config.appendingPathComponent("layouts/pad.vdf"))
+    let linkedFile = Data("\"Action Manifest\" { configurations { controller_ps5 { 0 { path linked.vdf } } } }".utf8)
+    try linkedFile.write(to: config.appendingPathComponent("actions.vdf"))
+    do { _ = try DockSteamInputBundledManifest.candidate(gameDirectory: game, manifestPath: "config/actions.vdf"); fatalError("followed file symlink") }
+    catch Journal.Failure.corrupt {}
     let scope = Journal.Scope(accountID: 7, appID: 480, controllerID: UUID())
     let store = try Journal(root: root, scope: scope)
     let source = Data("controller_mappings { revision 7 unknown { binding changed } }".utf8)

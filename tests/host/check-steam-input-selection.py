@@ -11,7 +11,7 @@ import tempfile
 
 root = Path(__file__).resolve().parents[2]
 source = (root / 'app/Madeira/MadeiraDock.swift').read_text()
-source = 'struct DockSteamInputSelection' + source.split('struct DockSteamInputSelection', 1)[1].split("/// Steam Input's PlayStation setting", 1)[0]
+source = 'struct DockSteamInputSelection' + source.split('struct DockSteamInputSelection', 1)[1].split('/// Human-readable state for one game.', 1)[0]
 cases = r'''
 let root = URL(fileURLWithPath: CommandLine.arguments[1])
 typealias Selection = DockSteamInputSelection

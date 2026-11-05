@@ -34,6 +34,9 @@ struct SteamAppInfo {
     /// SteamDirectStart and Madeira Dock select an installed Windows entry;
     /// Dock passes its original key to Valve's client.
     var launches: [SteamLaunchOption] = []
+    /// A bounded PICS hint, not proof that a recommendation is absent or
+    /// active. Older/incomplete metadata may not include these fields.
+    var steamInputMetadata: SteamInputMetadata?
     /// Steam API language names the app supports (`common.supported_languages`
     /// or `common.languages`), lowercased. Empty when PICS lists none.
     var languages: Set<String> = []
@@ -57,6 +60,35 @@ struct SteamAppInfo {
     var branch = SteamAppInfo.publicBranch
 
     static let publicBranch = "public"
+
+    struct SteamInputMetadata: Codable, Hashable, Sendable {
+        let templateIndex: UInt32?
+        /// An action-manifest hint, independent of the template index.
+        /// This is an untrusted relative path; callers must open it confined to
+        /// the installed game and must not treat a missing hint as absence.
+        let manifestPath: String?
+        static func parse(_ config: [String: Any]) -> Self? {
+            let index: UInt32?
+            if let value = config["steamcontrollertemplateindex"] {
+                guard let raw = value as? String, !raw.isEmpty, raw.utf8.count <= 10,
+                      raw.utf8.allSatisfy({ (48...57).contains($0) }),
+                      let parsed = UInt32(raw) else { return nil }
+                index = parsed
+            } else { index = nil }
+            // Well-formed metadata with neither hint is recorded as such, so
+            // "Steam's data lists no recommendation" differs from "never read".
+            guard let rawPath = config["steaminputmanifestpath"] else {
+                return Self(templateIndex: index, manifestPath: nil)
+            }
+            guard let path = rawPath as? String,
+                  !path.isEmpty, path.utf8.count < 1024,
+                  !path.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { return nil }
+            let normalized = path.replacingOccurrences(of: "\\", with: "/")
+            let components = normalized.split(separator: "/", omittingEmptySubsequences: false)
+            guard !normalized.contains(":"), components.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else { return nil }
+            return Self(templateIndex: index, manifestPath: normalized)
+        }
+    }
 
     /// One `depots.branches` entry. Untrusted text, bounded when parsed.
     struct Branch: Codable, Hashable, Sendable {
@@ -409,6 +441,7 @@ struct SteamAppInfo {
         // Config section
         if let config = appInfo["config"] as? [String: Any] {
             info.installDir = config["installdir"] as? String ?? ""
+            info.steamInputMetadata = SteamInputMetadata.parse(config)
             if let launch = config["launch"] as? [String: Any] {
                 info.launches = SteamLaunchOption.parse(launch)
             }

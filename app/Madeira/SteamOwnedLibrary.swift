@@ -39,6 +39,8 @@ struct SteamOwnedGame: Codable, Identifiable, Hashable, Sendable {
     /// Steam's launch configuration, for "Start with: The game" (SteamDirectStart);
     /// nil in older caches, which then ask Steam once (SteamOwnedLibrary.launchOptions).
     var launches: [SteamLaunchOption]?
+    /// Optional in older caches; never infer that a missing hint means no layout.
+    var steamInputMetadata: SteamAppInfo.SteamInputMetadata?
     /// Steam API language names the game supports and those it has language
     /// depots for (SteamAppInfo.languages, DepotInfo.language); nil in older caches.
     var languages: [String]?
@@ -67,6 +69,7 @@ struct SteamOwnedGame: Codable, Identifiable, Hashable, Sendable {
         libraryCapsule = info.libraryCapsule; libraryHero = info.libraryHero; headerImage = info.headerImage
         parentID = info.parentID.map(Int.init)
         launches = info.launches
+        steamInputMetadata = info.steamInputMetadata
         languages = info.languages.sorted()
         let depotLanguages = Set(info.depots.map { $0.language.lowercased() }.filter { !$0.isEmpty })
         self.depotLanguages = depotLanguages.sorted()
@@ -540,6 +543,38 @@ final class SteamOwnedLibrary: ObservableObject {
             handleSessionError(error, context: "start", report: false)
             return nil
         }
+    }
+
+    /// Return a cached PICS hint or ask Steam when no usable hint is cached.
+    /// A nil result means unresolved, including offline and malformed metadata.
+    func steamInputMetadata(appID: Int) async -> SteamAppInfo.SteamInputMetadata? {
+        guard Self.enabled, appID > 0, appID <= Int(UInt32.max) else { return nil }
+        if let hint = game(appID)?.steamInputMetadata { return hint }
+        guard signedIn, !inSession else { return nil }
+        do {
+            guard let hint = try await fetcher.fetchAppInfo(appID: UInt32(appID))?.steamInputMetadata else { return nil }
+            if let index = owned.firstIndex(where: { $0.id == appID }) {
+                owned[index].steamInputMetadata = hint
+                writeCache()
+            }
+            return hint
+        } catch {
+            handleSessionError(error, context: "input-metadata", report: false)
+            return nil
+        }
+    }
+
+    /// The game's recommendation by SteamUI's verified resolver order, from
+    /// cached or freshly fetched app metadata. Nothing here activates a layout
+    /// or touches a saved selection, and an unresolved result is never evidence
+    /// that the game has no recommendation.
+    func resolveSteamInputDefault(game: DockGame) async -> DockSteamInputDefault.Resolution {
+        let metadata = await steamInputMetadata(appID: game.id)
+        var directory: URL?
+        if game.installed { directory = try? ExternalDrives.nativeURL(game.library + "/common/" + game.installDir) }
+        return DockSteamInputDefault.resolve(
+            hints: metadata.map { .init(templateIndex: $0.templateIndex, manifestPath: $0.manifestPath) },
+            gameDirectory: directory, clientRoot: MadeiraDock.clientRoot)
     }
 
     private func handleSessionError(_ error: Error, context: String, report: Bool = true) {

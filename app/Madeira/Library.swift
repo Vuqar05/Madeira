@@ -4251,6 +4251,9 @@ struct LibraryDetail: View {
                 }
                 if entry.usesSteamInput {
                     Text("Valve's Steam client reads the pad and applies your Steam Input layout. Experimental.").font(.caption).foregroundStyle(.secondary)
+                    if let appID = entry.steamAppID, let id = UInt32(exactly: appID) {
+                        SteamInputStatusView(appID: id)
+                    }
                 }
                 if entry.controllerMode == "keys" {
                     Text("The pad acts as keyboard and mouse. Change keys in Controller binds.").font(.caption).foregroundStyle(.secondary)
@@ -4949,6 +4952,65 @@ struct ControllerModeChoice: View {
                 if steamInput || mode == "steam" { Text("Steam Input").tag("steam") }
             }.pickerStyle(.menu).labelsHidden()
         }
+    }
+}
+
+private struct SteamInputStatusView: View {
+    let appID: UInt32
+    @State private var resolution: DockSteamInputDefault.Resolution?
+    @State private var failure: String?
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { _ in
+            let snapshot = DockSteamInputService.snapshot
+            let active = DockSteamInputService.activeChoice
+            let lines = DockSteamInputPresentation.lines(appID: appID, snapshot: snapshot,
+                active: active, selection: DockSteamInputService.selection)
+            VStack(alignment: .leading, spacing: 3) {
+                ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+                    Text(line).font(.caption).foregroundStyle(.secondary)
+                }
+                if snapshot?.appID == appID {
+                    let actions = DockSteamInputPresentation.defaultActions(resolution, active: active)
+                    Text(actions.note).font(.caption).foregroundStyle(.secondary)
+                    if actions.offerDefault, case .recommended(let value)? = resolution {
+                        Button("Use game default") { request { try DockSteamInputService.requestGameDefault(value) } }
+                            .disabled(!(DockSteamInputService.canChange || DockSteamInputService.canBootstrap))
+                    }
+                    if actions.offerGeneric {
+                        Button("Use generic Gamepad template") {
+                            request { try DockSteamInputService.requestGenericTemplate(clientRoot: MadeiraDock.clientRoot) }
+                        }.disabled(!(DockSteamInputService.canChange || DockSteamInputService.canBootstrap))
+                    }
+                    if DockSteamInputService.bootstrapping {
+                        Text("Loading the layout into Steam Input. This can take about half a minute.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else if DockSteamInputService.canBootstrap {
+                        Text("Steam has no saved layout for this game, so the controller does nothing yet. Choosing a layout here loads it for this game.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else if (actions.offerDefault || actions.offerGeneric), !DockSteamInputService.canChange {
+                        Text("Changes become available once Steam's layout has loaded and settled.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+#if DEBUG
+                    Button("Debug: apply default Gamepad layout with A and B swapped") {
+                        request { try DockSteamInputService.requestDebugOverride(clientRoot: MadeiraDock.clientRoot) }
+                    }.disabled(!DockSteamInputService.canChange)
+#endif
+                    if let failure { Text(failure).font(.caption).foregroundStyle(.red) }
+                }
+            }
+        }
+        .task(id: appID) { await resolve() }
+    }
+    private func request(_ change: () throws -> Void) {
+        do { try change(); failure = nil }
+        catch { failure = "The layout change could not start. Try again once the controller layout has settled." }
+    }
+    @MainActor private func resolve() async {
+        let id = Int(appID)
+        let game = await Task.detached { MadeiraDock.games(drive: MadeiraDock.drive).first { $0.id == id } }.value
+        guard let game else { resolution = .unresolved(.notInstalled); return }
+        resolution = await SteamOwnedLibrary.shared.resolveSteamInputDefault(game: game)
     }
 }
 
@@ -5994,6 +6056,9 @@ struct LibraryHUD: View {
                     } else if model.controllerMode == "steam" {
                         Text("Steam Input applies to the next launch.")
                             .font(.caption).foregroundStyle(.secondary)
+                        if let appID = model.activeEntry?.steamAppID, let id = UInt32(exactly: appID) {
+                            SteamInputStatusView(appID: id)
+                        }
                     }
                 }
                 if GamepadInput.enabled {

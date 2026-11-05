@@ -368,6 +368,23 @@ enum DockSteamInputNative {
         guard valid else { throw DockSteamInputJournal.Failure.invalid }
         return revision
     }
+    /// Nil only when the manifest has no usable controller entry at all; the
+    /// portable reader follows SteamUI's exact-then-compatible-then-first order.
+    static func manifestPS5Path(_ data: Data) throws -> String? {
+        guard !data.isEmpty, data.count < 1 << 20 else { throw DockSteamInputJournal.Failure.invalid }
+        var path = [CChar](repeating: 0, count: 1024)
+        let result = data.withUnsafeBytes { bytes in
+            path.withUnsafeMutableBufferPointer { target in
+                sh_input_manifest_ps5_path(bytes.baseAddress!.assumingMemoryBound(to: CChar.self),
+                                          data.count, target.baseAddress!, target.count)
+            }
+        }
+        if result == SH_INPUT_MANIFEST_ABSENT { return nil }
+        guard result == SH_INPUT_MANIFEST_FOUND, let value = String(validatingUTF8: path) else {
+            throw DockSteamInputJournal.Failure.invalid
+        }
+        return value
+    }
     static func materialize(_ data: Data, revision: UInt32) throws -> Data {
         guard !data.isEmpty, data.count < 1 << 20 else { throw DockSteamInputJournal.Failure.invalid }
         let capacity = data.count + 48
@@ -380,6 +397,198 @@ enum DockSteamInputNative {
         }
         guard valid else { throw DockSteamInputJournal.Failure.invalid }
         return Data(output.prefix(written))
+    }
+}
+
+/// Reads depot-bundled candidates without following links or allowing a
+/// manifest path to escape the supplied installed game directory. A nil result
+/// only means no exact DualSense entry was present in this manifest.
+enum DockSteamInputBundledManifest {
+    struct Candidate {
+        let manifest: Data
+        let layout: Data
+        let relativePath: String
+    }
+    private static func components(_ path: String) throws -> [String] {
+        guard !path.isEmpty, path.utf8.count < 1024, !path.hasPrefix("/"),
+              !path.contains("\\"), !path.contains(":"),
+              !path.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else {
+            throw DockSteamInputJournal.Failure.invalid
+        }
+        let parts = path.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+        guard parts.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else {
+            throw DockSteamInputJournal.Failure.invalid
+        }
+        return parts
+    }
+    private static func directory(root: Int32, components: ArraySlice<String>) throws -> Int32 {
+        var parent = dup(root)
+        guard parent >= 0 else { throw DockSteamInputJournal.Failure.corrupt }
+        for part in components {
+            let next = openat(parent, part, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+            guard next >= 0 else { close(parent); throw DockSteamInputJournal.Failure.corrupt }
+            close(parent); parent = next
+        }
+        return parent
+    }
+    private static func read(root: Int32, components: [String]) throws -> Data {
+        guard let last = components.last else { throw DockSteamInputJournal.Failure.invalid }
+        let parent = try directory(root: root, components: components.dropLast())
+        defer { close(parent) }
+        let fd = openat(parent, last, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+        guard fd >= 0 else { throw DockSteamInputJournal.Failure.corrupt }
+        let file = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        defer { try? file.close() }
+        var info = stat()
+        guard fstat(fd, &info) == 0, info.st_mode & S_IFMT == S_IFREG,
+              info.st_size > 0, info.st_size < 1 << 20,
+              let bytes = try file.read(upToCount: 1 << 20), bytes.count == Int(info.st_size) else {
+            throw DockSteamInputJournal.Failure.corrupt
+        }
+        var after = stat()
+        guard fstat(fd, &after) == 0, info.st_dev == after.st_dev, info.st_ino == after.st_ino,
+              info.st_size == after.st_size, info.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec,
+              info.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec,
+              info.st_ctimespec.tv_sec == after.st_ctimespec.tv_sec,
+              info.st_ctimespec.tv_nsec == after.st_ctimespec.tv_nsec else {
+            throw DockSteamInputJournal.Failure.corrupt
+        }
+        return bytes
+    }
+    static func candidate(gameDirectory: URL, manifestPath: String) throws -> Candidate? {
+        let manifestParts = try components(manifestPath)
+        let root = open(gameDirectory.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+        guard root >= 0 else { throw DockSteamInputJournal.Failure.corrupt }
+        defer { close(root) }
+        let parent = try directory(root: root, components: manifestParts.dropLast())
+        defer { close(parent) }
+        let manifest = try read(root: parent, components: [manifestParts.last!])
+        guard let relative = try DockSteamInputNative.manifestPS5Path(manifest) else { return nil }
+        let candidateParts = try components(relative)
+        let layoutParts = Array(manifestParts.dropLast()) + candidateParts
+        let layout = try read(root: parent, components: candidateParts)
+        return Candidate(manifest: manifest, layout: layout, relativePath: layoutParts.joined(separator: "/"))
+    }
+#if DEBUG
+    /// Debug builds only: a fixed, clearly different template used to exercise
+    /// "Use game default" as a restore. Never offered as a product choice.
+    /// Steam's PS5 "Gamepad" joystick template with the A and B bindings
+    /// exchanged, so the output stays on the verified virtual-pad path. The swap
+    /// needs both bindings to appear exactly once, or the template is refused.
+    static let debugOverrideTemplate = "controller_ps5_gamepad_joystick.vdf"
+    static func debugOverride(clientRoot: URL) throws -> Data {
+        let root = open(clientRoot.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+        guard root >= 0 else { throw DockSteamInputJournal.Failure.corrupt }
+        defer { close(root) }
+        let original = try read(root: root, components: ["controller_base", "templates", debugOverrideTemplate])
+        guard let text = String(data: original, encoding: .utf8) else { throw DockSteamInputJournal.Failure.invalid }
+        let a = "\"xinput_button A\"", b = "\"xinput_button B\"", mark = "\"xinput_button @@\""
+        guard text.components(separatedBy: a).count == 2, text.components(separatedBy: b).count == 2,
+              !text.contains(mark) else { throw DockSteamInputJournal.Failure.invalid }
+        let swapped = text.replacingOccurrences(of: a, with: mark)
+            .replacingOccurrences(of: b, with: a)
+            .replacingOccurrences(of: mark, with: b)
+        let data = Data(swapped.utf8)
+        _ = try DockSteamInputNative.revision(data)
+        guard data != original else { throw DockSteamInputJournal.Failure.invalid }
+        return data
+    }
+#endif
+    /// A pinned January client template candidate, not proof that cached PICS
+    /// data is current. The caller must establish client and metadata scope.
+    static func januaryPS5Template(clientRoot: URL, index: UInt32) throws -> Data? {
+        guard let name = sh_input_january_ps5_template(index), let filename = String(validatingUTF8: name) else { return nil }
+        let root = open(clientRoot.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+        guard root >= 0 else { throw DockSteamInputJournal.Failure.corrupt }
+        defer { close(root) }
+        return try read(root: root, components: ["controller_base", "templates", filename])
+    }
+}
+
+/// Resolves the game's recommended layout the way the pinned January SteamUI
+/// does for a connected DualSense, and refuses to guess where it cannot:
+/// 1. an action manifest named by app metadata (`steaminputmanifestpath`), whose
+///    controller entry is chosen by the portable reader; if the manifest offers
+///    no usable entry SteamUI falls through to
+/// 2. the template named by `steamcontrollertemplateindex` (only index 4 is
+///    verified; index 1 means Workshop file IDs and details, which are not).
+/// A saved selection, the client's runtime manifest path and Workshop sources
+/// are outside this resolver. Metadata is cached app data, never live proof.
+enum DockSteamInputDefault {
+    static let genericTemplate = "controller_ps5_gamepad_joystick.vdf"
+    struct Recommendation: Equatable {
+        enum Origin: Equatable { case actionManifest, steamTemplate }
+        let source: Data
+        let origin: Origin
+    }
+    enum Reason: String, Equatable {
+        case dataUnavailable, notInstalled, manifestUnreadable, manifestUnsupported
+        case workshopSource, templateUnsupported, templateUnavailable
+    }
+    enum Resolution: Equatable {
+        case recommended(Recommendation)
+        /// Well-formed metadata lists neither a manifest nor a template.
+        case noHint
+        case unresolved(Reason)
+    }
+
+    /// Well-formed app metadata. Nil hints mean the app data lists none.
+    struct Hints: Equatable {
+        let templateIndex: UInt32?
+        let manifestPath: String?
+    }
+    /// `hints` is nil when the metadata was never read; `gameDirectory` is nil
+    /// when the game is not installed.
+    static func resolve(hints metadata: Hints?, gameDirectory: URL?, clientRoot: URL) -> Resolution {
+        guard let metadata else { return .unresolved(.dataUnavailable) }
+        if let path = metadata.manifestPath {
+            guard let gameDirectory else { return .unresolved(.notInstalled) }
+            do {
+                if let candidate = try DockSteamInputBundledManifest.candidate(gameDirectory: gameDirectory, manifestPath: path) {
+                    _ = try DockSteamInputNative.revision(candidate.layout)
+                    return .recommended(.init(source: candidate.layout, origin: .actionManifest))
+                }
+                // No usable controller entry: SteamUI's resolver reports failure.
+            } catch DockSteamInputJournal.Failure.invalid { return .unresolved(.manifestUnsupported) }
+            catch { return .unresolved(.manifestUnreadable) }
+        }
+        switch metadata.templateIndex {
+        case nil: return .noHint
+        case 1?: return .unresolved(.workshopSource)
+        case 4?:
+            guard let data = try? DockSteamInputBundledManifest.januaryPS5Template(clientRoot: clientRoot, index: 4),
+                  (try? DockSteamInputNative.revision(data)) != nil else { return .unresolved(.templateUnavailable) }
+            return .recommended(.init(source: data, origin: .steamTemplate))
+        default: return .unresolved(.templateUnsupported)
+        }
+    }
+
+    /// Steam's PS5 "Gamepad" template as an explicit, clearly generic choice.
+    static func genericTemplate(clientRoot: URL) throws -> Data {
+        guard let data = try DockSteamInputBundledManifest.januaryPS5Template(clientRoot: clientRoot, index: 4) else {
+            throw DockSteamInputJournal.Failure.invalid
+        }
+        _ = try DockSteamInputNative.revision(data)
+        return data
+    }
+
+    static func explanation(_ resolution: Resolution) -> String {
+        switch resolution {
+        case .recommended(let value):
+            return value.origin == .actionManifest ? "Game default: the layout bundled with this game."
+                                                   : "Game default: Steam's template named by this game."
+        case .noHint: return "Steam's game data lists no recommended layout."
+        case .unresolved(let reason):
+            switch reason {
+            case .dataUnavailable: return "The game default could not be determined: Steam's game data is not cached."
+            case .notInstalled: return "The game default could not be read: the game is not installed."
+            case .manifestUnreadable: return "The game default could not be read from the game's files."
+            case .manifestUnsupported: return "The game default uses controller matching Madeira does not support yet."
+            case .workshopSource: return "The game default is a Workshop layout, which Madeira does not support yet."
+            case .templateUnsupported: return "The game default uses a Steam template Madeira cannot identify yet."
+            case .templateUnavailable: return "The game default's template is missing from Steam's files."
+            }
+        }
     }
 }
 
@@ -415,6 +624,20 @@ enum DockSteamInputTransport {
         }
         guard valid else { throw DockSteamInputJournal.Failure.invalid }
         return data
+    }
+    /// The one layout Dock may load when Steam has no saved selection for the
+    /// game (BOOTSTRAP). Scoped to this launch and connection; no paths.
+    static func initialFrame(layout: Data, session: [UInt8], appID: UInt32, epoch: UInt32) -> Data? {
+        guard session.count == 16, !layout.isEmpty, layout.count < 1 << 20 else { return nil }
+        var out = [UInt8](repeating: 0, count: Int(SH_INPUT_BASELINE_HEADER) + layout.count)
+        let capacity = out.count
+        let size = session.withUnsafeBufferPointer { scope in
+            layout.withUnsafeBytes { bytes in
+                sh_input_initial_frame(scope.baseAddress!, appID, epoch,
+                                       bytes.baseAddress!.assumingMemoryBound(to: CChar.self), layout.count, &out, capacity)
+            }
+        }
+        return size == capacity ? Data(out) : nil
     }
     static func baseline(_ data: Data, session: [UInt8], appID: UInt32, epoch: UInt32) -> Data? {
         guard session.count == 16 else { return nil }

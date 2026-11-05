@@ -635,9 +635,30 @@ handoff. `DockSteamInputWire` validates the bounded local feed; the existing
 report poll queries once per observed slot-0 connection, with bounded retries.
 `DockSteamInputSelection` atomically retains the original Steam selection and
 any explicit Madeira request separately by account/game/controller UUID. A
-Dock-selected generic fallback is not migrated as an existing Steam choice;
+The legacy Dock-selected generic fallback is not migrated as an existing Steam choice;
 corrupt/unknown records are kept without overwriting. The UUID currently denotes
 Madeira's virtual DualSense bridge, not the physical controller.
+
+An unsuccessful Valve selection query is reported as unavailable. Neither it
+nor an empty successful query queues or saves a generic fallback; an empty
+selection can leave Steam Input without a loaded layout until recommendation
+resolution is implemented.
+
+The owned-library cache retains a bounded Steam product-info hint (manifest path
+and template index; well-formed data listing neither is recorded as such).
+`DockSteamInputDefault` classifies it in SteamUI's verified order: a manifest under
+the installed game directory (confined, no-follow reads; the portable reader picks the
+exact DualSense entry, then a PS4/PS5-compatible one, then the first entry), then the
+index-4 template; index 1 (Workshop), other indices, unsupported controller matching
+(`device_specific`), unreadable files and missing data stay unresolved and are never
+reported as "no recommendation". The cache is used first, also offline.
+The Controls page and Session menu offer "Use game default" for a resolved
+recommendation (also the way back after another choice) and, only when none was
+resolved, an explicitly generic Gamepad template. Both use the common journal and
+receipt path and need a settled working baseline; a game with no saved Steam
+selection has none yet, so first-use bootstrap is pending. The pages also show
+confirmed current-session choices, reported Steam selections and unconfirmed requests
+separately. A path a running game sets at runtime is not observed.
 
 Dock's version-1 protocol and transport capability bits are documented in its
 README. Commands have a launch nonce, App ID, controller index, observed

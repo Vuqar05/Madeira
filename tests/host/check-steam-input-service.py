@@ -71,6 +71,48 @@ func put32(_ data: inout Data, _ at: Int, _ value: UInt32) {
     require(parsed.appID == 480 && parsed.epoch == 1 && parsed.workshopID == 123)
     require(parsed.state == .activationRequested && parsed.flags == 3 && parsed.forwardedInputs == 15)
     require(parsed.selection == "AC-480-controller_ps5")
+    let noSession = DockSteamInputPresentation.lines(appID: 481, snapshot: parsed, active: nil, selection: nil)
+    require(noSession == ["Launch this game to see its Steam Input status."])
+    var statusFeed = fixture; put32(&statusFeed, 40, 1)
+    let statusSnapshot = DockSteamInputWire.parse(statusFeed)!
+    let pendingStatus = DockSteamInputPresentation.lines(appID: 480, snapshot: statusSnapshot, active: nil, selection: nil)
+    require(pendingStatus.contains("No active layout is confirmed for this session."))
+    require(pendingStatus.contains("Steam selection: Workshop item 123."))
+    let activeDefault = DockSteamInputSelection.Revision(source: .gameDefault, identity: nil, contentHash: String(repeating: "a", count: 64))
+    let defaultStatus = DockSteamInputPresentation.lines(appID: 480, snapshot: statusSnapshot, active: activeDefault, selection: nil)
+    require(defaultStatus.contains("Active: Game default.") && defaultStatus.contains("Default override: none."))
+    var requested = DockSteamInputSelection(accountID: 7, appID: 480, controllerID: UUID())
+    try requested.request(.init(source: .template, identity: "template.vdf", contentHash: nil))
+    let changeStatus = DockSteamInputPresentation.lines(appID: 480, snapshot: statusSnapshot, active: activeDefault, selection: requested)
+    require(changeStatus.contains("Requested: Generic template; not yet confirmed."))
+    put32(&statusFeed, 44, 5)
+    let failedSnapshot = DockSteamInputWire.parse(statusFeed)!
+    let failedStatus = DockSteamInputPresentation.lines(appID: 480, snapshot: failedSnapshot, active: activeDefault, selection: requested)
+    require(failedStatus.contains("The layout is unavailable; no active layout is confirmed."))
+    require(!failedStatus.contains("Active: Game default."))
+    // The reset is offered only for a resolved recommendation; the generic template
+    // only when none was resolved, and never as the game's own layout.
+    let layoutBytes = Data("controller_mappings { revision 3 }".utf8)
+    let recommendation = DockSteamInputDefault.Recommendation(source: layoutBytes, origin: .actionManifest)
+    let resolved = DockSteamInputDefault.Resolution.recommended(recommendation)
+    require(DockSteamInputPresentation.defaultActions(nil, active: nil) == .init(note: "Checking this game's recommended layout."))
+    let offerDefault = DockSteamInputPresentation.defaultActions(resolved, active: nil)
+    require(offerDefault.offerDefault && !offerDefault.offerGeneric)
+    let sameDefault = DockSteamInputSelection.Revision(source: .gameDefault, identity: nil, contentHash: DockSteamInputNative.contentHash(layoutBytes))
+    let alreadyDefault = DockSteamInputPresentation.defaultActions(resolved, active: sameDefault)
+    require(!alreadyDefault.offerDefault && alreadyDefault.note.hasSuffix("It is active."))
+    let staleDefault = DockSteamInputSelection.Revision(source: .gameDefault, identity: nil, contentHash: String(repeating: "b", count: 64))
+    require(DockSteamInputPresentation.defaultActions(resolved, active: staleDefault).offerDefault)
+    let override = DockSteamInputSelection.Revision(source: .personal, identity: "custom", contentHash: String(repeating: "c", count: 64))
+    let overridden = DockSteamInputPresentation.defaultActions(resolved, active: override)
+    require(overridden.offerDefault && overridden.note.hasSuffix("Another layout is active."))
+    for fallback in [DockSteamInputDefault.Resolution.noHint, .unresolved(.workshopSource), .unresolved(.dataUnavailable)] {
+        let actions = DockSteamInputPresentation.defaultActions(fallback, active: nil)
+        require(!actions.offerDefault && actions.offerGeneric && actions.note.contains("not this game's own layout"))
+        require(!actions.note.hasPrefix("Game default:"))
+    }
+    let generic = DockSteamInputSelection.Revision(source: .template, identity: DockSteamInputDefault.genericTemplate, contentHash: nil)
+    require(!DockSteamInputPresentation.defaultActions(.noHint, active: generic).offerGeneric)
     let command = DockSteamInputWire.command(.query, snapshot: parsed, sequence: 17)!
     try command.write(to: testRoot.appendingPathComponent("command.bin"))
     require(command.count == 44 && command[36] == 17 && command[40] == 1)
@@ -351,8 +393,180 @@ func put32(_ data: inout Data, _ at: Int, _ value: UInt32) {
     require(DockSteamInputService.selection?.requested == nil && DockSteamInputService.activeChoice == nil)
     require(DockSteamInputService.selection?.lastActivated?.contentHash == DockSteamInputNative.contentHash(freshBaseline))
     DockSteamInputService.end()
-    _ = try diagnosticLaunch()
+    diagnosticFeed = try diagnosticLaunch()
     require(!fm.fileExists(atPath: commandFile.path) && DockSteamInputService.activeChoice == nil)
+    // Explicit game-default source uses the same durable journal and exact
+    // receipt as other choices. Merely preparing or accepting cannot ACK it.
+    let oldDefaultSelection = DockSteamInputService.selection!
+    let defaultBytes = Data("controller_mappings { revision 21 binding recommended }".utf8)
+    let defaultWork = try DockSteamInputService.prepareGameDefault(source: defaultBytes, baseline: freshBaseline)
+    require(DockSteamInputService.selection?.requested?.source == .gameDefault)
+    require(DockSteamInputService.selection?.lastActivated == oldDefaultSelection.lastActivated)
+    try DockSteamInputService.submitPrepared()
+    require(DockSteamInputService.selection?.lastActivated == oldDefaultSelection.lastActivated)
+    try acknowledgeDiagnostic(&diagnosticFeed)
+    let confirmedDefault = DockSteamInputService.selection!
+    require(confirmedDefault.lastActivated == confirmedDefault.requested && confirmedDefault.lastActivated?.source == .gameDefault)
+    require(confirmedDefault.lastActivated?.contentHash == DockSteamInputNative.contentHash(defaultBytes))
+    require(confirmedDefault.observedSteamSelection == oldDefaultSelection.observedSteamSelection)
+    require(try DockSteamInputSelection.load(in: storage, accountID: 12, appID: 480, controllerID: DockSteamInputService.controllerID) == confirmedDefault)
+    let currentDefaultQueue = try diagnosticJournal.content(defaultWork.content!.applyHash)
+    let laterDefault = Data("controller_mappings { revision 22 binding newer }".utf8)
+    _ = try DockSteamInputService.prepareGameDefault(source: laterDefault, baseline: currentDefaultQueue)
+    try DockSteamInputService.submitPrepared()
+    let rejectedDefault = try Data(contentsOf: commandFile)
+    try fm.removeItem(at: commandFile)
+    put32(&diagnosticFeed, 36, UInt32(rejectedDefault[36])); put32(&diagnosticFeed, 40, 6)
+    try diagnosticFeed.write(to: feedFile); DockSteamInputService.refresh()
+    require(DockSteamInputService.selection?.lastActivated == confirmedDefault.lastActivated)
+    require(DockSteamInputService.activeChoice == confirmedDefault.lastActivated)
+    require(DockSteamInputService.selection?.requested?.contentHash == DockSteamInputNative.contentHash(laterDefault))
+    DockSteamInputService.end()
+    diagnosticFeed = try diagnosticLaunch()
+    let restartedDefault = DockSteamInputService.prepared!
+    require(try diagnosticJournal.content(restartedDefault.content!.sourceHash) == defaultBytes)
+    try acknowledgeDiagnostic(&diagnosticFeed)
+    require(DockSteamInputService.activeChoice == confirmedDefault.lastActivated)
+    require(DockSteamInputService.selection?.lastActivated == confirmedDefault.lastActivated)
+    require(DockSteamInputService.selection?.requested?.contentHash == DockSteamInputNative.contentHash(laterDefault))
+    DockSteamInputService.end()
+    // An unavailable selection query is retried without migrating the stale
+    // selection carried by the feed, and attempts remain bounded.
+    DockSteamInputService.begin(accountID: 13, appID: 480)
+    let retryHex = String(cString: getenv("MADEIRA_DOCK_INPUT_SESSION"))
+    var retryFeed = fixture
+    for i in 0..<16 {
+        let start = retryHex.index(retryHex.startIndex, offsetBy: i*2)
+        retryFeed[8+i] = UInt8(retryHex[start..<retryHex.index(start, offsetBy: 2)], radix: 16)!
+    }
+    try retryFeed.write(to: feedFile); DockSteamInputService.refresh()
+    for sequence in UInt32(1)...3 {
+        let sent = try Data(contentsOf: commandFile)
+        require(sent[36] == UInt8(sequence))
+        try fm.removeItem(at: commandFile)
+        put32(&retryFeed, 36, sequence); put32(&retryFeed, 40, 4)
+        try retryFeed.write(to: feedFile); DockSteamInputService.refresh()
+        require(DockSteamInputService.selection?.observedSteamSelection == nil)
+    }
+    require(!fm.fileExists(atPath: commandFile.path))
+    DockSteamInputService.end()
+    DockSteamInputService.begin(accountID: 14, appID: 480)
+    let successHex = String(cString: getenv("MADEIRA_DOCK_INPUT_SESSION"))
+    retryFeed = fixture
+    for i in 0..<16 {
+        let start = successHex.index(successHex.startIndex, offsetBy: i*2)
+        retryFeed[8+i] = UInt8(successHex[start..<successHex.index(start, offsetBy: 2)], radix: 16)!
+    }
+    try retryFeed.write(to: feedFile); DockSteamInputService.refresh()
+    try fm.removeItem(at: commandFile)
+    put32(&retryFeed, 36, 1); put32(&retryFeed, 40, 4)
+    try retryFeed.write(to: feedFile); DockSteamInputService.refresh()
+    require(DockSteamInputService.selection?.observedSteamSelection == nil)
+    require(try Data(contentsOf: commandFile)[36] == 2)
+    try fm.removeItem(at: commandFile)
+    put32(&retryFeed, 36, 2); put32(&retryFeed, 40, 1)
+    try retryFeed.write(to: feedFile); DockSteamInputService.refresh()
+    require(DockSteamInputService.selection?.observedSteamSelection?.workshopID == 123)
+    require(!fm.fileExists(atPath: commandFile.path))
+    DockSteamInputService.end()
+    // A game Steam has no saved selection for: three failed queries leave nothing
+    // loaded and no baseline. A chosen layout is handed to Dock (BOOTSTRAP) and,
+    // once Dock publishes its baseline, recorded through the normal journal.
+    DockSteamInputService.begin(accountID: 21, appID: 480)
+    let bootHex = String(cString: getenv("MADEIRA_DOCK_INPUT_SESSION"))
+    var bootFeed = fixture
+    for i in 0..<16 {
+        let start = bootHex.index(bootHex.startIndex, offsetBy: i*2)
+        bootFeed[8+i] = UInt8(bootHex[start..<bootHex.index(start, offsetBy: 2)], radix: 16)!
+    }
+    put32(&bootFeed, 36, 0); put32(&bootFeed, 40, 0); put32(&bootFeed, 44, 5); put32(&bootFeed, 52, 51)
+    try bootFeed.write(to: feedFile); DockSteamInputService.refresh()
+    require(!DockSteamInputService.canBootstrap) // the query may still succeed
+    for sequence in UInt32(1)...3 {
+        require(try Data(contentsOf: commandFile)[36] == UInt8(sequence))
+        try fm.removeItem(at: commandFile)
+        put32(&bootFeed, 36, sequence); put32(&bootFeed, 40, 4)
+        try bootFeed.write(to: feedFile); DockSteamInputService.refresh()
+    }
+    require(DockSteamInputService.canBootstrap && !DockSteamInputService.canChange)
+    let initialSource = Data("controller_mappings { revision 69 title \"x\r\ny\" }".utf8)
+    try DockSteamInputService.requestGameDefault(.init(source: initialSource, origin: .actionManifest))
+    require(DockSteamInputService.bootstrapping && !DockSteamInputService.canBootstrap)
+    do { try DockSteamInputService.requestGameDefault(.init(source: initialSource, origin: .actionManifest)); require(false) }
+    catch {}
+    DockSteamInputService.refresh()
+    let bootCommand = try Data(contentsOf: commandFile)
+    require(bootCommand[40] == 6 && bootCommand[36] == 4)
+    let initialFile = MadeiraDock.drive.appendingPathComponent("madeira-steam-input-initial.bin")
+    let initialFrame = try Data(contentsOf: initialFile)
+    require(initialFrame.prefix(8) == Data("MSIINI01".utf8) && initialFrame.suffix(initialSource.count) == initialSource)
+    require(initialFrame.count == 44 + initialSource.count && initialFrame[36] == 69)
+    // Dock refuses until its own retries are exhausted; the app waits and retries.
+    try fm.removeItem(at: commandFile)
+    put32(&bootFeed, 36, 4); put32(&bootFeed, 40, 4)
+    try bootFeed.write(to: feedFile); DockSteamInputService.refresh()
+    require(DockSteamInputService.bootstrapping && !fm.fileExists(atPath: commandFile.path)) // paced, not spammed
+    // Dock accepts it (a later attempt): the layout is now loading.
+    DockSteamInputService.bootstrapPace = 0
+    DockSteamInputService.refresh()
+    let retried = try Data(contentsOf: commandFile)
+    require(retried[40] == 6 && retried[36] == 5)
+    try fm.removeItem(at: commandFile)
+    put32(&bootFeed, 36, 5); put32(&bootFeed, 40, 1); put32(&bootFeed, 44, 2)
+    try bootFeed.write(to: feedFile); DockSteamInputService.refresh()
+    require(DockSteamInputService.bootstrapping && !fm.fileExists(atPath: commandFile.path))
+    require(DockSteamInputService.selection?.requested == nil) // nothing recorded before the baseline exists
+    put32(&bootFeed, 44, 4)
+    try bootFeed.write(to: feedFile)
+    try baselineFrame(bootFeed, source: initialSource).write(to: baselineFile)
+    DockSteamInputService.refresh()
+    require(!DockSteamInputService.bootstrapping)
+    require(DockSteamInputService.selection?.requested?.source == .gameDefault)
+    let bootApply = try Data(contentsOf: commandFile)
+    require(bootApply[40] == 3 && fm.fileExists(atPath: payloadFile.path))
+    // Dock confirms the choice with its receipt: it is now the player's confirmed choice.
+    let bootHost = Process(); bootHost.executableURL = testRoot.appendingPathComponent("fixture")
+    bootHost.arguments = ["receipt", payloadFile.path, receiptFile.path]
+    try bootHost.run(); bootHost.waitUntilExit(); require(bootHost.terminationStatus == 0)
+    try fm.removeItem(at: commandFile)
+    put32(&bootFeed, 36, UInt32(bootApply[36])); put32(&bootFeed, 40, 1); put32(&bootFeed, 44, 6)
+    try bootFeed.write(to: feedFile); DockSteamInputService.refresh()
+    require(DockSteamInputService.selection?.lastActivated?.source == .gameDefault)
+    DockSteamInputService.end()
+    require(!fm.fileExists(atPath: initialFile.path))
+    // Relaunch of a game that still has no Steam selection: the player's own
+    // confirmed choice (exact journal bytes) is handed to Dock automatically, and
+    // once the baseline exists the ordinary restart path reapplies it.
+    DockSteamInputService.begin(accountID: 21, appID: 480)
+    let againHex = String(cString: getenv("MADEIRA_DOCK_INPUT_SESSION"))
+    var againFeed = fixture
+    for i in 0..<16 {
+        let start = againHex.index(againHex.startIndex, offsetBy: i*2)
+        againFeed[8+i] = UInt8(againHex[start..<againHex.index(start, offsetBy: 2)], radix: 16)!
+    }
+    put32(&againFeed, 36, 0); put32(&againFeed, 40, 0); put32(&againFeed, 44, 5); put32(&againFeed, 52, 51)
+    try againFeed.write(to: feedFile); DockSteamInputService.refresh()
+    for sequence in UInt32(1)...3 {
+        try fm.removeItem(at: commandFile)
+        put32(&againFeed, 36, sequence); put32(&againFeed, 40, 4)
+        try againFeed.write(to: feedFile); DockSteamInputService.refresh()
+    }
+    DockSteamInputService.bootstrapPace = 0
+    DockSteamInputService.refresh()
+    let autoCommand = try Data(contentsOf: commandFile)
+    require(autoCommand[40] == 6 && DockSteamInputService.bootstrapping)
+    let autoFrame = try Data(contentsOf: initialFile)
+    require(autoFrame.prefix(8) == Data("MSIINI01".utf8) && autoFrame.count > 44)
+    let autoSource = autoFrame.suffix(from: 44)
+    try fm.removeItem(at: commandFile)
+    put32(&againFeed, 36, autoCommand[36] == 0 ? 1 : UInt32(autoCommand[36])); put32(&againFeed, 40, 1); put32(&againFeed, 44, 2)
+    try againFeed.write(to: feedFile); DockSteamInputService.refresh()
+    put32(&againFeed, 44, 4)
+    try againFeed.write(to: feedFile)
+    try baselineFrame(againFeed, source: Data(autoSource)).write(to: baselineFile)
+    DockSteamInputService.refresh()
+    require(!DockSteamInputService.bootstrapping)
+    require(DockSteamInputService.prepared != nil || fm.fileExists(atPath: commandFile.path)) // reapplication started
     DockSteamInputService.end()
     print("PASS: confirmed-choice restart, same-session reconnect recovery, held-input quiesce, fault/interruption recovery, fresh baseline/nonce validation, preservation of newer intent and C/Swift wire interoperability")
 }

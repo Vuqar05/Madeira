@@ -845,6 +845,16 @@ func packageBuffer(apps: [UInt32], depots: [UInt32]) -> Data {
     }
     """#)
     let info = SteamAppInfo.parse(appID: 10, from: full)!
+    let bundledInput = SteamAppInfo.parse(appID: 10, from: appVDF(#""common" { "name" "Input" "type" "Game" } "config" { "steamcontrollertemplateindex" "13" "steaminputmanifestpath" "input\\actions.vdf" }"#))!
+    require(bundledInput.steamInputMetadata?.templateIndex == 13 && bundledInput.steamInputMetadata?.manifestPath == "input/actions.vdf", "bundled input metadata")
+    let workshopInput = SteamAppInfo.parse(appID: 10, from: appVDF(#""common" { "name" "Input" "type" "Game" } "config" { "steamcontrollertemplateindex" "1" }"#))!
+    require(workshopInput.steamInputMetadata?.templateIndex == 1 && workshopInput.steamInputMetadata?.manifestPath == nil, "non-bundled metadata remains distinct")
+    for path in ["../escape", "/absolute", "C:/escape", "a//b", "a/./b", ""] {
+        require(SteamAppInfo.SteamInputMetadata.parse(["steamcontrollertemplateindex": "13", "steaminputmanifestpath": path]) == nil, "unsafe manifest path rejected")
+    }
+    let hintOnly = SteamAppInfo.SteamInputMetadata.parse(["steamcontrollertemplateindex": "13"])
+    require(hintOnly?.templateIndex == 13 && hintOnly?.manifestPath == nil, "a well-formed hint without a manifest path is recorded, not dropped")
+    require(SteamAppInfo.SteamInputMetadata.parse(["steamcontrollertemplateindex": "13x"]) == nil, "invalid index remains unresolved")
     require(info.type == .game, "PICS type names match without case")
     require(info.installDepots().map(\.depotID) == [101, 102, 105], "install depots: common, English, 64-bit only")
     require(info.downloadSize(for: "windows") == 420, "the download size counts only the selected depots")
