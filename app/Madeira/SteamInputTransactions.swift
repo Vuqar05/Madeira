@@ -510,8 +510,10 @@ enum DockSteamInputBundledManifest {
 /// 1. an action manifest named by app metadata (`steaminputmanifestpath`), whose
 ///    controller entry is chosen by the portable reader; if the manifest offers
 ///    no usable entry SteamUI falls through to
-/// 2. the template named by `steamcontrollertemplateindex` (only index 4 is
-///    verified; index 1 means Workshop file IDs and details, which are not).
+/// 2. the template named by `steamcontrollertemplateindex`. For a DualSense the
+///    fixed indices (4, 5 -> 4, 6, 8-12) are verified; 2 and 3 depend on the
+///    connected controller's capability bits, 1 means Workshop file IDs and
+///    details, and 0 (or none) lets SteamUI pick from app state: all unresolved.
 /// A saved selection, the client's runtime manifest path and Workshop sources
 /// are outside this resolver. Metadata is cached app data, never live proof.
 enum DockSteamInputDefault {
@@ -520,20 +522,28 @@ enum DockSteamInputDefault {
         enum Origin: Equatable { case actionManifest, steamTemplate }
         let source: Data
         let origin: Origin
+        /// A Steam template whose bindings send keyboard or mouse input, which
+        /// Madeira does not deliver to games yet. False for a bundled layout:
+        /// its bindings are not interpreted here.
+        let mouseOrKeyboard: Bool
         /// SHA-256 of `source`, computed once; the status UI compares it every second.
         let contentHash: String
-        init(source: Data, origin: Origin) {
-            self.source = source; self.origin = origin
+        init(source: Data, origin: Origin, mouseOrKeyboard: Bool = false) {
+            self.source = source; self.origin = origin; self.mouseOrKeyboard = mouseOrKeyboard
             contentHash = DockSteamInputNative.contentHash(source)
         }
     }
     enum Reason: String, Equatable {
         case dataUnavailable, notInstalled, manifestUnreadable, manifestUnsupported
         case workshopSource, templateUnsupported, templateUnavailable
+        /// Index 2 or 3: SteamUI keeps it or uses index 4 depending on the
+        /// connected controller's capability bits, which Madeira cannot read yet.
+        case templateControllerDependent
     }
     enum Resolution: Equatable {
         case recommended(Recommendation)
-        /// Well-formed metadata lists neither a manifest nor a template.
+        /// Well-formed metadata lists neither a manifest nor a template (index
+        /// 0 is the same to SteamUI). Not proof that Steam chooses no layout.
         case noHint
         case unresolved(Reason)
     }
@@ -559,13 +569,15 @@ enum DockSteamInputDefault {
             catch { return .unresolved(.manifestUnreadable) }
         }
         switch metadata.templateIndex {
-        case nil: return .noHint
+        case nil, 0?: return .noHint
         case 1?: return .unresolved(.workshopSource)
-        case 4?:
-            guard let data = try? DockSteamInputBundledManifest.januaryPS5Template(clientRoot: clientRoot, index: 4),
+        case 2?, 3?: return .unresolved(.templateControllerDependent)
+        case let index?:
+            guard sh_input_january_ps5_template(index) != nil else { return .unresolved(.templateUnsupported) }
+            guard let data = try? DockSteamInputBundledManifest.januaryPS5Template(clientRoot: clientRoot, index: index),
                   (try? DockSteamInputNative.revision(data)) != nil else { return .unresolved(.templateUnavailable) }
-            return .recommended(.init(source: data, origin: .steamTemplate))
-        default: return .unresolved(.templateUnsupported)
+            return .recommended(.init(source: data, origin: .steamTemplate,
+                                      mouseOrKeyboard: sh_input_january_ps5_template_mouse_or_keyboard(index)))
         }
     }
 
@@ -581,9 +593,13 @@ enum DockSteamInputDefault {
     static func explanation(_ resolution: Resolution) -> String {
         switch resolution {
         case .recommended(let value):
-            return value.origin == .actionManifest ? "Game default: the layout bundled with this game."
-                                                   : "Game default: Steam's template named by this game."
-        case .noHint: return "Steam's game data lists no recommended layout."
+            let source = value.origin == .actionManifest ? "Game default: the layout bundled with this game."
+                                                         : "Game default: Steam's template named by this game."
+            return value.mouseOrKeyboard
+                ? source + " It sends keyboard or mouse input, which Madeira does not pass to games yet, so the controller may do nothing."
+                : source
+        case .noHint:
+            return "Steam's game data names no layout for this game. Steam may still choose a Gamepad template from details Madeira cannot read yet."
         case .unresolved(let reason):
             switch reason {
             case .dataUnavailable: return "The game default could not be determined: Steam's game data is not cached."
@@ -593,6 +609,8 @@ enum DockSteamInputDefault {
             case .workshopSource: return "The game default is a Workshop layout, which Madeira does not support yet."
             case .templateUnsupported: return "The game default uses a Steam template Madeira cannot identify yet."
             case .templateUnavailable: return "The game default's template is missing from Steam's files."
+            case .templateControllerDependent:
+                return "The game default is one of Steam's Gamepad templates, chosen from controller details Madeira cannot read yet."
             }
         }
     }

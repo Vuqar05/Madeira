@@ -289,10 +289,11 @@ SteamUI checks device-specific entries before ordinary paths; the candidate
 reader rejects device-specific entries until matching is implemented. When no
 such entries are present it retains KeyValues order, rather than sorting keys,
 as the pinned resolver does.
-The pinned January UI's PS5 template-index 4 mapping is now checked against
-the binary, and the corresponding installed template can be read as a candidate.
-Index 2 and the other template variants remain unresolved; cached metadata is
-still not proof that a candidate is the current recommendation.
+The pinned January UI's PS5 template mapping is now checked against the binary
+for every index that does not depend on runtime state (4, 5, 6, 8–12), and the
+installed templates can be read as candidates. Indices 0, 2 and 3 depend on
+controller or app state and remain unresolved; cached metadata is still not
+proof that a candidate is the current recommendation.
 SteamUI's startup path tries two other resolvers before the template resolver.
 Index 4 and an exact Valve template hash alone therefore cannot establish the
 current default. The briefly exposed index-4 reset has been removed pending
@@ -312,7 +313,7 @@ the UI does not claim an unconfirmed Steam selection is active.
   the template. Slot 15 is not called by Dock.
 - [ ] Resolve and fetch the game's recommended layout and dependencies through
   verified client mechanisms. Handle game metadata that is not yet cached.
-  - [x] Manifest and index-4 template recommendations from cached or fetched app
+  - [x] Manifest and fixed-template recommendations from cached or fetched app
     data, fail-closed classification, offline reuse (host-tested).
   - [x] First-use bootstrap (device-verified 2026-11-06 on Portal 2): `BOOTSTRAP` hands
     the host one explicit layout when Steam has no saved selection, so a baseline
@@ -332,8 +333,16 @@ the UI does not claim an unconfirmed Steam selection is active.
     Lethal Company (template index 2, unresolved); the pad works after the tap.
   - [ ] Offline reuse of a cached default: host-tested only. Not testable on the device
     right now because Madeira needs LocalDevVPN, which needs a Wi-Fi connection.
-  - [ ] Workshop (index 1), `device_specific`, other template indices and a
-    manifest path set by a running game.
+  - [x] Fixed template indices (host-tested, checker-pinned 2026-11-06): for a
+    DualSense SteamUI maps 4 and 5 to the Gamepad template and keeps 6 and 8–12
+    (WASD, mouse, desktop, flick stick); those are resolved, and the keyboard/mouse
+    ones say Madeira does not pass that input to games yet. Index 0 equals no index.
+    See Dock's `CLIENT_LAYOUTS.md` "Template resolver indices for a DualSense".
+  - [ ] Indices 2 and 3 (kept, or replaced by 4, depending on the connected slot's
+    capability bits `& 0x1800`) and no index (index 2 when an app-dependent flag is
+    set): both inputs need a runtime observation of the virtual DualSense and app,
+    so these stay unresolved, and "no hint" is not reported as "no layout".
+  - [ ] Workshop (index 1), `device_specific` and a manifest path set by a running game.
 - [ ] Implement Game default as an explicit reset to Valve's current recommendation,
   distinct from the user's previous custom/community selection.
   - [x] "Use game default" through the common journal/receipt path (host-tested).

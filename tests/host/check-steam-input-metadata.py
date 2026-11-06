@@ -147,14 +147,33 @@ __RESOLVER_METHOD__
         do { let r = await library.resolveSteamInputDefault(game: game); precondition(r == .unresolved(.manifestUnsupported)) }
         library.owned[0].steamInputMetadata = .init(templateIndex: 4, manifestPath: "input/missing.vdf")
         do { let r = await library.resolveSteamInputDefault(game: game); precondition(r == .unresolved(.manifestUnreadable)) }
-        // Template-only metadata: index 4 is verified; others are not guessed.
+        // Template-only metadata: the fixed DualSense indices are verified (5
+        // becomes 4); the others are not guessed.
         library.owned[0].steamInputMetadata = .init(templateIndex: 4, manifestPath: nil)
         let template = recommended(await library.resolveSteamInputDefault(game: game))
-        precondition(template?.source == templateBytes && template?.origin == .steamTemplate)
-        for index: UInt32 in [0, 2, 3, 5, 13] {
+        precondition(template?.source == templateBytes && template?.origin == .steamTemplate && template?.mouseOrKeyboard == false)
+        library.owned[0].steamInputMetadata = .init(templateIndex: 5, manifestPath: nil)
+        let platformer = recommended(await library.resolveSteamInputDefault(game: game))
+        precondition(platformer?.source == templateBytes)
+        // A fixed keyboard/mouse template is the game's default but says so.
+        library.owned[0].steamInputMetadata = .init(templateIndex: 6, manifestPath: nil)
+        do { let r = await library.resolveSteamInputDefault(game: game); precondition(r == .unresolved(.templateUnavailable)) }
+        let wasdBytes = Data("controller_mappings { revision 6 }".utf8)
+        try wasdBytes.write(to: templateFolder.appendingPathComponent("controller_ps5_wasd.vdf"))
+        let wasd = await library.resolveSteamInputDefault(game: game)
+        precondition(recommended(wasd)?.source == wasdBytes && recommended(wasd)?.mouseOrKeyboard == true)
+        precondition(DockSteamInputDefault.explanation(wasd).contains("keyboard or mouse"))
+        for index: UInt32 in [2, 3] {
+            library.owned[0].steamInputMetadata = .init(templateIndex: index, manifestPath: nil)
+            do { let r = await library.resolveSteamInputDefault(game: game); precondition(r == .unresolved(.templateControllerDependent)) }
+        }
+        for index: UInt32 in [7, 13, 14, 15, 99] {
             library.owned[0].steamInputMetadata = .init(templateIndex: index, manifestPath: nil)
             do { let r = await library.resolveSteamInputDefault(game: game); precondition(r == .unresolved(.templateUnsupported)) }
         }
+        // Index 0 is the same as no index to SteamUI.
+        library.owned[0].steamInputMetadata = .init(templateIndex: 0, manifestPath: nil)
+        do { let r = await library.resolveSteamInputDefault(game: game); precondition(r == .noHint) }
         library.owned[0].steamInputMetadata = .init(templateIndex: 1, manifestPath: nil)
         do { let r = await library.resolveSteamInputDefault(game: game); precondition(r == .unresolved(.workshopSource)) }
         library.owned[0].steamInputMetadata = .init(templateIndex: nil, manifestPath: nil)

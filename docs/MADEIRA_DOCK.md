@@ -649,9 +649,15 @@ and template index; well-formed data listing neither is recorded as such).
 `DockSteamInputDefault` classifies it in SteamUI's verified order: a manifest under
 the installed game directory (confined, no-follow reads; the portable reader picks the
 exact DualSense entry, then a PS4/PS5-compatible one, then the first entry), then the
-index-4 template; index 1 (Workshop), other indices, unsupported controller matching
-(`device_specific`), unreadable files and missing data stay unresolved and are never
-reported as "no recommendation". The cache is used first, also offline.
+template index. The fixed DualSense templates are resolved (4 and 5 give the Gamepad
+template; 6 and 8–12 the WASD, mouse, desktop and flick-stick templates, which are
+labelled as sending keyboard or mouse input Madeira does not pass to games yet).
+Indices 2 and 3 (chosen from controller capability bits), 1 (Workshop), the rest,
+unsupported controller matching (`device_specific`), unreadable files and missing
+data stay unresolved and are never reported as "no recommendation". Metadata with
+no hint (or index 0) is described as naming no layout, not as Steam choosing none:
+SteamUI may still pick a Gamepad template from app state Madeira cannot read yet.
+The cache is used first, also offline.
 The Controls page and Session menu offer "Use game default" for a resolved
 recommendation (also the way back after another choice) and, only when none was
 resolved, an explicitly generic Gamepad template. Both use the common journal and
