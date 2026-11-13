@@ -273,8 +273,11 @@ Implementation is ready for final device acceptance (2026-11-13). Work is on
 Friends checkout is unchanged. The rebuilt signed Debug app is installed on the
 paired iPad. The first launch attempt exposed missing 32-bit runtime resources in
 the local bundle; a corrected build is installed, and preflight now rejects the
-omission. A physical controller is available; the current device checks below
-are still pending and must not be inferred from passing host tests.
+omission. On 2026-11-13 the owner confirmed the corrected build reaches the
+menu and Game default/controller controls work. The live App 620 feed, runtime
+manifest context and confirmed receipt matched the same launch/connection; the
+active working revision was 86 (reserved high-water 87). The remaining device
+checks below are pending and must not be inferred from passing host tests.
 
 - [x] Inspect and pin the January recommendation order: saved selection is
   separate from a game default; runtime manifest, PICS manifest, index-1 Workshop
@@ -312,7 +315,9 @@ are still pending and must not be inferred from passing host tests.
   checkers, actual PICS parser/order tests, default download/cache tests, service,
   transaction and anonymous-session checks, signed iOS build and runtime preflight.
 - [ ] Complete final physical-device acceptance on the current build:
-  - [ ] Native action-manifest default: controller menus and gameplay.
+  - [x] Native action-manifest default: controller menus and gameplay. Owner
+    reports the menu opens and Game default/controls work; matching scoped feed
+    and confirmed native receipt captured on 2026-11-13.
   - [ ] Distinctive override, then Game default restores the original controls.
   - [ ] Relaunch automatically reuses the confirmed default without changing the
     saved Steam selection.
