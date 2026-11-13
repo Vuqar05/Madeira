@@ -254,6 +254,41 @@ end-to-end input for the tested game/controller combination; it does not
 establish every layout type, controller model or rumble path.
 
 
+### Software XInput discovery (2026-11-13)
+
+A 32-bit SDL3 game can start its joystick scan before Steam's virtual XInput
+output connects. The device probe found successful hooked XInput state and
+capabilities, changing controller state and foreground focus, while SDL kept
+reporting zero gamepads. XInput and Steam virtual gamepads were enabled in
+SDL's hints. Its notification-driven rescan did not run; Wine's Plug and Play
+RPC endpoint was unavailable in that session.
+
+The Windows sechost runtime now supplements normal device notifications for
+Steam Input games. When `MADEIRA_HIDPAD_OWNER` is set and
+`MADEIRA_XINPUT_FORWARD=xinput1_4.dll`, a game-side worker observes the four
+user indices through the already-loaded `XInputGetCapabilities` export every
+250 ms. The designated physical-pad owner is excluded. The worker holds a
+module reference during each query and waits for actual game-side API
+availability rather than assuming the engine's shared output is deliverable.
+Connection edges produce HID and Wine XInput interface arrival/removal events
+through the existing registration filters and callback dispatcher. CM listeners
+and message-only window listeners receive the same events. Stable connection
+masks produce no repeated notifications. The bridge creates no devices or
+input reports, and leaves the normal RPC path in place.
+
+`python3 tools/check-steam-input-notifications.py` exercises the production
+edge helper, notification filters and session/owner guard under ASan/UBSan.
+Both i386 and ARM64EC sechost builds succeed; runtime packaging requires the
+bridge in both farms. The subsequent physical test confirms menu navigation
+and layout switching work. The probe changes from zero SDL controllers before
+the fix to one joystick and one gamepad after connection, with successful
+hooked XInput, changing state and foreground focus. The scoped native receipt
+and persisted source confirmation match Game default at revision 15. The
+temporary probe was removed after capturing that evidence. The owner waived
+the remaining offline/network-disconnection test; offline physical behavior
+remains unverified.
+
+
 ### Selection service foundation (2026-11-02)
 
 The session-bound read-only query service now has matching C/Swift wire codecs,

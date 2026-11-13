@@ -693,9 +693,25 @@ but the owner could not navigate its menus with the controller. Its i386
 XInput farm lacked forwarding support. Rebuilt all five i386 XInput modules
 from the pinned source; the signed app passes the strengthened two-farm
 preflight and is installed for retry. The runtime build now includes those
-modules. Physical input recovery remains unverified. The exact downloaded
-cache passes a host offline check with zero network calls; physical offline
-acceptance remains pending. See `STEAM_INPUT_INTEGRATION_PLAN.md`.
+modules. The owner reports that menu input still fails after that update.
+The 32-bit overlay reports nine XInput hooks and no memory-write failures,
+while Dock reports connected/changing Steam output. The game uses Wine Mono's
+SDL3 input backend. The in-process probe confirms connected/changing hooked
+XInput with foreground focus, but SDL reports zero joysticks/gamepads even
+after a minute. A game-side sechost compatibility bridge now observes XInput
+connection edges and dispatches arrival/removal through the normal device
+notification callbacks, including CM and message-window listeners. It runs
+only in the Steam Input game, excludes the designated physical-pad owner and
+never creates input reports. Both Windows farms build and host ASan/UBSan
+notification/scope checks pass. The owner confirms menu navigation and layout
+switching now work; the successful probe reports one SDL joystick/gamepad and
+changing hooked XInput with foreground focus. The live scoped receipt and
+persisted source confirmation match the final Workshop Game default at
+revision 15, following the alternate layout at revision 13. The temporary
+probe has been removed. The exact downloaded cache passes a host offline
+check with zero network calls; the owner waived the remaining physical
+offline test, so that behavior remains unverified. Milestone 2 is complete
+for that authorised scope. See `STEAM_INPUT_INTEGRATION_PLAN.md`.
 
 Dock's version-1 protocol and transport capability bits are documented in its
 README. Commands have a launch nonce, App ID, controller index, observed

@@ -14,9 +14,9 @@ done < <(python3 "$R/build/windows-runtime/targets.py" arm64ec list)
 [ ${#modules[@]} -gt 0 ] || { echo 'No ARM64EC Wine modules selected' >&2; exit 1; }
 bash "$R/build/wine-pe/build-modules.sh" "${modules[@]}"
 bash "$R/build/wine-pe/build-ntdll.sh"
-# The WoW64 farm is supplied separately, but its XInput DLLs need the same
-# Steam overlay forwarding as ARM64EC. Never retain an older copied input path.
-bash "$R/build/wine-i386/build.sh" xinput1_1 xinput1_2 xinput1_3 xinput1_4 xinput9_1_0
+# The WoW64 farm is supplied separately, but its input delivery and device
+# notifications need the same Steam Input fixes as ARM64EC.
+bash "$R/build/wine-i386/build.sh" xinput1_1 xinput1_2 xinput1_3 xinput1_4 xinput9_1_0 sechost
 python3 "$R/build/windows-runtime/targets.py" aarch64 install
 # Vulkan Wine DLLs are isolated from the default Metal farm.
 DEST="$R/app/Madeira/vulkan/arm64ec-windows" \

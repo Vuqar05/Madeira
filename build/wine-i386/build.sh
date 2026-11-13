@@ -5,7 +5,7 @@
 # This is the macOS form of the WSL stage script the 32-bit work was built
 # with. It follows the conventions of build/wine-pe/build-ntdll.sh (the
 # llvm-mingw toolchain under toolchains/, a separate wine/build-<arch> tree) and
-# uses translated macOS paths/tool invocations. The targeted XInput build was
+# uses translated macOS paths/tool invocations. The targeted XInput/sechost builds were
 # verified on macOS on 2026-11-13; the complete farm/DXMT stage is still
 # unverified there. See docs/WOW64.md, "Building".
 #

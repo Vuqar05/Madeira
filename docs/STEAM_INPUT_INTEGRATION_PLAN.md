@@ -268,16 +268,18 @@ stale requests leave the previous working layout usable.
 
 ## Milestone 2 — Use the game's default layout
 
-Implementation is ready for final device acceptance (2026-11-13). Work is on
-`codex/steam-input-milestone-2`, based on `merge/steam-input-api`; the separate
+Milestone 2 is complete for the authorised scope (2026-11-13). Online physical
+acceptance passed; the owner waived the remaining offline/network-disconnection
+test, which remains unverified. Work is on `codex/steam-input-milestone-2`,
+based on `merge/steam-input-api`; the separate
 Friends checkout is unchanged. The rebuilt signed Debug app is installed on the
 paired iPad. The first launch attempt exposed missing 32-bit runtime resources in
 the local bundle; a corrected build is installed, and preflight now rejects the
 omission. On 2026-11-13 the owner confirmed the corrected build reaches the
 menu and Game default/controller controls work. The live App 620 feed, runtime
 manifest context and confirmed receipt matched the same launch/connection; the
-active working revision was 86 (reserved high-water 87). The remaining device
-checks below are pending and must not be inferred from passing host tests.
+active working revision was 86 (reserved high-water 87). Later online device
+checks and the explicit offline-test waiver are recorded below.
 
 - [x] Inspect and pin the January recommendation order: saved selection is
   separate from a game default; runtime manifest, PICS manifest, index-1 Workshop
@@ -314,7 +316,7 @@ checks below are pending and must not be inferred from passing host tests.
 - [x] Host validation: sanitizer native suites, x64/i386 builds, pinned binary
   checkers, actual PICS parser/order tests, default download/cache tests, service,
   transaction and anonymous-session checks, signed iOS build and runtime preflight.
-- [ ] Complete final physical-device acceptance on the current build:
+- [x] Complete the authorised physical-device acceptance (offline test waived):
   - [x] Native action-manifest default: controller menus and gameplay. Owner
     reports the menu opens and Game default/controls work; matching scoped feed
     and confirmed native receipt captured on 2026-11-13.
@@ -332,7 +334,13 @@ checks below are pending and must not be inferred from passing host tests.
     `Active: Generic template` after explicit selection. Its manifest-free
     runtime context, active feed and confirmed revision-1 receipt share a launch
     scope; the persisted choice is the unmodified generic Gamepad template.
-  - [ ] Cached default works offline while keeping the Wi-Fi/JIT transport alive.
+  - [x] Downloaded Workshop default: controller menu navigation and layout
+    switching. The owner confirms both work after the device-notification fix;
+    SDL detects one joystick and one gamepad. The final Game default source,
+    active feed, context and confirmed revision-15 receipt share the same scope.
+  - Offline cached-default device check: **skipped at the owner's request**.
+    Host cache replay passes with zero network calls; physical offline behavior
+    is not claimed.
 
 Current relaunch evidence (2026-11-13): the owner reports working controls
 and `Active: Generic template`, with A/B still swapped. The persisted
@@ -353,16 +361,41 @@ The running game is i386; the copied i386 XInput farm lacks the forwarding
 support already present in ARM64EC. The five i386 XInput modules were rebuilt
 from the pinned Wine source, included in a new signed build and installed for
 retry. Runtime preflight went red on the old bundle and green on the rebuilt
-one; the standard runtime build now rebuilds those modules. This packaging
-defect is verified, but its causal role in menu input still needs the device
-retry. A host check of the exact device Workshop cache reused its original
-bytes with zero network calls; physical offline acceptance remains pending.
+one; the standard runtime build now rebuilds those modules. The owner reports
+that the rebuilt runtime still cannot navigate the menu. The forwarding
+packaging defect was real but did not resolve this failure. The new session's
+32-bit overlay log reports all nine XInput hooks and no memory-write failures;
+Dock reports connected, changing Steam output. Neither proves delivery to the
+game. The game uses Wine Mono's SDL3 backend, which initializes before Steam's
+virtual output connects. The temporary in-process i386 probe then confirmed
+successful hooked XInput state/capabilities and changing output while the game
+had foreground focus, but SDL continued reporting zero joysticks/gamepads for
+more than a minute. SDL's hints enable XInput and Steam virtual gamepads, and
+disable Raw Input. The Plug and Play RPC endpoint was unavailable, so there was
+no normal late-arrival notification to trigger SDL's rescan. A game-side
+sechost compatibility bridge now observes the already-loaded XInput export and
+routes connection edges through the existing device-notification callbacks.
+It excludes the physical-pad owner, applies only to the Steam Input session,
+and creates no controller or input reports. Both Windows farms build; host
+ASan/UBSan checks cover arrival/removal, stable masks, notification filters and
+session/owner scope. The owner subsequently confirmed controller menu
+navigation and layout switching work. The successful session's probe records
+one joystick and one gamepad, connected/changing hooked XInput and foreground
+focus. Matching live feed/context/receipt and persisted source confirmation
+bind the final Workshop Game default to working revision 15; the alternate
+layout was confirmed at revision 13. The temporary probe has been removed;
+the clean signed iOS build and runtime preflight pass, and that build is
+installed on the paired iPad. The physical input evidence above was captured
+before removing the probe. A host check of the exact device Workshop cache reused its original bytes
+with zero network calls. The owner waived the remaining network-disconnection
+test; physical offline behavior remains unverified.
 
 Earlier device evidence (2026-11-06): a fixed template default, A/B-swapped
 Debug override and restoration worked in an XInput game; a bundled native-action
 manifest bootstrapped and worked in menus and brief gameplay; a generic template
 worked in a third game. The current context and recommendation additions have passed the online
-device checks above; offline acceptance remains open. Host tests cover uncached metadata, failed
+device checks above; the owner waived physical offline acceptance. Host tests
+cover uncached metadata, failed
 refresh, ordering, branch fallbacks, device-specific manifests and offline reuse.
 
 Done when: a fresh install with no hand-copied controller files obtains a game's

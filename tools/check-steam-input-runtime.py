@@ -60,6 +60,11 @@ def check(bundle):
     # Both farms must route the game's XInput calls to Steam's hooked DLL.
     # Restoring an old i386 farm can launch games while silently losing input.
     for directory in ['arm64ec-windows', 'i386-windows']:
+        data = (bundle / directory / 'sechost.dll').read_bytes()
+        marker = 'wine_steam_input_notify'
+        if marker.encode() not in data and marker.encode('utf-16le') not in data:
+            raise ValueError(directory + '/sechost.dll lacks software XInput device notifications; '
+                             'rebuild the Windows runtime')
         for name in ['xinput1_1.dll', 'xinput1_2.dll', 'xinput1_3.dll', 'xinput1_4.dll']:
             data = (bundle / directory / name).read_bytes()
             marker = 'MADEIRA_XINPUT_FORWARD'
@@ -76,4 +81,4 @@ if __name__ == '__main__':
         check(args.bundle)
     except (OSError, ValueError, KeyError, struct.error) as error:
         parser.exit(1, 'Steam Input runtime check failed: ' + str(error) + '\n')
-    print('PASS: Dock/WoW64 dependencies, native overlay-write/HID-owner and XInput-forwarding capabilities')
+    print('PASS: Dock/WoW64 dependencies, overlay-write/HID-owner, XInput forwarding and device notifications')
