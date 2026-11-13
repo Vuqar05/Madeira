@@ -924,6 +924,9 @@ with scope/digest verification and a fresh native selection read. It never repla
 a named selection with a generic fallback or manufactures an explicit choice.
 The selected-item lookup shares the bounded 120-second baseline recovery wait,
 preserving confirmed-choice replay after a slow download.
+The owner confirmed the post-review iPad smoke tests passed: saved community
+replay and distinctive bindings, refreshed pagination, community application and
+Game default restoration with working physical input.
 The January UI checker records the inspected UGC/selection contract; Dock calls no
 new private UGC API. Host tests cover source/cache/revision failures, community
 receipt/relaunch and native selected-item recovery. The owner confirmed physical

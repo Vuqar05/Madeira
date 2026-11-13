@@ -575,10 +575,13 @@ selection, transactions, metadata, Dock integration, 15 runtime-component checks
 native ASan/UBSan and software controller-notification checks pass. The signed
 Debug app was rebuilt with the committed Dock host, verified with self-contained
 runtime files and installed over the existing paired-iPad app. Signature and
-Steam Input runtime preflight pass. A follow-up physical smoke test of confirmed
-community replay, refreshed pagination and default restoration is pending the
-owner's report; the earlier acceptance and saved-Workshop waiver remain recorded
-above. Slow-lookup replay is covered deterministically by the host regression.
+Steam Input runtime preflight pass. The owner confirmed that all assigned
+follow-up physical smoke tests passed on the updated iPad build: the saved
+community layout and its distinctive bindings returned after launch; community
+browsing worked through Load more, refresh and Load more again; and community
+application and Game default restoration both retained working physical input.
+The earlier acceptance and saved-Workshop waiver remain recorded above.
+Slow-lookup replay is covered deterministically by the host regression.
 
 Done when: a downloaded layout changes a known binding in-game through Valve's
 engine, survives relaunch and works from cache offline. A failed download/update

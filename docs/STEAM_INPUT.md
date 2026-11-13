@@ -493,5 +493,7 @@ Milestone 3 is accepted within that scope; see
 `docs/STEAM_INPUT_INTEGRATION_PLAN.md` for the evidence and waiver.
 Review fixes check enabled raw bindings for compatibility, invalidate later cached
 pages on refresh and preserve confirmed-choice replay during a slow selected-item
-lookup. Their host regressions pass, and the updated signed app is installed for
-a follow-up physical smoke check.
+lookup. Their host regressions pass. The owner confirmed all follow-up physical
+smoke tests passed on the updated signed iPad app: saved community replay and
+distinctive bindings, refreshed pagination, community application and Game default
+restoration with working physical input.
