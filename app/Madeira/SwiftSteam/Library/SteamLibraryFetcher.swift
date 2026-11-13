@@ -440,7 +440,7 @@ enum VDFParser {
     /// a quoted string (for example a launch argument `/Name=\"Two Words\"`); read
     /// verbatim, such a string ends early and every later section, the depots
     /// among them, is lost.
-    static func parseTextVDF(from data: Data) -> [String: Any] {
+    static func parseTextVDF(from data: Data, sectionOrder: (([String], [String]) -> Void)? = nil) -> [String: Any] {
         guard let text = String(data: data, encoding: .utf8) else { return [:] }
         let scalars = Array(text.unicodeScalars)
         var i = 0
@@ -493,20 +493,23 @@ enum VDFParser {
             return s
         }
 
-        func parseSection() -> [String: Any] {
+        func parseSection(_ path: [String] = []) -> [String: Any] {
             var dict: [String: Any] = [:]
+            var keys: [String] = []
             while let key = nextToken() {
                 if key == "}" { break }
                 if key == "{" { continue }
                 guard let value = nextToken() else { break }
+                keys.append(key)
                 if value == "{" {
-                    dict[key] = parseSection()
+                    dict[key] = parseSection(path + [key])
                 } else if value == "}" {
                     break
                 } else {
                     dict[key] = value
                 }
             }
+            sectionOrder?(path, keys)
             return dict
         }
 

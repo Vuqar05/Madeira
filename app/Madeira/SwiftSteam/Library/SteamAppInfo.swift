@@ -67,7 +67,40 @@ struct SteamAppInfo {
         /// This is an untrusted relative path; callers must open it confined to
         /// the installed game and must not treat a missing hint as absence.
         let manifestPath: String?
-        static func parse(_ config: [String: Any]) -> Self? {
+        var controllerSupport: UInt32? = nil
+        var workshopIDs: [UInt64]? = nil
+        /// Kept in KeyValues order: sorting numeric item IDs changes Steam's
+        /// exact-controller, branch and default-branch tie breaking.
+        var workshopDetails: [WorkshopDefault]? = nil
+        struct WorkshopDefault: Codable, Hashable, Sendable {
+            let id: UInt64
+            let controllerType: String
+            let branches: [String]
+            let useActionBlock: Bool
+        }
+        func workshopRecommendation(branch: String) -> UInt64? {
+            guard let entries = workshopDetails else { return nil }
+            let branch = branch.isEmpty || branch == "public" ? "default" : branch
+            var fallback: UInt64?
+            for matches: (WorkshopDefault) -> Bool in [
+                { $0.controllerType == "controller_ps5" },
+                { ["controller_ps4", "controller_ps5"].contains($0.controllerType) }
+            ] {
+                for entry in entries where matches(entry) {
+                    if entry.branches.contains(where: { $0.caseInsensitiveCompare(branch) == .orderedSame }) { return entry.id }
+                    if fallback == nil && entry.branches.contains(where: { $0.caseInsensitiveCompare("default") == .orderedSame }) {
+                        fallback = entry.id
+                    }
+                }
+            }
+            if let fallback { return fallback }
+            for entry in entries {
+                if entry.branches.contains(where: { $0.caseInsensitiveCompare(branch) == .orderedSame }) { return entry.id }
+                if fallback == nil && entry.branches.contains(where: { $0.caseInsensitiveCompare("default") == .orderedSame }) { fallback = entry.id }
+            }
+            return fallback
+        }
+        static func parse(_ config: [String: Any], common: [String: Any]? = nil, detailOrder: [String]? = nil) -> Self? {
             let index: UInt32?
             if let value = config["steamcontrollertemplateindex"] {
                 guard let raw = value as? String, !raw.isEmpty, raw.utf8.count <= 10,
@@ -78,7 +111,7 @@ struct SteamAppInfo {
             // Well-formed metadata with neither hint is recorded as such, so
             // "Steam's data lists no recommendation" differs from "never read".
             guard let rawPath = config["steaminputmanifestpath"] else {
-                return Self(templateIndex: index, manifestPath: nil)
+                return withSources(Self(templateIndex: index, manifestPath: nil), config: config, common: common, detailOrder: detailOrder)
             }
             guard let path = rawPath as? String,
                   !path.isEmpty, path.utf8.count < 1024,
@@ -86,7 +119,58 @@ struct SteamAppInfo {
             let normalized = path.replacingOccurrences(of: "\\", with: "/")
             let components = normalized.split(separator: "/", omittingEmptySubsequences: false)
             guard !normalized.contains(":"), components.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else { return nil }
-            return Self(templateIndex: index, manifestPath: normalized)
+            return withSources(Self(templateIndex: index, manifestPath: normalized), config: config, common: common, detailOrder: detailOrder)
+        }
+        private static func withSources(_ value: Self, config: [String: Any], common: [String: Any]?, detailOrder: [String]?) -> Self? {
+            var value = value
+            if let common {
+                if let raw = common["controller_support"], !(raw is String) { return nil }
+                switch (common["controller_support"] as? String ?? "none").lowercased() {
+                case "none", "": value.controllerSupport = 0
+                case "partial": value.controllerSupport = 1
+                case "full": value.controllerSupport = 2
+                default: return nil
+                }
+            }
+            if let raw = config["steamcontrollerconfigfileids"] {
+                guard let text = raw as? String, text.utf8.count <= 4096 else { return nil }
+                let parts = text.split(separator: ",", omittingEmptySubsequences: false)
+                guard parts.count <= 32 else { return nil }
+                var ids: [UInt64] = []
+                for part in parts {
+                    let token = part.trimmingCharacters(in: .whitespaces)
+                    if token.isEmpty { continue }
+                    guard token.utf8.allSatisfy({ (48...57).contains($0) }),
+                          let id = UInt64(token), id > 0 else { return nil }
+                    if !ids.contains(id) { ids.append(id) }
+                }
+                value.workshopIDs = ids
+            } else { value.workshopIDs = [] }
+            let detailKeys = config.keys.filter { $0.lowercased() == "steamcontrollerconfigdetails" }
+            guard detailKeys.count <= 1 else { return nil }
+            if let key = detailKeys.first, let raw = config[key] {
+                guard let entries = raw as? [String: Any], entries.count <= 32, let detailOrder,
+                      detailOrder.count == entries.count, Set(detailOrder).count == detailOrder.count,
+                      Set(detailOrder) == Set(entries.keys) else { return nil }
+                var details: [WorkshopDefault] = []
+                for key in detailOrder {
+                    guard let id = UInt64(key), id > 0, String(id) == key,
+                          let fields = entries[key] as? [String: Any],
+                          let type = fields["controller_type"] as? String, !type.isEmpty, type.utf8.count <= 64,
+                          !type.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),
+                          let branches = fields["enabled_branches"] as? String, branches.utf8.count <= 4096 else { return nil }
+                    let branchList = branches.split(separator: ",").map(String.init)
+                    guard branchList.count <= 64, branchList.allSatisfy({ $0.utf8.count <= 64 &&
+                        !$0.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) }) else { return nil }
+                    guard fields["use_action_block"] == nil || fields["use_action_block"] is String else { return nil }
+                    let action = (fields["use_action_block"] as? String ?? "false").lowercased()
+                    guard ["0", "1", "false", "true"].contains(action) else { return nil }
+                    details.append(.init(id: id, controllerType: type.lowercased(), branches: branchList,
+                                         useActionBlock: action == "1" || action == "true"))
+                }
+                value.workshopDetails = details
+            }
+            return value
         }
     }
 
@@ -379,12 +463,22 @@ struct SteamAppInfo {
 
     /// Parse app info from a PICS text-VDF buffer.
     static func parse(appID: UInt32, from data: Data) -> SteamAppInfo? {
-        let vdf = VDFParser.parseTextVDF(from: data)
-        return parse(appID: appID, from: vdf)
+        var detailOrder: [String]?
+        var sections = 0, ambiguous = false
+        let vdf = VDFParser.parseTextVDF(from: data) { path, keys in
+            let normalized = path.map { $0.lowercased() }
+            if normalized.suffix(2) == ["config", "steamcontrollerconfigdetails"] {
+                sections += 1; detailOrder = keys
+            }
+            if normalized.contains("steamcontrollerconfigdetails"), Set(keys.map { $0.lowercased() }).count != keys.count {
+                ambiguous = true
+            }
+        }
+        return parse(appID: appID, from: vdf, steamInputDetailOrder: sections == 1 && !ambiguous ? detailOrder : nil)
     }
 
     /// Parse app info from a VDF dictionary
-    static func parse(appID: UInt32, from vdf: [String: Any]) -> SteamAppInfo? {
+    static func parse(appID: UInt32, from vdf: [String: Any], steamInputDetailOrder: [String]? = nil) -> SteamAppInfo? {
         var info = SteamAppInfo(appID: appID)
 
         // Navigate to appinfo section
@@ -441,7 +535,7 @@ struct SteamAppInfo {
         // Config section
         if let config = appInfo["config"] as? [String: Any] {
             info.installDir = config["installdir"] as? String ?? ""
-            info.steamInputMetadata = SteamInputMetadata.parse(config)
+            info.steamInputMetadata = SteamInputMetadata.parse(config, common: appInfo["common"] as? [String: Any], detailOrder: steamInputDetailOrder)
             if let launch = config["launch"] as? [String: Any] {
                 info.launches = SteamLaunchOption.parse(launch)
             }

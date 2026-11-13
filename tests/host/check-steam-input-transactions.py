@@ -26,7 +26,7 @@ func require(_ value: @autoclosure () throws -> Bool) { precondition(try! value(
     try FileManager.default.createDirectory(at: templates, withIntermediateDirectories: true)
     try layout.write(to: templates.appendingPathComponent("controller_ps5_gamepad_joystick.vdf"))
     require(try DockSteamInputBundledManifest.januaryPS5Template(clientRoot: root.appendingPathComponent("steam"), index: 4) == layout)
-    require(try DockSteamInputBundledManifest.januaryPS5Template(clientRoot: root.appendingPathComponent("steam"), index: 2) == nil)
+    require(try DockSteamInputBundledManifest.januaryPS5Template(clientRoot: root.appendingPathComponent("steam"), index: 7) == nil)
     try manifest.write(to: config.appendingPathComponent("actions.vdf"))
     try layout.write(to: config.appendingPathComponent("layouts/pad.vdf"))
     let candidate = try DockSteamInputBundledManifest.candidate(gameDirectory: game, manifestPath: "config/actions.vdf")!

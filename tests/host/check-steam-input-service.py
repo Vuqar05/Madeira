@@ -52,6 +52,14 @@ int main(int argc, char **argv) {
     s.workshop = 123; strcpy(s.selection, "AC-480-controller_ps5");
     uint8_t b[SH_INPUT_FEED_CAP]; size_t n = sh_input_service_feed(&s, b, sizeof b);
     FILE *f = fopen(argv[1], "wb"); assert(f && fwrite(b, 1, n, f) == n); fclose(f);
+    struct sh_input_context context = {0}; uint8_t actual[0x58] = {0};
+    actual[4] = 0x4c; actual[5] = 5; actual[6] = 0xe6; actual[7] = 0x0c;
+    actual[9] = 0x18; actual[0x34] = 45; actual[0x40] = 1;
+    assert(sh_input_context_details(actual, sizeof actual, &context));
+    context.flags |= 2; strcpy(context.manifest, "C:\\steamapps\\common\\fixture\\actions.vdf");
+    uint8_t source[SH_INPUT_CONTEXT_CAP]; n = sh_input_context_feed(&s, &context, source, sizeof source); assert(n);
+    char path[1024]; assert(snprintf(path, sizeof path, "%s.context", argv[1]) < (int)sizeof path);
+    f = fopen(path, "wb"); assert(f && fwrite(source, 1, n, f) == n); fclose(f);
 }
 '''
 cases = r'''
@@ -71,6 +79,21 @@ func put32(_ data: inout Data, _ at: Int, _ value: UInt32) {
     require(parsed.appID == 480 && parsed.epoch == 1 && parsed.workshopID == 123)
     require(parsed.state == .activationRequested && parsed.flags == 3 && parsed.forwardedInputs == 15)
     require(parsed.selection == "AC-480-controller_ps5")
+    let contextBytes = try Data(contentsOf: testRoot.appendingPathComponent("fixture.bin.context"))
+    let context = DockSteamInputContext.parse(contextBytes, session: parsed.session, appID: 480, epoch: 1)!
+    require(context.isDualSense && context.capabilities == 0x1800 && context.rawType == 45)
+    require(context.manifestPath == "C:\\steamapps\\common\\fixture\\actions.vdf")
+    for size in 0..<contextBytes.count {
+        require(DockSteamInputContext.parse(contextBytes.prefix(size), session: parsed.session, appID: 480, epoch: 1) == nil)
+    }
+    require(DockSteamInputContext.parse(contextBytes, session: parsed.session, appID: 481, epoch: 1) == nil)
+    require(DockSteamInputContext.parse(contextBytes, session: parsed.session, appID: 480, epoch: 2) == nil)
+    require(DockSteamInputContext.parse(contextBytes, session: Array(repeating: 1, count: 16), appID: 480, epoch: 1) == nil)
+    require(DockSteamInputContext.parse(contextBytes + Data([0]), session: parsed.session, appID: 480, epoch: 1) == nil)
+    var failedLookup = Data(contextBytes.prefix(56)); put32(&failedLookup, 32, 1); put32(&failedLookup, 52, 0)
+    require(DockSteamInputContext.parse(failedLookup, session: parsed.session, appID: 480, epoch: 1) == nil)
+    var hostileContext = contextBytes; put32(&hostileContext, 52, UInt32.max)
+    require(DockSteamInputContext.parse(hostileContext, session: parsed.session, appID: 480, epoch: 1) == nil)
     let noSession = DockSteamInputPresentation.lines(appID: 481, snapshot: parsed, active: nil, selection: nil)
     require(noSession == ["Launch this game to see its Steam Input status."])
     var statusFeed = fixture; put32(&statusFeed, 40, 1)
@@ -106,10 +129,14 @@ func put32(_ data: inout Data, _ at: Int, _ value: UInt32) {
     let override = DockSteamInputSelection.Revision(source: .personal, identity: "custom", contentHash: String(repeating: "c", count: 64))
     let overridden = DockSteamInputPresentation.defaultActions(resolved, active: override)
     require(overridden.offerDefault && overridden.note.hasSuffix("Another layout is active."))
-    for fallback in [DockSteamInputDefault.Resolution.noHint, .unresolved(.workshopSource), .unresolved(.dataUnavailable)] {
+    for fallback in [DockSteamInputDefault.Resolution.noRecommendation, .unresolved(.workshopIncompatible)] {
         let actions = DockSteamInputPresentation.defaultActions(fallback, active: nil)
         require(!actions.offerDefault && actions.offerGeneric && actions.note.contains("not this game's own layout"))
         require(!actions.note.hasPrefix("Game default:"))
+    }
+    for failure in [DockSteamInputDefault.Resolution.noHint, .unresolved(.dataUnavailable), .unresolved(.manifestUnreadable), .unresolved(.workshopUnavailable)] {
+        let actions = DockSteamInputPresentation.defaultActions(failure, active: nil)
+        require(actions.offerRetry && !actions.offerDefault && !actions.offerGeneric)
     }
     let generic = DockSteamInputSelection.Revision(source: .template, identity: DockSteamInputDefault.genericTemplate, contentHash: nil)
     require(!DockSteamInputPresentation.defaultActions(.noHint, active: generic).offerGeneric)
@@ -634,7 +661,17 @@ func put32(_ data: inout Data, _ at: Int, _ value: UInt32) {
     try fm.removeItem(at: commandFile)
     put32(&namedFeed, 36, 1); put32(&namedFeed, 40, 1)
     try namedFeed.write(to: feedFile); DockSteamInputService.refresh()
-    require(!DockSteamInputService.canBootstrap) // an unreadable named selection is never replaced
+    require(!DockSteamInputService.canBootstrap)
+    // Source context does not authorize replacing an unreadable named layout.
+    put32(&namedFeed, 52, 115)
+    try namedFeed.write(to: feedFile); DockSteamInputService.refresh()
+    require(!DockSteamInputService.canBootstrap)
+    let beforeDefault = DockSteamInputService.selection!
+    do {
+        try DockSteamInputService.requestGameDefault(.init(source: initialSource, origin: .steamTemplate))
+        fatalError("unreadable named layout was replaced")
+    } catch DockSteamInputJournal.Failure.busy {}
+    require(DockSteamInputService.selection == beforeDefault && DockSteamInputService.activeChoice == nil)
     DockSteamInputService.end()
     print("PASS: first-use bootstrap after interrupted earlier-launch work, and for an empty successful selection only")
     print("PASS: confirmed-choice restart, same-session reconnect recovery, held-input quiesce, fault/interruption recovery, fresh baseline/nonce validation, preservation of newer intent and C/Swift wire interoperability")

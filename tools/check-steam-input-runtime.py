@@ -21,6 +21,27 @@ def check(bundle):
         file = folder / name
         if not file.is_file() or not file.stat().st_size:
             raise ValueError('missing Dock runtime dependency: ' + name)
+    if b'MSICTX01' not in (folder / 'dockhost.exe').read_bytes():
+        raise ValueError('Dock lacks game-default source context; rebuild build/madeira-dock/build.sh')
+    # A 32-bit game exits before its loader can report an error if the i386
+    # runtime folder was left empty in a local build. Validate both halves of
+    # WoW64 before installation, not just the Steam controller dependencies.
+    for directory, machine, names in [
+        ('i386-windows', 0x14c, ['ntdll.dll', 'kernel32.dll', 'kernelbase.dll', 'win32u.dll']),
+        ('aarch64-windows', 0xaa64, ['ntdll.dll', 'wow64.dll', 'wow64win.dll', 'xtajit.dll']),
+    ]:
+        for name in names:
+            path = bundle / directory / name
+            if not path.is_file():
+                raise ValueError('missing game runtime dependency: ' + directory + '/' + name)
+            with path.open('rb') as file:
+                header = file.read(64)
+                if len(header) != 64 or header[:2] != b'MZ':
+                    raise ValueError('invalid game runtime dependency: ' + directory + '/' + name)
+                file.seek(struct.unpack_from('<I', header, 0x3c)[0])
+                pe = file.read(6)
+            if len(pe) != 6 or pe[:4] != b'PE\0\0' or struct.unpack_from('<H', pe, 4)[0] != machine:
+                raise ValueError('wrong architecture for game runtime dependency: ' + directory + '/' + name)
     data = (folder / 'SDL3.dll').read_bytes()
     if len(data) < 64 or data[:2] != b'MZ':
         raise ValueError('SDL3.dll is not a PE file')
@@ -51,4 +72,4 @@ if __name__ == '__main__':
         check(args.bundle)
     except (OSError, ValueError, KeyError, struct.error) as error:
         parser.exit(1, 'Steam Input runtime check failed: ' + str(error) + '\n')
-    print('PASS: Dock dependency, native overlay-write/HID-owner and XInput-forwarding capabilities')
+    print('PASS: Dock/WoW64 dependencies, native overlay-write/HID-owner and XInput-forwarding capabilities')

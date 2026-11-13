@@ -24,7 +24,7 @@ def method(header):
 
 program = r'''
 import Foundation
-enum VDFParser { static func parseTextVDF(from: Data) -> [String: Any] { [:] } }
+enum VDFParser { static func parseTextVDF(from: Data, sectionOrder: (([String], [String]) -> Void)? = nil) -> [String: Any] { [:] } }
 enum MadeiraConfig {
     static func get(_ key: String) -> String? { nil }
     static func set(_ key: String, _ value: String?) {}
@@ -39,6 +39,12 @@ enum SteamLog { static func event(_ text: String) {} }
         precondition(metadata.templateIndex == 13 && metadata.manifestPath == "input/actions.vdf")
         let decoded = try JSONDecoder().decode(SteamAppInfo.SteamInputMetadata.self, from: JSONEncoder().encode(metadata))
         precondition(decoded == metadata)
+        let full = SteamAppInfo.parse(appID: 480, from: ["common": ["name": "Fixture", "type": "game", "controller_support": "full"],
+            "config": ["steamcontrollerconfigfileids": "12, 13,12,"]])!.steamInputMetadata!
+        precondition(full.controllerSupport == 2 && full.workshopIDs == [12, 13])
+        let old = try JSONDecoder().decode(SteamAppInfo.SteamInputMetadata.self, from: Data("{\"templateIndex\":4}".utf8))
+        precondition(old.controllerSupport == nil && old.workshopIDs == nil)
+        precondition(SteamAppInfo.SteamInputMetadata.parse(["steamcontrollerconfigfileids": "12,wrong"]) == nil)
         precondition(app(["steamcontrollertemplateindex": "1"]).steamInputMetadata?.templateIndex == 1)
         let both = app(["steamcontrollertemplateindex": "4", "steaminputmanifestpath": "input/actions.vdf"]).steamInputMetadata
         precondition(both?.templateIndex == 4 && both?.manifestPath == "input/actions.vdf")
@@ -61,13 +67,47 @@ enum SteamLog { static func event(_ text: String) {} }
                                       ["steamcontrollertemplateindex": ""]] {
             precondition(app(config).steamInputMetadata == nil)
         }
+    let richInput = SteamAppInfo.parse(appID: 10, from: appVDF(#"""
+    "common" { "name" "Input" "type" "Game" }
+    "config" { "steamcontrollertemplateindex" "1" "SteamControllerConfigDetails" {
+        "99" { "controller_type" "controller_ps4" "enabled_branches" "default,beta" }
+        "12" { "controller_type" "controller_ps5" "enabled_branches" "default" "use_action_block" "true" }
+        "11" { "controller_type" "controller_ps5" "enabled_branches" "beta" }
+        "10" { "controller_type" "controller_ps5" "enabled_branches" "beta" }
+    } }
+    """#))!.steamInputMetadata!
+    require(richInput.workshopDetails?.map(\.id) == [99, 12, 11, 10], "recommendation KeyValues order survives parsing")
+    require(richInput.workshopRecommendation(branch: "public") == 12, "exact controller outranks earlier compatible controller")
+    require(richInput.workshopRecommendation(branch: "BETA") == 11, "first exact branch match, case insensitive")
+    require(richInput.workshopRecommendation(branch: "other") == 12, "exact default branch fallback")
+    var compatibleInput = richInput
+    compatibleInput.workshopDetails!.removeAll { $0.id == 11 || $0.id == 10 }
+    require(compatibleInput.workshopRecommendation(branch: "beta") == 99, "compatible branch match outranks exact default")
+    let cachedRich = try JSONDecoder().decode(SteamAppInfo.SteamInputMetadata.self, from: JSONEncoder().encode(richInput))
+    require(cachedRich == richInput && cachedRich.workshopRecommendation(branch: "beta") == 11, "ordered recommendations survive offline cache")
+    let duplicateRich = SteamAppInfo.parse(appID: 10, from: appVDF(#"""
+    "common" { "name" "Input" }
+    "config" { "SteamControllerConfigDetails" {
+        "11" { "controller_type" "controller_ps5" "enabled_branches" "default" }
+        "11" { "controller_type" "controller_ps4" "enabled_branches" "default" }
+    } }
+    """#))!
+    require(duplicateRich.steamInputMetadata == nil, "duplicate recommendation IDs fail closed")
         print("PASS: PICS bundled metadata, legacy mode, cache encoding and unsafe/unresolved values")
     }
 }
 '''
+# Compile the real text parser: dictionary-only fixtures cannot verify order.
+fetcher_source = (root / 'app/Madeira/SwiftSteam/Library/SteamLibraryFetcher.swift').read_text()
+parser_start = fetcher_source.index('    static func parseTextVDF')
+parser_end = fetcher_source.index('    /// Extract app IDs', parser_start)
+program = program.replace('enum VDFParser { static func parseTextVDF(from: Data, sectionOrder: (([String], [String]) -> Void)? = nil) -> [String: Any] { [:] } }',
+    'enum VDFParser {\n' + fetcher_source[parser_start:parser_end] + '\n}\n' +
+    'func appVDF(_ text: String) -> Data { Data(text.utf8) }\n' +
+    'func require(_ condition: @autoclosure () -> Bool, _ label: String) { precondition(condition(), label) }')
 service_test = r'''
 import Foundation
-enum VDFParser { static func parseTextVDF(from: Data) -> [String: Any] { [:] } }
+enum VDFParser { static func parseTextVDF(from: Data, sectionOrder: (([String], [String]) -> Void)? = nil) -> [String: Any] { [:] } }
 enum MadeiraConfig { static func get(_ key: String) -> String? { nil }; static func set(_ key: String, _ value: String?) {} }
 enum SteamLog { static func event(_ text: String) {} }
 struct DockGame { var id: Int; var library: String; var installDir: String; var installed: Bool }
@@ -76,6 +116,23 @@ enum ExternalDrives {
     static func nativeURL(_ path: String) throws -> URL { root.appendingPathComponent(path) }
 }
 enum MadeiraDock { static var clientRoot = URL(fileURLWithPath: "/") }
+enum SteamInstallFiles { static func betaKey(appID: Int, steamApps: URL) -> String? { nil } }
+@MainActor enum DockSteamInputService {
+    static var value: DockSteamInputContext?
+    static func context(appID: UInt32) -> DockSteamInputContext? { value }
+}
+@MainActor final class SteamInputDefaultSources {
+    enum Failure: Error { case incompatible }
+    static let shared = SteamInputDefaultSources()
+    var value: DockSteamInputDefault.Recommendation?
+    var calls: [([UInt64], Bool)] = []
+    static func metadata(appID: UInt32) async throws -> SteamAppInfo.SteamInputMetadata? { nil }
+    func recommendation(appID: UInt32, ids: [UInt64], refresh: Bool, controllerMatched: Bool) async throws -> DockSteamInputDefault.Recommendation {
+        calls.append((ids, controllerMatched))
+        guard let value else { throw Failure.incompatible }
+        return value
+    }
+}
 struct Game { var id: Int; var steamInputMetadata: SteamAppInfo.SteamInputMetadata? }
 @MainActor final class Fetcher {
     var calls = 0
@@ -116,8 +173,11 @@ __RESOLVER_METHOD__
         precondition(library.fetcher.calls == 1 && library.writes == 1)
         // A running session cannot reach Steam: cached metadata is reused offline.
         library.inSession = true; library.fetcher.value = nil
+        DockSteamInputService.value = .init(capabilities: 0, vendor: 0x054c, product: 0x0ce6, rawType: 45, manifestPath: nil)
         let cached = await library.resolveSteamInputDefault(game: game)
         precondition(recommended(cached)?.source == layout && library.fetcher.calls == 1)
+        library.inSession = false
+        DockSteamInputService.value = nil
         // KeyValues order, not numeric order, selects the entry.
         let alternate = Data("controller_mappings { revision 2 }".utf8)
         try alternate.write(to: folder.appendingPathComponent("alternate.vdf"))
@@ -167,6 +227,33 @@ __RESOLVER_METHOD__
             library.owned[0].steamInputMetadata = .init(templateIndex: index, manifestPath: nil)
             do { let r = await library.resolveSteamInputDefault(game: game); precondition(r == .unresolved(.templateControllerDependent)) }
         }
+        // The live bridge's capability bits decide whether indices 2/3 stay
+        // mixed-output templates or become the pure Gamepad template.
+        let noMouse = DockSteamInputContext(capabilities: 0, vendor: 0x054c, product: 0x0ce6, rawType: 45, manifestPath: nil)
+        DockSteamInputService.value = noMouse
+        library.owned[0].steamInputMetadata = .init(templateIndex: 2, manifestPath: nil)
+        do { let r = await library.resolveSteamInputDefault(game: game); precondition(recommended(r)?.source == templateBytes) }
+        let mouse = DockSteamInputContext(capabilities: 0x1800, vendor: 0x054c, product: 0x0ce6, rawType: 45, manifestPath: nil)
+        DockSteamInputService.value = mouse
+        try wasdBytes.write(to: templateFolder.appendingPathComponent("controller_ps5_gamepad_fps.vdf"))
+        do { let r = await library.resolveSteamInputDefault(game: game); precondition(recommended(r)?.source == wasdBytes && recommended(r)?.mouseOrKeyboard == true) }
+        library.owned[0].steamInputMetadata = .init(templateIndex: 0, manifestPath: nil, controllerSupport: 2)
+        DockSteamInputService.value = noMouse
+        do { let r = await library.resolveSteamInputDefault(game: game); precondition(recommended(r)?.source == templateBytes) }
+        library.owned[0].steamInputMetadata = .init(templateIndex: nil, manifestPath: nil, controllerSupport: 0)
+        do { let r = await library.resolveSteamInputDefault(game: game); precondition(r == .noRecommendation) }
+        // The running game's manifest wins over both the cached path and index.
+        try manifest.write(to: folder.appendingPathComponent("actions.vdf"))
+        library.owned[0].steamInputMetadata = .init(templateIndex: 4, manifestPath: "missing.vdf")
+        DockSteamInputService.value = .init(capabilities: 0, vendor: 0x054c, product: 0x0ce6, rawType: 45,
+            manifestPath: "C:\\steamapps\\common\\game\\input\\actions.vdf")
+        do { let r = await library.resolveSteamInputDefault(game: game); precondition(recommended(r)?.source == layout) }
+        library.owned[0].steamInputMetadata = nil
+        do { let r = await library.resolveSteamInputDefault(game: game); precondition(recommended(r)?.source == layout) }
+        DockSteamInputService.value = .init(capabilities: 0, vendor: 0x054c, product: 0x0ce6, rawType: 45,
+            manifestPath: "C:\\other-game\\actions.vdf")
+        do { let r = await library.resolveSteamInputDefault(game: game); precondition(r == .unresolved(.manifestUnsupported)) }
+        DockSteamInputService.value = nil
         for index: UInt32 in [7, 13, 14, 15, 99] {
             library.owned[0].steamInputMetadata = .init(templateIndex: index, manifestPath: nil)
             do { let r = await library.resolveSteamInputDefault(game: game); precondition(r == .unresolved(.templateUnsupported)) }
@@ -186,8 +273,25 @@ __RESOLVER_METHOD__
         do { let r = await library.resolveSteamInputDefault(game: uninstalled); precondition(r == .unresolved(.notInstalled)) }
         library.owned[0].steamInputMetadata = nil
         do { let r = await library.resolveSteamInputDefault(game: game); precondition(r == .unresolved(.dataUnavailable)) }
+        let previousCalls = library.fetcher.calls
         library.signedIn = false
-        do { let r = await library.resolveSteamInputDefault(game: game); precondition(r == .unresolved(.dataUnavailable) && library.fetcher.calls == 1) }
+        do { let r = await library.resolveSteamInputDefault(game: game); precondition(r == .unresolved(.dataUnavailable) && library.fetcher.calls == previousCalls) }
+        // No legacy item/compatible file uses the pinned template fallback.
+        try templateBytes.write(to: templateFolder.appendingPathComponent("controller_ps5_gamepad_joystick.vdf"))
+        library.inSession = false
+        DockSteamInputService.value = noMouse
+        library.owned[0].steamInputMetadata = .init(templateIndex: 1, manifestPath: nil, controllerSupport: 2, workshopIDs: [])
+        do { let r = await library.resolveSteamInputDefault(game: game); precondition(recommended(r)?.source == templateBytes) }
+        library.owned[0].steamInputMetadata!.workshopDetails = []
+        do { let r = await library.resolveSteamInputDefault(game: game); precondition(r == .noRecommendation) }
+        library.owned[0].steamInputMetadata!.workshopDetails = [.init(id: 22, controllerType: "controller_ps5", branches: ["default"], useActionBlock: true)]
+        SteamInputDefaultSources.shared.value = .init(source: layout, origin: .workshop)
+        do { let r = await library.resolveSteamInputDefault(game: game); precondition(recommended(r)?.source == layout) }
+        precondition(SteamInputDefaultSources.shared.calls.last!.0 == [22] && SteamInputDefaultSources.shared.calls.last!.1)
+        SteamInputDefaultSources.shared.value = nil
+        library.owned[0].steamInputMetadata = .init(templateIndex: 1, manifestPath: nil, controllerSupport: 2, workshopIDs: [22])
+        do { let r = await library.resolveSteamInputDefault(game: game); precondition(recommended(r)?.source == templateBytes) }
+        precondition(!SteamInputDefaultSources.shared.calls.last!.1)
         print("PASS: game-default resolution order, fail-closed classes, scoped cache and offline reuse")
     }
 }

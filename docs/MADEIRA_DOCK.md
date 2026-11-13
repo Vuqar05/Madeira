@@ -29,7 +29,7 @@ them.
 ## Source and licence
 
 - Source: the `madeira-dock` submodule
-  (`https://github.com/125hz/madeira-dock`, pinned at `e1bf62f`), about 1,850 lines of
+  (`https://github.com/125hz/madeira-dock`, pinned at `0cc68f1`), written in
   C. Copyright 2026 125hz, **GPL-3.0-or-later with the Madeira
   Converter Exception** (the owner open-sourced it on 2026-09-27; it used to
   be a closed executable).
@@ -639,38 +639,42 @@ The legacy Dock-selected generic fallback is not migrated as an existing Steam c
 corrupt/unknown records are kept without overwriting. The UUID currently denotes
 Madeira's virtual DualSense bridge, not the physical controller.
 
-An unsuccessful Valve selection query is reported as unavailable. Neither it
-nor an empty successful query queues or saves a generic fallback; an empty
-selection can leave Steam Input without a loaded layout until recommendation
-resolution is implemented.
+An unsuccessful Valve selection query is unavailable and receives bounded retries.
+Neither it nor an empty successful query auto-selects a generic template. The
+Controls page and Session menu offer an explicit Game default resolved in the
+pinned January order: current runtime manifest, confined bundled manifest hint,
+ordered recommended Workshop item, then the app/controller-dependent Steam
+template. Slots 15/104 supply a nonce/app/epoch-bound manifest and controller
+context; the virtual bridge's capability mask resolves template indices 2/3 and
+its observed VID/PID resolve device-specific manifest entries.
 
-The owned-library cache retains a bounded Steam product-info hint (manifest path
-and template index; well-formed data listing neither is recorded as such).
-`DockSteamInputDefault` classifies it in SteamUI's verified order: a manifest under
-the installed game directory (confined, no-follow reads; the portable reader picks the
-exact DualSense entry, then a PS4/PS5-compatible one, then the first entry), then the
-template index. The fixed DualSense templates are resolved (4 and 5 give the Gamepad
-template; 6 and 8–12 the WASD, mouse, desktop and flick-stick templates, which are
-labelled as sending keyboard or mouse input Madeira does not pass to games yet).
-Indices 2 and 3 (chosen from controller capability bits), 1 (Workshop), the rest,
-unsupported controller matching (`device_specific`), unreadable files and missing
-data stay unresolved and are never reported as "no recommendation". Metadata with
-no hint (or index 0) is described as naming no layout, not as Steam choosing none:
-SteamUI may still pick a Gamepad template from app state Madeira cannot read yet.
-The cache is used first, also offline.
-The Controls page and Session menu offer "Use game default" for a resolved
-recommendation (also the way back after another choice) and, only when none was
-resolved, an explicitly generic Gamepad template. Both use the common journal and
-receipt path and need a settled working baseline. A game with no saved Steam
-selection (the query fails three times, or succeeds and names neither a layout nor
-a Workshop item) has none, so the first such choice is handed to Dock with
-`BOOTSTRAP` (one explicit layout, no Steam selection written) and then recorded
-through the journal once its baseline exists; a confirmed choice is handed over
-again automatically at relaunch. Work interrupted in an earlier launch or
-connection lease does not block this: the bootstrapped baseline is the fresh
-native evidence that retires it, without replaying it. The pages also show
-confirmed current-session choices, reported Steam selections and unconfirmed requests
-separately. A path a running game sets at runtime is not observed.
+PICS metadata retains controller support, ordered legacy Workshop IDs and rich
+controller/branch entries. Public PICS and PublishedFile requests can use an
+anonymous CM session while Dock holds the real account: no credential read or
+second sign-in to the player's account. Original controller-binding VDF bytes are
+downloaded over bounded HTTPS from permitted Steam CDNs, hashed and cached with
+the exact app/candidate ordering and resolution policy. Explicit refresh failures
+keep the last complete cache; offline reads verify hashes. Missing data is
+unresolved, distinct from a proven lack of a recommendation. Keyboard/mouse Steam
+templates retain their output warning because that output is not forwarded yet.
+
+Both Game default and the clearly named generic Gamepad fallback use the common
+journal and native receipt path. Only the hash-bound receipt makes a choice
+active; provenance is persisted with that choice. A first explicit choice in an
+empty session uses BOOTSTRAP to establish a baseline and then the normal apply
+path. Confirmed choices re-bootstrap at relaunch. Bootstrap quiesces held output.
+Unreadable named personal/Workshop selections are preserved and cannot be
+replaced by bootstrap; selected-Workshop recovery belongs to milestone 3.
+
+Current validation: native sanitizer suites, x64/i386 builds, pinned client/UI
+checkers, actual ordered PICS parsing, default download/offline-cache tests,
+transaction/service and anonymous-session tests, signed iOS build and runtime
+preflight pass. Live anonymous PICS and controller-binding downloads also succeed.
+The initial device launch attempt exposed missing i386 resources in the local
+bundle; those resources were restored and preflight now rejects that omission.
+The corrected signed Debug build is installed on the paired iPad. Final
+physical-controller default/override/restoration/relaunch/offline checks are
+pending; see `STEAM_INPUT_INTEGRATION_PLAN.md` for the current checklist.
 
 Dock's version-1 protocol and transport capability bits are documented in its
 README. Commands have a launch nonce, App ID, controller index, observed

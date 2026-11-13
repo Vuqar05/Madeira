@@ -547,12 +547,17 @@ final class SteamOwnedLibrary: ObservableObject {
 
     /// Return a cached PICS hint or ask Steam when no usable hint is cached.
     /// A nil result means unresolved, including offline and malformed metadata.
-    func steamInputMetadata(appID: Int) async -> SteamAppInfo.SteamInputMetadata? {
+    func steamInputMetadata(appID: Int, refresh: Bool = false) async -> SteamAppInfo.SteamInputMetadata? {
         guard Self.enabled, appID > 0, appID <= Int(UInt32.max) else { return nil }
-        if let hint = game(appID)?.steamInputMetadata { return hint }
-        guard signedIn, !inSession else { return nil }
+        if !refresh, let hint = game(appID)?.steamInputMetadata { return hint }
+        guard refresh || (signedIn && !inSession) else { return nil }
         do {
-            guard let hint = try await fetcher.fetchAppInfo(appID: UInt32(appID))?.steamInputMetadata else { return nil }
+            let fetched: SteamAppInfo.SteamInputMetadata?
+            if inSession || !signedIn {
+                fetched = try await SteamInputDefaultSources.metadata(appID: UInt32(appID))
+            } else { fetched = try await fetcher.fetchAppInfo(appID: UInt32(appID))?.steamInputMetadata }
+            try Task.checkCancellation()
+            guard let hint = fetched else { return nil }
             if let index = owned.firstIndex(where: { $0.id == appID }) {
                 owned[index].steamInputMetadata = hint
                 writeCache()
@@ -568,13 +573,51 @@ final class SteamOwnedLibrary: ObservableObject {
     /// cached or freshly fetched app metadata. Nothing here activates a layout
     /// or touches a saved selection, and an unresolved result is never evidence
     /// that the game has no recommendation.
-    func resolveSteamInputDefault(game: DockGame) async -> DockSteamInputDefault.Resolution {
-        let metadata = await steamInputMetadata(appID: game.id)
+    func resolveSteamInputDefault(game: DockGame, refresh: Bool = false) async -> DockSteamInputDefault.Resolution {
+        guard game.id > 0, game.id <= Int(UInt32.max) else { return .unresolved(.dataUnavailable) }
+        let metadata = await steamInputMetadata(appID: game.id, refresh: refresh)
+        let context = DockSteamInputService.context(appID: UInt32(game.id))
+        // A running game may have supplied a manifest that outranks PICS. Do
+        // not present a metadata-only guess as its default before Dock answers.
+        if inSession && context == nil { return .unresolved(.contextUnavailable) }
         var directory: URL?
         if game.installed { directory = try? ExternalDrives.nativeURL(game.library + "/common/" + game.installDir) }
-        return DockSteamInputDefault.resolve(
-            hints: metadata.map { .init(templateIndex: $0.templateIndex, manifestPath: $0.manifestPath) },
-            gameDirectory: directory, clientRoot: MadeiraDock.clientRoot)
+        let resolved = DockSteamInputDefault.resolve(
+            hints: metadata.map { .init(templateIndex: $0.templateIndex, manifestPath: $0.manifestPath,
+                                        controllerSupport: $0.controllerSupport) },
+            gameDirectory: directory, clientRoot: MadeiraDock.clientRoot,
+            context: context,
+            windowsDirectory: "C:/" + game.library + "/common/" + game.installDir)
+        if resolved == .unresolved(.workshopSource), let metadata {
+            var ids = metadata.workshopIDs ?? []
+            let controllerMatched = metadata.workshopDetails?.isEmpty == false
+            if controllerMatched {
+                guard let context, context.isDualSense else { return .unresolved(.contextUnavailable) }
+                // Steam's installed branch, never the branch merely chosen for
+                // a future download. January calls the public branch "default".
+                guard let steamApps = try? ExternalDrives.nativeURL(game.library) else { return .unresolved(.dataUnavailable) }
+                let branch = SteamInstallFiles.betaKey(appID: game.id, steamApps: steamApps) ?? "default"
+                guard let id = metadata.workshopRecommendation(branch: branch) else { return .unresolved(.workshopIncompatible) }
+                ids = [id]
+            }
+            guard !ids.isEmpty else {
+                guard metadata.workshopIDs != nil else { return resolved }
+                return metadata.workshopDetails != nil ? .noRecommendation :
+                    DockSteamInputDefault.workshopFallback(controllerSupport: metadata.controllerSupport,
+                        clientRoot: MadeiraDock.clientRoot, context: context)
+            }
+            do {
+                let value = try await SteamInputDefaultSources.shared.recommendation(appID: UInt32(game.id), ids: ids,
+                    refresh: refresh, controllerMatched: controllerMatched)
+                try Task.checkCancellation()
+                return .recommended(value)
+            } catch SteamInputDefaultSources.Failure.incompatible {
+                return metadata.workshopDetails != nil ? .unresolved(.workshopIncompatible) :
+                    DockSteamInputDefault.workshopFallback(controllerSupport: metadata.controllerSupport,
+                        clientRoot: MadeiraDock.clientRoot, context: context)
+            } catch { return .unresolved(.workshopUnavailable) }
+        }
+        return resolved
     }
 
     private func handleSessionError(_ error: Error, context: String, report: Bool = true) {

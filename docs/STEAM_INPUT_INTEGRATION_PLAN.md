@@ -268,100 +268,63 @@ stale requests leave the previous working layout usable.
 
 ## Milestone 2 — Use the game's default layout
 
-Investigation: an unsuccessful or empty saved-selection query no longer selects
-a generic template. Until the recommendation/fallback flow below is implemented,
-an empty selection can leave Steam Input without a loaded layout.
-SteamUI's config-worker and `bRecommended` metadata are leads only; their
-resolution and download behavior remain unverified.
-SteamUI's metadata lookup and the client's candidate action-manifest path
-wrappers have now been traced to their server implementation; unresolved ABI,
-cache and branch semantics are recorded in Dock's `docs/CLIENT_LAYOUTS.md`.
-Unavailable selection queries receive bounded app-side retries without
-migrating stale feed contents.
-There is now a bounded shared reader for explicit DualSense entries in bundled
-action manifests and a confined app-side reader for their layout bytes. An
-account-scoped PICS cache and on-demand fetch can supply the manifest path
-independently of the template index, including cached access while a game session is
-running. This yields only an unverified candidate; it is not yet wired to the
-live transaction or UI, and cached metadata is not proof of the current default.
-Absent exact-device entries do not establish that no compatible recommendation exists.
-SteamUI checks device-specific entries before ordinary paths; the candidate
-reader rejects device-specific entries until matching is implemented. When no
-such entries are present it retains KeyValues order, rather than sorting keys,
-as the pinned resolver does.
-The pinned January UI's PS5 template mapping is now checked against the binary
-for every index that does not depend on runtime state (4, 5, 6, 8–12), and the
-installed templates can be read as candidates. Indices 0, 2 and 3 depend on
-controller or app state and remain unresolved; cached metadata is still not
-proof that a candidate is the current recommendation.
-SteamUI's startup path tries two other resolvers before the template resolver.
-Index 4 and an exact Valve template hash alone therefore cannot establish the
-current default. The briefly exposed index-4 reset has been removed pending
-verification of those higher-priority paths. Other recommendations, offline
-lookup and first-use bootstrap remain unresolved; device activation tests are
-still required.
-The Controls page and Session menu now show current-session confirmed choices
-separately from Steam's reported selection and any unconfirmed request. A
-client getter failure still cannot distinguish absence from unready state, so
-the UI does not claim an unconfirmed Steam selection is active.
+Implementation is ready for final device acceptance (2026-11-13). Work is on
+`codex/steam-input-milestone-2`, based on `merge/steam-input-api`; the separate
+Friends checkout is unchanged. The rebuilt signed Debug app is installed on the
+paired iPad. The first launch attempt exposed missing 32-bit runtime resources in
+the local bundle; a corrected build is installed, and preflight now rejects the
+omission. A physical controller is available; the current device checks below
+are still pending and must not be inferred from passing host tests.
 
-- [x] Inspect how the pinned client resolves developer recommendations, native
-  action manifests and controller-specific defaults. Record the proven APIs and
-  data sources; do not assume the current GetConfig call discovers recommendations.
-  Recorded in Dock's `docs/CLIENT_LAYOUTS.md`: saved selection, then the manifest
-  branch (slot 15 first, app data second, controller choice in `0x53e090`), then
-  the template. Slot 15 is not called by Dock.
-- [ ] Resolve and fetch the game's recommended layout and dependencies through
-  verified client mechanisms. Handle game metadata that is not yet cached.
-  - [x] Manifest and fixed-template recommendations from cached or fetched app
-    data, fail-closed classification, offline reuse (host-tested).
-  - [x] First-use bootstrap (device-verified 2026-11-06 on Portal 2): `BOOTSTRAP` hands
-    the host one explicit layout when Steam has no saved selection, so a baseline
-    exists and the normal apply/receipt/restart path works. Confirmed choices are
-    re-bootstrapped at relaunch (device-verified: relaunching Portal 2 restored it). Still needs a tap on a
-    game's first launch. Portal 2 (no saved selection, bundled action manifest, native
-    actions layout `controller_standard_ps5.vdf`, revision 69): "Use game default"
-    loaded it and the controller works in the game's menu and its buttons work in the
-    game (only briefly played: performance was poor, tracked separately).
-    R3 fixes (host-tested, device test pending): work interrupted in an earlier launch
-    or connection lease had blocked the bootstrap permanently, because only a baseline
-    can retire it and only a bootstrap gives such a game one; it is now retired once
-    the bootstrapped baseline exists. A successful but empty selection query (no key,
-    no Workshop item) now also counts as "no saved selection" in Dock and the app; a
-    named selection Dock cannot read is still never replaced.
-  - [x] Explicit generic template on a game with no recommendation: device-verified on
-    Lethal Company (template index 2, unresolved); the pad works after the tap.
-  - [ ] Offline reuse of a cached default: host-tested only. Not testable on the device
-    right now because Madeira needs LocalDevVPN, which needs a Wi-Fi connection.
-  - [x] Fixed template indices (host-tested, checker-pinned 2026-11-06): for a
-    DualSense SteamUI maps 4 and 5 to the Gamepad template and keeps 6 and 8–12
-    (WASD, mouse, desktop, flick stick); those are resolved, and the keyboard/mouse
-    ones say Madeira does not pass that input to games yet. Index 0 equals no index.
-    See Dock's `CLIENT_LAYOUTS.md` "Template resolver indices for a DualSense".
-  - [ ] Indices 2 and 3 (kept, or replaced by 4, depending on the connected slot's
-    capability bits `& 0x1800`) and no index (index 2 when an app-dependent flag is
-    set): both inputs need a runtime observation of the virtual DualSense and app,
-    so these stay unresolved, and "no hint" is not reported as "no layout".
-  - [ ] Workshop (index 1), `device_specific` and a manifest path set by a running game.
-- [ ] Implement Game default as an explicit reset to Valve's current recommendation,
-  distinct from the user's previous custom/community selection.
-  - [x] "Use game default" through the common journal/receipt path (host-tested).
-  - [x] Device-verified on an iPad (2026-11-06, Schedule I, template index 4,
-    Debug build): fresh session shows no confirmed layout; "Use game default"
-    gives "Active: Game default" from a hash-bound receipt; a Debug-only override
-    (the default Gamepad template with A and B exchanged) visibly swaps A and B in
-    the game's menu; "Use game default" restores them. Template path only: the
-    manifest path is not yet device-tested. The override button is `#if DEBUG`.
-    A WASD (keyboard) override loaded but delivered no input; keyboard/mouse
-    output is a Milestone 5 item, not a Milestone 2 defect.
-- [ ] Preserve existing Steam selections during migration and show which layout is
-  active, where it came from and whether the player has overridden the default.
-- [ ] Offer a clearly named generic template only when no game recommendation is
-  available. Do not label it as the developer's layout or silently apply it after
-  a transient failure. Allow retry or an explicit fallback choice.
-  - [x] Explicit "Use generic Gamepad template" for no-hint/unresolved results.
-- [ ] Verify native Steam Input manifests/action sets independently of XInput-only
-  games; the current Gamepad template cannot serve as proof of native action support.
+- [x] Inspect and pin the January recommendation order: saved selection is
+  separate from a game default; runtime manifest, PICS manifest, index-1 Workshop
+  recommendation, then Steam's template resolver. See Dock's `docs/CLIENT_LAYOUTS.md`.
+- [x] Resolve and fetch recommendation sources without hand-copied controller files.
+  - Runtime context comes from independently pinned slots 15 and 104, bound to
+    the launch/app/connection. Device-specific manifest choice preserves file order
+    and January's product matching. Reads stay beneath the installed game directory.
+  - PICS metadata includes `controller_support`, ordered legacy Workshop IDs and
+    ordered `SteamControllerConfigDetails`. Rich entries use the installed branch,
+    exact-controller matches, compatibility matches and default-branch fallbacks.
+  - Public recommendation metadata and controller-binding items (Workshop app
+    241100, file type 12) use anonymous CM connections. The anonymous path reads
+    no account credentials and does not take the running Dock account offline.
+    HTTPS downloads are bounded and confined to permitted Steam CDN hosts.
+  - Original VDF bytes and their SHA-256 are cached atomically. Offline reads
+    verify content and the exact candidate order; failed refreshes retain the
+    previous complete cache. Private/deleted/unavailable items fail closed.
+  - Template indices 2/3 use the observed slot's `0x1800` capability mask; absent
+    indices use `controller_support`. Legacy index-1 exhaustion uses Steam's
+    template-2/6 fallback; rich metadata suppresses that fallback as Steam does.
+- [x] Apply Game default as an explicit choice through the common journal,
+  content hashes, revision reservations and native receipts. Queue/cache presence
+  alone never means active. Retain source attribution with the confirmed choice.
+- [x] Preserve Steam's saved selection during migration and all runtime changes.
+  An unreadable named personal/Workshop selection is not replaced by bootstrap.
+  Such selected-Workshop recovery remains part of milestone 3; it does not justify
+  bypassing the working-baseline/revision guarantees.
+- [x] Offer a clearly named generic Gamepad template and retry when a recommendation
+  is absent or unavailable. Never auto-apply it on a transient lookup failure.
+- [x] Bootstrap an explicitly chosen layout only when nothing is loaded and no
+  readable saved selection exists. Reapply confirmed choices on restart. Bootstrap
+  also quiesces held output while loading.
+- [x] Host validation: sanitizer native suites, x64/i386 builds, pinned binary
+  checkers, actual PICS parser/order tests, default download/cache tests, service,
+  transaction and anonymous-session checks, signed iOS build and runtime preflight.
+- [ ] Complete final physical-device acceptance on the current build:
+  - [ ] Native action-manifest default: controller menus and gameplay.
+  - [ ] Distinctive override, then Game default restores the original controls.
+  - [ ] Relaunch automatically reuses the confirmed default without changing the
+    saved Steam selection.
+  - [ ] A game with no recommendation offers an explicit generic fallback.
+  - [ ] Cached default works offline while keeping the Wi-Fi/JIT transport alive.
+
+Earlier device evidence (2026-11-06): a fixed template default, A/B-swapped
+Debug override and restoration worked in an XInput game; a bundled native-action
+manifest bootstrapped and worked in menus and brief gameplay; a generic template
+worked in a third game. The current context and recommendation additions still
+need the final device matrix above. Host tests cover uncached metadata, failed
+refresh, ordering, branch fallbacks, device-specific manifests and offline reuse.
 
 Done when: a fresh install with no hand-copied controller files obtains a game's
 recommendation, visibly uses its distinctive bindings, and restores it after a

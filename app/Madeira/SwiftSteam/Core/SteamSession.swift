@@ -54,6 +54,10 @@ class SteamSession {
     /// → 76561197960265728. Using raw 0 causes EResult 5 (InvalidPassword) on
     /// some CM servers.
     private static let preLogonSteamID: UInt64 = 76561197960265728
+    /// A public-data connection never reads credentials or takes Dock's account.
+    private static let anonymousSteamID: UInt64 = 0x01A0_0000_0000_0000
+    let anonymous: Bool
+    init(anonymous: Bool = false) { self.anonymous = anonymous }
 
     // MARK: - Lifecycle
 
@@ -107,7 +111,7 @@ class SteamSession {
             SteamLog.trace("Sent ClientHello (\(helloData.count) bytes)")
 
             // Try to log in with stored tokens, retrying up to 2 different servers on timeout/redirect
-            if let tokens = SteamSignIn.credentialsForDock() {
+            if let tokens = anonymous ? (accountName: "", refreshToken: "") : SteamSignIn.credentialsForDock() {
                 var lastError: Error = SteamError.connectionTimeout
                 var loggedIn = false
                 for attempt in 1...2 {
@@ -254,13 +258,14 @@ class SteamSession {
         var logon = CMsgClientLogon()
         logon.accountName = accountName
         logon.accessToken = accessToken
-        logon.machineName = SteamDevice.name
+        logon.machineName = anonymous ? "Madeira" : SteamDevice.name
+        logon.shouldRememberPassword = !anonymous
         logon.clientOSType = -102  // macOS
 
         let logonData = SteamMessageCodec.encodeClientMessage(
             eMsg: .clientLogon,
             body: logon.serialize(),
-            steamID: Self.preLogonSteamID,
+            steamID: anonymous ? Self.anonymousSteamID : Self.preLogonSteamID,
             sessionID: 0
         )
 

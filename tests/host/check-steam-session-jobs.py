@@ -43,7 +43,10 @@ stubs = r'''
 import Foundation
 enum SteamLog { static func trace(_ m: @autoclosure () -> String) {}; static func event(_ m: String) {} }
 enum SteamDevice { static let name = "host" }
-enum SteamSignIn { static func credentialsForDock() -> (accountName: String, refreshToken: String)? { nil } }
+@MainActor enum SteamSignIn {
+    static var credentialReads = 0
+    static func credentialsForDock() -> (accountName: String, refreshToken: String)? { credentialReads += 1; return nil }
+}
 actor CMServerList {}
 extension Data { func gunzip(expectedSize: Int = 0) -> Data? { nil } }
 
@@ -51,18 +54,32 @@ extension Data { func gunzip(expectedSize: Int = 0) -> Data? { nil } }
 actor SteamConnection {
     nonisolated(unsafe) static var last: SteamConnection?
     private var parked: CheckedContinuation<Void, Never>?
+    private var handler: ((Data) -> Void)?
+    private var automatic = false
+    private(set) var sent: [SteamMessageCodec.IncomingMessage] = []
     init() { Self.last = self }
     var isConnected: Bool { true }
     var isSending: Bool { parked != nil }
-    func setMessageHandler(_ handler: @escaping (Data) -> Void) {}
+    func setMessageHandler(_ handler: @escaping (Data) -> Void) { self.handler = handler }
     func setDisconnectHandler(_ handler: @escaping (Error?) -> Void) {}
     func connect() async throws {}
     func reconnect() async throws {}
     func disconnect() {}
     func send(_ data: Data) async throws {
+        if automatic {
+            let message = try SteamMessageCodec.decode(data)
+            sent.append(message)
+            if message.eMsg == .clientLogon {
+                var body = ProtobufEncoder(); body.writeUInt32(fieldNumber: 1, value: 1); body.writeUInt32(fieldNumber: 3, value: 30)
+                handler?(SteamMessageCodec.encodeClientMessage(eMsg: .clientLogonResponse, body: body.data,
+                    steamID: 0x01A0_0000_0000_0001, sessionID: 7))
+            }
+            return
+        }
         await withCheckedContinuation { parked = $0 }
         throw SteamError.disconnected
     }
+    func automaticLogon() { automatic = true }
     func release() { parked?.resume(); parked = nil }
 }
 '''
@@ -103,6 +120,23 @@ var failures = 0
         try await disconnectDuringSend("sendAndWaitPICS") { session in
             _ = try await session.sendAndWaitPICS(eMsg: .clientPICSProductInfoRequest, body: Data(), timeout: 60)
         }
+        let publicSession = SteamSession(anonymous: true)
+        let publicConnection = SteamConnection.last!
+        await publicConnection.automaticLogon()
+        let reads = SteamSignIn.credentialReads
+        try await publicSession.ensureConnected()
+        require(publicSession.connectionState == .authenticated && SteamSignIn.credentialReads == reads,
+                "anonymous logon authenticates without reading the signed-in account")
+        let sent = await publicConnection.sent
+        let logon = sent.first { $0.eMsg == .clientLogon }!
+        require(logon.header.steamid == 0x01A0_0000_0000_0000, "public connection uses the anonymous-user SteamID type")
+        var decoder = ProtobufDecoder(logon.body)
+        while let tag = try decoder.readTag() {
+            if tag.fieldNumber == 50 || tag.fieldNumber == 108 {
+                require(try decoder.readString().isEmpty, "anonymous logon sends no account name or refresh token")
+            } else { try decoder.skip(wireType: tag.wireType) }
+        }
+        publicSession.disconnect()
         if failures > 0 { print("FAILURES: \(failures)"); exit(1) }
         print("PASS: all SteamSession job checks")
     }

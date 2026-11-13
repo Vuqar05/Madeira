@@ -4959,6 +4959,15 @@ private struct SteamInputStatusView: View {
     let appID: UInt32
     @State private var resolution: DockSteamInputDefault.Resolution?
     @State private var failure: String?
+    @State private var checking = false
+    @State private var resolutionRequest: UUID?
+    @State private var refreshPending = false
+    private struct SourceKey: Hashable {
+        let appID: UInt32
+        let session: [UInt8]
+        let epoch: UInt32
+        let sequence: UInt32
+    }
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { _ in
             let snapshot = DockSteamInputService.snapshot
@@ -4977,12 +4986,18 @@ private struct SteamInputStatusView: View {
                     Text(actions.note).font(.caption).foregroundStyle(.secondary)
                     if actions.offerDefault, case .recommended(let value)? = resolution {
                         Button("Use game default") { request { try DockSteamInputService.requestGameDefault(value) } }
-                            .disabled(!(canChange || canBootstrap))
+                            .disabled(checking || !(canChange || canBootstrap))
                     }
                     if actions.offerGeneric {
                         Button("Use generic Gamepad template") {
                             request { try DockSteamInputService.requestGenericTemplate(clientRoot: MadeiraDock.clientRoot) }
-                        }.disabled(!(canChange || canBootstrap))
+                        }.disabled(checking || !(canChange || canBootstrap))
+                    }
+                    if actions.offerRetry {
+                        Button(checking ? "Checking game default…" : "Retry game default") {
+                            DockSteamInputService.retrySources(appID: appID)
+                            Task { await resolve(refresh: true) }
+                        }.disabled(checking)
                     }
                     if DockSteamInputService.bootstrapping {
                         Text("Loading the layout into Steam Input. This can take about half a minute.")
@@ -5002,18 +5017,28 @@ private struct SteamInputStatusView: View {
                     if let failure { Text(failure).font(.caption).foregroundStyle(.red) }
                 }
             }
+            .task(id: SourceKey(appID: appID, session: snapshot?.session ?? [],
+                                epoch: snapshot?.epoch ?? 0, sequence: snapshot?.sequence ?? 0)) { await resolve() }
         }
-        .task(id: appID) { await resolve() }
     }
     private func request(_ change: () throws -> Void) {
         do { try change(); failure = nil }
         catch { failure = "The layout change could not start. Try again once the controller layout has settled." }
     }
-    @MainActor private func resolve() async {
+    @MainActor private func resolve(refresh: Bool = false) async {
+        let request = UUID()
+        resolutionRequest = request
+        refreshPending = refreshPending || refresh
+        checking = true
+        defer { if resolutionRequest == request { checking = false } }
         let id = Int(appID)
         let game = await Task.detached { MadeiraDock.games(drive: MadeiraDock.drive).first { $0.id == id } }.value
+        guard resolutionRequest == request, !Task.isCancelled else { return }
         guard let game else { resolution = .unresolved(.notInstalled); return }
-        resolution = await SteamOwnedLibrary.shared.resolveSteamInputDefault(game: game)
+        let result = await SteamOwnedLibrary.shared.resolveSteamInputDefault(game: game, refresh: refreshPending)
+        guard resolutionRequest == request, !Task.isCancelled else { return }
+        refreshPending = false
+        resolution = result
     }
 }
 
