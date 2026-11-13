@@ -676,8 +676,12 @@ The corrected signed Debug build is installed on the paired iPad. On 2026-11-13
 the owner confirmed the menu opens and Game default/controller controls work.
 The App 620 feed, runtime manifest context and confirmed native receipt matched
 the same launch/connection: active working revision 86, reserved high-water 87.
-Override/restoration, automatic relaunch, no-recommendation fallback and offline
-checks remain pending; see `STEAM_INPUT_INTEGRATION_PLAN.md` for the checklist.
+A later fresh launch confirmed revision 88 for the persisted Debug A/B-swapped
+template, matching the owner's report of working swapped controls and
+`Active: Generic template`. That verifies restoration of the last confirmed
+override. Switching back to Game default, its automatic relaunch,
+no-recommendation fallback and offline checks remain pending; see
+`STEAM_INPUT_INTEGRATION_PLAN.md` for the checklist.
 
 Dock's version-1 protocol and transport capability bits are documented in its
 README. Commands have a launch nonce, App ID, controller index, observed
