@@ -687,8 +687,15 @@ Steam's selection feed stayed empty across launches; this run did not
 exercise a named Steam selection. The owner also confirmed the explicit
 no-recommendation fallback for App 1625450: its active feed and confirmed
 revision-1 receipt match a manifest-free runtime context, and the persisted
-choice is the unmodified generic Gamepad template. Offline acceptance remains
-pending; see `STEAM_INPUT_INTEGRATION_PLAN.md`.
+choice is the unmodified generic Gamepad template. App 105600 subsequently
+fetched and cached its recommended Workshop default and confirmed revision 5,
+but the owner could not navigate its menus with the controller. Its i386
+XInput farm lacked forwarding support. Rebuilt all five i386 XInput modules
+from the pinned source; the signed app passes the strengthened two-farm
+preflight and is installed for retry. The runtime build now includes those
+modules. Physical input recovery remains unverified. The exact downloaded
+cache passes a host offline check with zero network calls; physical offline
+acceptance remains pending. See `STEAM_INPUT_INTEGRATION_PLAN.md`.
 
 Dock's version-1 protocol and transport capability bits are documented in its
 README. Commands have a launch nonce, App ID, controller index, observed

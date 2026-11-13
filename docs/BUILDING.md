@@ -125,7 +125,12 @@ git-ignored and consumed by the app project.
 8. WoW64 (32-bit programs, optional): `build/wine-i386/build.sh` (i386 Wine farm
    -> `app/Madeira/i386-windows/`), `build/fex-wow64/build.sh` (FEX WOW64 module
    -> `app/Madeira/aarch64-windows/xtajit.dll`) and the aarch64 `wow64.dll` /
-   `wow64win.dll`; see docs/WOW64.md, "Building". UNVERIFIED on macOS.
+   `wow64win.dll`; see docs/WOW64.md, "Building". The targeted XInput stage
+   (`build/wine-i386/build.sh xinput1_1 xinput1_2 xinput1_3 xinput1_4 xinput9_1_0`)
+   was verified on macOS on 2026-11-13. The full farm/DXMT stage remains
+   unverified there. `build/windows-runtime/build.sh` includes the targeted
+   XInput stage, and `tools/check-steam-input-runtime.py` rejects stale
+   forwarding DLLs in either the ARM64EC or i386 bundle farm.
 
 ## Status of the LGPL relink question
 

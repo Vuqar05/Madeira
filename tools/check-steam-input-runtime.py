@@ -57,11 +57,15 @@ def check(bundle):
                            (b'MADEIRA_HIDPAD_OWNER', 'build/wineserver/build.sh')]:
         if marker not in data:
             raise ValueError('linked native runtime lacks ' + marker.decode() + '; rebuild ' + recipe)
-    for name in ['xinput1_3.dll', 'xinput1_4.dll']:
-        data = (folder / name).read_bytes()
-        marker = 'MADEIRA_XINPUT_FORWARD'
-        if marker.encode() not in data and marker.encode('utf-16le') not in data:
-            raise ValueError(name + ' lacks Steam overlay XInput forwarding; rebuild the Windows runtime')
+    # Both farms must route the game's XInput calls to Steam's hooked DLL.
+    # Restoring an old i386 farm can launch games while silently losing input.
+    for directory in ['arm64ec-windows', 'i386-windows']:
+        for name in ['xinput1_1.dll', 'xinput1_2.dll', 'xinput1_3.dll', 'xinput1_4.dll']:
+            data = (bundle / directory / name).read_bytes()
+            marker = 'MADEIRA_XINPUT_FORWARD'
+            if marker.encode() not in data and marker.encode('utf-16le') not in data:
+                raise ValueError(directory + '/' + name +
+                                 ' lacks Steam overlay XInput forwarding; rebuild the Windows runtime')
 
 
 if __name__ == '__main__':

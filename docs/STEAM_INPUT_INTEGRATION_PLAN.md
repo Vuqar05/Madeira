@@ -345,6 +345,19 @@ restarting Madeira. A fresh launch confirmed the native source at revision
 feed remains empty; the stored original-selection observation is absent, so
 this run does not prove preservation of a named Steam selection.
 
+Downloaded-default check (2026-11-13): App 105600 obtained its recommended
+Workshop item through the normal anonymous source path, cached all 19,249
+original bytes and confirmed Game default at revision 5. The owner reports
+that controller menu navigation does not work, so usability is not accepted.
+The running game is i386; the copied i386 XInput farm lacks the forwarding
+support already present in ARM64EC. The five i386 XInput modules were rebuilt
+from the pinned Wine source, included in a new signed build and installed for
+retry. Runtime preflight went red on the old bundle and green on the rebuilt
+one; the standard runtime build now rebuilds those modules. This packaging
+defect is verified, but its causal role in menu input still needs the device
+retry. A host check of the exact device Workshop cache reused its original
+bytes with zero network calls; physical offline acceptance remains pending.
+
 Earlier device evidence (2026-11-06): a fixed template default, A/B-swapped
 Debug override and restoration worked in an XInput game; a bundled native-action
 manifest bootstrapped and worked in menus and brief gameplay; a generic template
