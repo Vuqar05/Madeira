@@ -475,7 +475,8 @@ enum MadeiraDock {
             setenv(key, "1", 1)
         }
         setenv("MADEIRA_STEAM_HOST_APPID", String(game.id), 1)
-        setenv("MADEIRA_DOCK_PERSONA_STATE", String(SteamOnlineStatus.current.rawValue), 1)
+        // The app has no Friends code yet: without this, Dock would sign in to Friends and announce the user.
+        setenv("MADEIRA_DOCK_FRIENDS", "0", 1)
         setenv("MADEIRA_STEAM_HOST_LAUNCH_OPTION", String(launchOption), 1)
         setenv("MADEIRA_STEAM_HOST_CLIENT_DIR", SteamRuntimeFiles.windowsRoot, 1)
         setenv("MADEIRA_STEAM_HOST_EXPECTED_INSTALL", game.windowsInstallPath, 1)

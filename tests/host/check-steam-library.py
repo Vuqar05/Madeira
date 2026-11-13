@@ -531,7 +531,7 @@ COMPRESSION_C = r'''
 /* Not needed on the host: the bare-LZMA fallback is reported as not decoded. */
 size_t compression_decode_buffer(uint8_t *dst, size_t dst_size, const uint8_t *src, size_t src_size, void *scratch, compression_algorithm algorithm) { return 0; }
 '''
-DECODERS_H = '#include "{app}/SwiftSteam/lzma_shim.h"\n'
+DECODERS_H = '#include "{app}/SwiftSteam/lzma_shim.h"\n#include "{root}/madeira-dock/src/steam_input_service.h"\n'
 
 STUBS = r'''
 enum ExternalDrives { static var steamLibraries: [String] { [] } }
@@ -1255,7 +1255,7 @@ try:
         (shim / 'zlib').mkdir()
         (shim / 'zlib/module.modulemap').write_text('module zlib [system] { header "/usr/include/zlib.h" link "z" export * }\n')
         modules += ['-I', str(shim / 'zlib')]
-    (work / 'decoders.h').write_text(DECODERS_H.format(app=app))
+    (work / 'decoders.h').write_text(DECODERS_H.format(app=app, root=root))
 
     objects = []
     def compile_c(source, extra=()):
@@ -1267,6 +1267,7 @@ try:
     if not native:
         compile_c(shim / 'CommonCrypto/cc_shim.c', ['-I', str(shim / 'CommonCrypto')])
         compile_c(shim / 'Compression/compression_shim.c', ['-I', str(shim / 'Compression')])
+    compile_c(root / 'madeira-dock/src/steam_input_service.c')
     for name in ['zstd_edu.c', 'lzma_shim.c', 'chunk_zip.c']:
         compile_c(steam / name)
 
@@ -1283,7 +1284,7 @@ try:
                   steam / 'Core/SteamMessageCodec.swift', steam / 'Core/SteamCMSession.swift',
                   steam / 'Content/ContentDecryptor.swift', steam / 'Content/DepotManifest.swift', steam / 'Content/SteamLANPeer.swift',
                   steam / 'Library/SteamAppInfo.swift', steam / 'Library/SteamLibraryFetcher.swift',
-                  steam / 'Install/AppManifestWriter.swift', app / 'SteamInstall.swift', app / 'SteamKeyValues.swift', app / 'ExternalStorage.swift']
+                  steam / 'Install/AppManifestWriter.swift', app / 'SteamInstall.swift', app / 'SteamKeyValues.swift', app / 'ExternalStorage.swift', app / 'SteamInputTransactions.swift']
     exe = work / 'check'
     build = subprocess.run([SWIFTC, '-parse-as-library', '-swift-version', '5', '-sanitize=address', '-g', '-o', str(exe),
                             '-import-objc-header', str(work / 'decoders.h'),

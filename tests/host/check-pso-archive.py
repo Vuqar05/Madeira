@@ -131,7 +131,7 @@ check('catalog: pso-archive, default 0, Direct3D 12',
       re.search(r'key: "pso-archive", title: "", kind: \.int, defaultValue: "0", category: "Direct3D 12"', catalog) is not None)
 
 # --- HID pad mode ------------------------------------------------------------------
-sess = body(pad, '@MainActor func beginPadSession()')
+sess = body(pad, '@MainActor func beginPadSession(steamInput: Bool = false)')
 check('hid mode: a paired pad that is not a PlayStation one stays on XInput',
       'if mode.value == "hid", first != nil, !sony, !Self.optIn("MADEIRA_HIDPAD_AUTO_GENERIC") {' in sess)
 i = sess.index('MADEIRA_HIDPAD_AUTO_GENERIC")')
