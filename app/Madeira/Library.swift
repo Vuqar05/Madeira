@@ -4957,6 +4957,7 @@ struct ControllerModeChoice: View {
 
 private struct SteamInputStatusView: View {
     let appID: UInt32
+    @State private var communityLayouts = false
     @State private var resolution: DockSteamInputDefault.Resolution?
     @State private var failure: String?
     @State private var checking = false
@@ -4981,7 +4982,15 @@ private struct SteamInputStatusView: View {
                 ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
                     Text(line).font(.caption).foregroundStyle(.secondary)
                 }
+                Button("Community layouts") { communityLayouts = true }
                 if snapshot?.appID == appID {
+                    if DockSteamInputService.resolvingWorkshop {
+                        Text("Downloading Steam's selected Workshop layout…").font(.caption).foregroundStyle(.secondary)
+                    }
+                    if let sourceFailure = DockSteamInputService.sourceFailure {
+                        Text(sourceFailure).font(.caption).foregroundStyle(.red)
+                        Button("Retry selected layout") { DockSteamInputService.retrySources(appID: appID) }
+                    }
                     let actions = DockSteamInputPresentation.defaultActions(resolution, active: active)
                     Text(actions.note).font(.caption).foregroundStyle(.secondary)
                     if actions.offerDefault, case .recommended(let value)? = resolution {
@@ -5019,6 +5028,18 @@ private struct SteamInputStatusView: View {
             }
             .task(id: SourceKey(appID: appID, session: snapshot?.session ?? [],
                                 epoch: snapshot?.epoch ?? 0, sequence: snapshot?.sequence ?? 0)) { await resolve() }
+        }
+        // The live session menu is a custom overlay without a NavigationStack.
+        // Own the presentation outside the periodically refreshed status content.
+        .sheet(isPresented: $communityLayouts) {
+            NavigationStack {
+                SteamInputCommunityView(appID: appID)
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") { communityLayouts = false }
+                        }
+                    }
+            }
         }
     }
     private func request(_ change: () throws -> Void) {

@@ -97,7 +97,7 @@ import Darwin
         value.attribution = "Workshop item \(record.itemID): \(String(record.title.prefix(200)))"
         return value
     }
-    static func controllerType(_ bytes: Data) -> String? {
+    nonisolated static func controllerType(_ bytes: Data) -> String? {
         var type = [CChar](repeating: 0, count: 64)
         let valid = bytes.withUnsafeBytes { raw in
             guard let address = raw.baseAddress else { return false }
@@ -143,7 +143,7 @@ import Darwin
         guard response.eresult == 1, response.body.count <= 2 << 20 else { throw Failure.unavailable }
         return try SteamWorkshopRequests.page(response.body, itemsField: 1, totalField: nil).items
     }
-    private static func fetchBytes(_ url: URL) async throws -> Data {
+    static func fetchBytes(_ url: URL) async throws -> Data {
         guard allowed(url) else { throw Failure.invalid }
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 20; config.timeoutIntervalForResource = 30

@@ -13,6 +13,9 @@ root = Path(__file__).resolve().parents[2]
 source = (root / 'app/Madeira/MadeiraDock.swift').read_text()
 source = 'enum DockSteamInputWire' + source.split('enum DockSteamInputWire', 1)[1].split("/// Steam Input's PlayStation setting", 1)[0]
 source = source.replace('FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]', 'testRoot.appendingPathComponent("support")')
+service_start = source.index('@MainActor enum DockSteamInputService')
+service_end = source.index('struct DockSteamInputSelection:')
+source = source[:service_start] + source[service_start:service_end].replace('Date()', 'serviceNow()') + source[service_end:]
 c_fixture = r'''
 #include "steam_input_service.h"
 #include <assert.h>
@@ -64,16 +67,18 @@ int main(int argc, char **argv) {
 '''
 cases = r'''
 let testRoot = URL(fileURLWithPath: CommandLine.arguments[1])
+var serviceTimeOffset: TimeInterval = 0
+func serviceNow() -> Date { Date().addingTimeInterval(serviceTimeOffset) }
 enum MadeiraDock {
     static var drive: URL { testRoot.appendingPathComponent("drive") }
     static var clientRoot: URL { testRoot.appendingPathComponent("client") }
 }
 enum SteamLog { static func event(_ text: String) {} }
-func require(_ test: @autoclosure () throws -> Bool) { precondition(try! test()) }
+func require(_ test: @autoclosure () throws -> Bool, file: StaticString = #file, line: UInt = #line) { precondition(try! test(), file: file, line: line) }
 func put32(_ data: inout Data, _ at: Int, _ value: UInt32) {
     for i in 0..<4 { data[at+i] = UInt8(truncatingIfNeeded: value >> (8*i)) }
 }
-@MainActor func checks() throws {
+@MainActor func checks() async throws {
     let fixture = try Data(contentsOf: testRoot.appendingPathComponent("fixture.bin"))
     let parsed = DockSteamInputWire.parse(fixture)!
     require(parsed.appID == 480 && parsed.epoch == 1 && parsed.workshopID == 123)
@@ -145,7 +150,7 @@ func put32(_ data: inout Data, _ at: Int, _ value: UInt32) {
     require(command.count == 44 && command[36] == 17 && command[40] == 1)
     for size in 0..<fixture.count { require(DockSteamInputWire.parse(fixture.prefix(size)) == nil) }
     require(DockSteamInputWire.parse(fixture + Data([0])) == nil)
-    for offset in [0, 28, 40, 44, 48, 52, 64, 68, 72] {
+    for offset in [0, 28, 40, 44, 48, 53, 64, 68, 72] {
         var damaged = fixture; damaged[offset] = 0xff
         require(DockSteamInputWire.parse(damaged) == nil)
     }
@@ -673,10 +678,143 @@ func put32(_ data: inout Data, _ at: Int, _ value: UInt32) {
     } catch DockSteamInputJournal.Failure.busy {}
     require(DockSteamInputService.selection == beforeDefault && DockSteamInputService.activeChoice == nil)
     DockSteamInputService.end()
+    // An explicit community source uses the same real journal and C receipt.
+    DockSteamInputService.begin(accountID: 24, appID: 480)
+    let communityHex = String(cString: getenv("MADEIRA_DOCK_INPUT_SESSION"))
+    var communityFeed = fixture
+    for i in 0..<16 {
+        let start = communityHex.index(communityHex.startIndex, offsetBy: i*2)
+        communityFeed[8+i] = UInt8(communityHex[start..<communityHex.index(start, offsetBy: 2)], radix: 16)!
+    }
+    put32(&communityFeed, 36, 0); put32(&communityFeed, 40, 0); put32(&communityFeed, 52, 179)
+    try communityFeed.write(to: feedFile); DockSteamInputService.refresh()
+    try fm.removeItem(at: commandFile)
+    put32(&communityFeed, 36, 1); put32(&communityFeed, 40, 1)
+    try baselineFrame(communityFeed).write(to: baselineFile)
+    try communityFeed.write(to: feedFile); DockSteamInputService.refresh()
+    let beforeCommunity = DockSteamInputService.selection
+    do {
+        try DockSteamInputService.requestCommunity(appID: 481, source: initialSource, itemID: 123, detail: "Fixture · Workshop 123")
+        fatalError("community selection crossed game scope")
+    } catch DockSteamInputJournal.Failure.invalid {}
+    require(DockSteamInputService.selection == beforeCommunity)
+    try DockSteamInputService.requestCommunity(appID: 480, source: initialSource, itemID: 123, detail: "Fixture · Workshop 123")
+    require(DockSteamInputService.selection?.requested?.source == .community && DockSteamInputService.activeChoice == nil)
+    let communityHost = Process(); communityHost.executableURL = testRoot.appendingPathComponent("fixture")
+    communityHost.arguments = ["receipt", payloadFile.path, receiptFile.path]
+    try communityHost.run(); communityHost.waitUntilExit(); require(communityHost.terminationStatus == 0)
+    try fm.removeItem(at: commandFile)
+    put32(&communityFeed, 36, 2); put32(&communityFeed, 44, 6)
+    try communityFeed.write(to: feedFile); DockSteamInputService.refresh()
+    require(DockSteamInputService.activeChoice?.source == .community && DockSteamInputService.activeChoice?.identity == "123")
+    require(DockSteamInputService.activeChoice?.detail == "Fixture · Workshop 123")
+    require(DockSteamInputService.selection?.lastActivated == DockSteamInputService.activeChoice)
+    let communitySelection = DockSteamInputService.selection!
+    DockSteamInputService.end()
+    require(try DockSteamInputSelection.load(in: storage, accountID: 24, appID: 480,
+        controllerID: DockSteamInputService.controllerID) == communitySelection)
+    // A fresh launch reapplies the confirmed community bytes with attribution
+    // and a new revision, using the newly scoped native rollback baseline.
+    DockSteamInputService.begin(accountID: 24, appID: 480)
+    let communityRestartHex = String(cString: getenv("MADEIRA_DOCK_INPUT_SESSION"))
+    for i in 0..<16 {
+        let start = communityRestartHex.index(communityRestartHex.startIndex, offsetBy: i*2)
+        communityFeed[8+i] = UInt8(communityRestartHex[start..<communityRestartHex.index(start, offsetBy: 2)], radix: 16)!
+    }
+    put32(&communityFeed, 36, 0); put32(&communityFeed, 40, 0)
+    try communityFeed.write(to: feedFile); DockSteamInputService.refresh()
+    try fm.removeItem(at: commandFile)
+    put32(&communityFeed, 36, 1); put32(&communityFeed, 40, 1)
+    try baselineFrame(communityFeed).write(to: baselineFile)
+    try communityFeed.write(to: feedFile); DockSteamInputService.refresh()
+    require(DockSteamInputService.prepared != nil && DockSteamInputService.selection == communitySelection)
+    let restartCommunityHost = Process(); restartCommunityHost.executableURL = testRoot.appendingPathComponent("fixture")
+    restartCommunityHost.arguments = ["receipt", payloadFile.path, receiptFile.path]
+    try restartCommunityHost.run(); restartCommunityHost.waitUntilExit(); require(restartCommunityHost.terminationStatus == 0)
+    try fm.removeItem(at: commandFile)
+    put32(&communityFeed, 36, 2)
+    try communityFeed.write(to: feedFile); DockSteamInputService.refresh()
+    require(DockSteamInputService.activeChoice == communitySelection.lastActivated)
+    DockSteamInputService.end()
+    // A slow selected-Workshop lookup must not exhaust confirmed-choice replay.
+    var lookup: CheckedContinuation<Data, Error>?
+    DockSteamInputService.resolveSelectedWorkshop = { _, _ in
+        try await withCheckedThrowingContinuation { lookup = $0 }
+    }
+    DockSteamInputService.begin(accountID: 24, appID: 480)
+    let slowHex = String(cString: getenv("MADEIRA_DOCK_INPUT_SESSION"))
+    var slowFeed = fixture
+    for i in 0..<16 {
+        let start = slowHex.index(slowHex.startIndex, offsetBy: i*2)
+        slowFeed[8+i] = UInt8(slowHex[start..<slowHex.index(start, offsetBy: 2)], radix: 16)!
+    }
+    put32(&slowFeed, 36, 0); put32(&slowFeed, 40, 0); put32(&slowFeed, 44, 5); put32(&slowFeed, 52, 179)
+    try slowFeed.write(to: feedFile); DockSteamInputService.refresh()
+    try fm.removeItem(at: commandFile)
+    put32(&slowFeed, 36, 1); put32(&slowFeed, 40, 1)
+    try slowFeed.write(to: feedFile); DockSteamInputService.refresh()
+    for _ in 0..<10 { await Task.yield() }
+    require(lookup != nil && DockSteamInputService.resolvingWorkshop)
+    serviceTimeOffset = 31
+    DockSteamInputService.refresh()
+    lookup!.resume(returning: initialSource)
+    for _ in 0..<10 { await Task.yield() }
+    DockSteamInputService.refresh()
+    require(try Data(contentsOf: commandFile)[40] == 7)
+    try fm.removeItem(at: commandFile)
+    put32(&slowFeed, 36, 2)
+    try slowFeed.write(to: feedFile); DockSteamInputService.refresh()
+    put32(&slowFeed, 44, 4)
+    try baselineFrame(slowFeed).write(to: baselineFile)
+    try slowFeed.write(to: feedFile); DockSteamInputService.refresh()
+    require(DockSteamInputService.prepared != nil && DockSteamInputService.selection == communitySelection)
+    let slowHost = Process(); slowHost.executableURL = testRoot.appendingPathComponent("fixture")
+    slowHost.arguments = ["receipt", payloadFile.path, receiptFile.path]
+    try slowHost.run(); slowHost.waitUntilExit(); require(slowHost.terminationStatus == 0)
+    let replayCommand = try Data(contentsOf: commandFile)
+    try fm.removeItem(at: commandFile)
+    put32(&slowFeed, 36, UInt32(replayCommand[36])); put32(&slowFeed, 44, 6)
+    try slowFeed.write(to: feedFile); DockSteamInputService.refresh()
+    require(DockSteamInputService.activeChoice == communitySelection.lastActivated)
+    DockSteamInputService.end(); serviceTimeOffset = 0
+    print("PASS: delayed selected-Workshop lookup preserves confirmed-choice replay")
+    // Saved-Workshop recovery is asynchronous, lease-scoped and read-only with
+    // respect to explicit intent. It cannot bootstrap a different layout.
+    var resolvedIDs: [UInt64] = []
+    DockSteamInputService.resolveSelectedWorkshop = { appID, id in
+        require(appID == 480); resolvedIDs.append(id); return initialSource
+    }
+    DockSteamInputService.begin(accountID: 25, appID: 480)
+    let workshopHex = String(cString: getenv("MADEIRA_DOCK_INPUT_SESSION"))
+    var workshopFeed = fixture
+    for i in 0..<16 {
+        let start = workshopHex.index(workshopHex.startIndex, offsetBy: i*2)
+        workshopFeed[8+i] = UInt8(workshopHex[start..<workshopHex.index(start, offsetBy: 2)], radix: 16)!
+    }
+    put32(&workshopFeed, 36, 0); put32(&workshopFeed, 40, 0); put32(&workshopFeed, 44, 5); put32(&workshopFeed, 52, 179)
+    try workshopFeed.write(to: feedFile); DockSteamInputService.refresh()
+    try fm.removeItem(at: commandFile)
+    put32(&workshopFeed, 36, 1); put32(&workshopFeed, 40, 1)
+    try workshopFeed.write(to: feedFile); DockSteamInputService.refresh()
+    require(DockSteamInputService.resolvingWorkshop && !DockSteamInputService.canBootstrap)
+    for _ in 0..<10 { await Task.yield() }
+    DockSteamInputService.refresh()
+    require(resolvedIDs == [123] && DockSteamInputService.bootstrapping)
+    let workshopCommand = try Data(contentsOf: commandFile)
+    require(workshopCommand[40] == 7 && workshopCommand[36] == 2)
+    let workshopFrame = try Data(contentsOf: initialFile)
+    var parsedWorkshop = sh_input_workshop()
+    require(workshopFrame.withUnsafeBytes { sh_input_workshop_parse($0.baseAddress!.assumingMemoryBound(to: UInt8.self), workshopFrame.count, &parsedWorkshop) })
+    require(parsedWorkshop.item == 123 && parsedWorkshop.layout.appid == 480 && parsedWorkshop.layout.epoch == 1)
+    require(DockSteamInputService.selection?.requested == nil && DockSteamInputService.activeChoice == nil)
+    DockSteamInputService.end()
+    DockSteamInputService.resolveSelectedWorkshop = nil
+    print("PASS: selected-Workshop resolver, scoped hash-bound recovery command and no manufactured explicit choice")
+    print("PASS: community scope, raw source, persisted attribution, acceptance versus exact receipt acknowledgement")
     print("PASS: first-use bootstrap after interrupted earlier-launch work, and for an empty successful selection only")
     print("PASS: confirmed-choice restart, same-session reconnect recovery, held-input quiesce, fault/interruption recovery, fresh baseline/nonce validation, preservation of newer intent and C/Swift wire interoperability")
 }
-try MainActor.assumeIsolated { try checks() }
+try await checks()
 '''
 with tempfile.TemporaryDirectory(prefix='madeira-input-service-') as temporary:
     tmp = Path(temporary)

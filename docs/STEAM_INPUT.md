@@ -456,3 +456,42 @@ exactly matched the pre-test original VDF, and the original selected source was
 unchanged. The owner confirmed buttons remained normal. Persistence, relaunch,
 restoration and override cleanup are device-validated; fault/reconnect and
 held-output behavior remain outstanding before ordinary-build enablement.
+
+
+## Community layouts implementation (2026-11-13)
+
+Steam Input's Game details/session controls now open native community layouts.
+Anonymous public queries support pagination, search, sorting and controller
+filtering. Downloads retain complete original VDF revisions, game association,
+Workshop identity, attribution and SHA-256; metadata is rechecked after transfer.
+Cached revisions remain usable offline, failed/racing updates preserve previous
+bytes, and updates require explicit download/apply. Unsupported physical inputs
+and overlay menus are shown before applying. Account/game-scoped personal copies
+retain original bytes and attribution and can be exported; editing is milestone 4.
+
+Explicit community choices use the common revision journal, acknowledged native
+transaction, rollback and restart service. A separate bounded action-7 recovery
+can establish a baseline from only the exact public Workshop item Steam selected,
+with scope/digest verification and a fresh native selection read. It never replaces
+a named selection with a generic fallback or manufactures an explicit choice.
+The January UI checker records the inspected UGC/selection contract; Dock calls no
+new private UGC API. Host tests cover source/cache/revision failures, community
+receipt/relaunch and native selected-item recovery. Physical acceptance resumed
+on 2026-11-13. The first attempt exposed a bootstrap wait cycle: January's
+first-load completion follows the activation request. The corrected bootstrap
+requests cached activation at rest and publishes no baseline until matching
+completion and released output within its deadline. A failing native regression
+now passes, and the updated signed iPad build confirms Terraria's Workshop Game
+default at revision 17 with matching feed/baseline/receipt and persisted source.
+The owner subsequently confirmed physical acceptance on the paired iPad with
+Terraria and a DualSense: community application, keyboard and mixed gamepad/mouse
+output, default restoration, held-input switching, relaunch, offline cached reuse
+and a failed offline update lookup all passed. Failed/racing/cancelled payload
+transfers are covered by host tests. The owner waived physical recovery of a
+Workshop layout selected in Steam itself; its native/Swift host checks pass.
+Milestone 3 is accepted within that scope; see
+`docs/STEAM_INPUT_INTEGRATION_PLAN.md` for the evidence and waiver.
+Review fixes check enabled raw bindings for compatibility, invalidate later cached
+pages on refresh and preserve confirmed-choice replay during a slow selected-item
+lookup. Their host regressions pass, and the updated signed app is installed for
+a follow-up physical smoke check.

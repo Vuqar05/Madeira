@@ -1,6 +1,6 @@
 # Finish Steam Input integration
 
-Updated: 2026-11-02. Status: implementation plan; unchecked items are outstanding.
+Updated: 2026-11-13. Status: implementation plan; unchecked items are outstanding.
 
 This is the current plan for using Valve's Steam Input engine in Madeira.
 `STEAM_INPUT.md` records the investigation and verified runtime fix.
@@ -405,25 +405,180 @@ use of a previously cached default.
 
 ## Milestone 3 — Download and apply community layouts through Steam Input
 
-- [ ] Implement the public layout query/cache, using the separate branch's
+- [x] Implement the public layout query/cache, using the separate branch's
   `SteamInputLayouts.swift` as a reference or selectively porting appropriate
   components. Add pagination, refresh, search/filtering and controller compatibility
   information. Verify the service behavior during implementation.
-- [ ] Keep the original VDF and Workshop identity/revision, including bindings the
+- [x] Keep the original VDF and Workshop identity/revision, including bindings the
   legacy importer does not understand. Make raw validated content available to Dock.
-- [ ] Implement the pinned client's Workshop selection/download resolver. Inspect
+- [x] Implement the pinned client's Workshop selection/download resolver. Inspect
   the actual UGC download and selection contract before choosing whether the client
   or Madeira supplies the bytes. Remove the current nonzero-Workshop-ID rejection
-  only once this path is implemented and tested.
-- [ ] Handle private/deleted items, missing URLs, unsupported formats, incompatible
+  only once this path is implemented and tested. The original loader still defers
+  an unresolved Workshop ID; action 7 recovers only that exact selected item after
+  validating scope/hash and re-reading the native selection. It never substitutes
+  a generic layout for an unreadable selection.
+- [x] Handle private/deleted items, missing URLs, unsupported formats, incompatible
   controller inputs, interrupted transfers and revisions that change mid-download.
   Validate a response and its game association before installing it.
-- [ ] Apply a community layout via the new service and acknowledge the active
+- [x] Apply a community layout via the new service and acknowledge the active
   revision. Preserve attribution and let users return to Game default.
-- [ ] Cache complete revisions for offline reuse. Detect updates and offer an
+- [x] Cache complete revisions for offline reuse. Detect updates and offer an
   explicit update while retaining the previous working revision for rollback.
-- [ ] Let a user copy a community layout into a personal layout for editing without
+- [x] Let a user copy a community layout into a personal layout for editing without
   modifying the downloaded original or losing its attribution.
+
+Implementation and host validation (2026-11-13): community layouts use anonymous
+`PublishedFile.QueryFiles#1`/`GetDetails#1`, app 241100, query filter 15 and returned
+file type 12. Queries require the game's `app` KV tag plus public/nondeleted tags;
+each returned item and downloaded revision is independently checked. Pagination,
+search, ordering, controller filtering, downloaded revisions and explicit refresh
+are available from Game details and the session's Steam Input controls. Metadata
+is rechecked after a bounded download; cancellation, deletion, revision races or
+invalid content leave complete previous cache revisions and user intent intact.
+Original VDF bytes, Workshop metadata, hashes and attribution remain separate from
+private revision-tagged transaction copies. Unknown bindings and repeated keys
+are retained. Unsupported controller types, motion, touch positions, rear inputs
+and overlay menus are identified before applying; known unsupported layouts cannot
+be applied. Personal copies retain the raw original and attribution in separate
+account/game/UUID-scoped storage and can be exported. Editing remains milestone 4.
+
+Static January SteamUI checks now cover saved-Workshop locator formatting, the UGC
+item-state/download dispatch and download-result item-ID/result correlation.
+Madeira supplies verified public bytes to the already pinned raw-VDF loader; no new
+private UGC method is called. A new hash-bound, launch/game/epoch/item-scoped
+`MSIWSH01` recovery frame establishes the original selected Workshop baseline only
+when no layout is loaded. Dock rechecks the selected ID before consumption,
+requests activation of the cached mapping at rest, and publishes a working
+baseline only after matching completion and released output. Ordinary bootstrap
+still cannot replace a named selection. Explicit community application
+uses the existing journal/receipt/rollback service, with attribution and immutable
+source identity preserved across relaunch. Recovery does not manufacture explicit
+intent or claim the recovered baseline as a Madeira-confirmed active choice.
+
+Live anonymous public-service checks verified page 1/page 2/search, real raw VDF
+downloads and exact offline cache replay without account access. Host checks cover
+public query/response fields, association/type/private/deleted failures, original
+bytes, corruption, cancellation, failed/racing updates, unsupported inputs,
+personal-copy isolation, community submission/receipt/relaunch, and native
+saved-Workshop scope/digest/selection/completion/held-output gates. Physical
+controller acceptance resumed at the owner's request on 2026-11-13. The current
+signed Debug app was installed over the existing iPad installation using
+`devicectl`; signature verification and bundled-runtime preflight passed.
+Terraria launched with JIT and Dock reported connected Steam Input output.
+Public Workshop item 1763167390 passed the compatibility check and contains a
+mixed-output comparison (Circle sends right mouse click; L1/R1 send left mouse
+click). The owner subsequently confirmed working physical input and a loaded
+default configuration. Subsequent community acceptance is recorded below.
+
+Physical retry correction (2026-11-13): the owner reported no input and
+“Requested: Game default; not yet confirmed.” The captured feed was failed,
+with no baseline or receipt. The new initial-load completion gate had created a
+wait cycle: January posts first-load completion after an activation request.
+A regression test reproduced the missing activation; initial loading now requests
+the cached mapping at rest and retains its deadline until matching completion
+and released output. Baselines stay unavailable for missing/wrong/late callbacks.
+Native ASan/UBSan and Swift service checks pass. The updated signed build is
+installed; its fresh iPad launch detected the physical DualSense and confirmed
+Game default at revision 17. Feed, baseline and receipt share the launch/app/epoch;
+the receipt digest matches the exact baseline bytes, and the journal and stored
+last-activated source both confirm the recommended Workshop Game default.
+The original device check now passes. The owner confirmed that physical input
+works and the default configuration loads. Subsequent community, offline and
+held-input acceptance is recorded below.
+
+Community navigation correction (2026-11-13): the owner reported that Community
+layouts did not open from the live session menu. A simulator UI reproduction
+using the actual SteamInputStatusView failed in the session overlay and passed
+inside the Game details navigation stack. The entry now presents its own sheet
+and NavigationStack outside the status TimelineView. The UI regression passes in
+both contexts, including nested navigation, return, dismissal, reopening and
+survival across status refreshes. The signed update passed runtime preflight
+and was installed on the paired iPad with devicectl at the owner's request.
+The owner subsequently confirmed that every assigned physical test passed,
+including reopening the community browser.
+
+Validation passes: native ASan/UBSan (ordinary, probe and local-apply), community
+source/cache/compatibility and personal-copy checks under ASan, community
+service/receipt/relaunch and existing journal/selection/default/metadata/Workshop
+regressions, Dock contract, 15 runtime-component tests, pinned January client/UI
+checkers, x64/i386 Dock builds, iOS Debug build and bundled runtime preflight.
+The fresh worktree's native archives and Windows controller modules were stale:
+ntdll-unix (41 objects), wineserver and targeted ARM64EC/i386 controller modules
+were rebuilt from source. The rebuilt bundle passes the overlay-write/HID-owner,
+XInput-forwarding and device-notification capability checks. The stale handoff
+reference to an absent `DockFriends` type was removed so the app builds.
+
+Completion audit: the update-availability message now compares the same complete
+content metadata as download validation (including URL, byte count and tags), so
+same-timestamp content changes are offered as updates. A focused regression covers
+those changes; the community ASan check and iOS Debug rebuild pass.
+
+Physical acceptance (2026-11-13): the owner confirmed that all four assigned
+tests passed with Terraria and the physical DualSense on the paired iPad:
+community item 1763167390 applied with Circle/right-click and L1/R1/left-click;
+Game default restored; holding L1 during a switch caused no stuck input after
+release; the community layout survived relaunch; an offline update lookup failed
+without disrupting input; and cached community application worked offline after
+switching back to Game default. The owner used MADEIRA_DOCK_KEEP_ALIVE=0; no
+performance investigation was performed. The failed lookup is device evidence;
+failed/racing/cancelled payload transfers remain covered by host tests.
+
+A post-test read-only device capture confirms the last native layout ACTIVE,
+matching launch/game/controller/epoch across feed, baseline and receipt, an exact
+baseline/receipt content digest, a confirmed journal and matching requested and
+last-activated community choices. The native saved Steam selection matches the
+pre-community-test capture. These receipts support the owner's physical report;
+they do not independently establish keyboard-key delivery or saved-Workshop
+bootstrap from an empty runtime. Keyboard delivery was subsequently confirmed
+by the owner below; physical saved-Workshop recovery was waived.
+
+- [x] Physical acceptance: select a downloaded community layout and observe a
+  distinctive changed binding through Valve's engine; restore Game default.
+- [x] Physical acceptance: relaunch, offline cached reuse and failed update lookup
+  keep the confirmed layout usable and leave Steam's saved selection unchanged.
+- [x] Physical acceptance: mixed gamepad/mouse community output and held-input
+  switching work in the running game.
+
+Keyboard acceptance (2026-11-13): public item 2942958109,
+“Terraria Nav Controller”, was found through the same app search for that title,
+downloaded and revalidated, and passed the native compatibility analyzer. Its
+original SHA-256 is 729d2dd1c68f380af1f3a257bbe510684f5b31dc01db4b1f80a55b4a46778c12.
+The active joystick group emits W/S/D/A; the active left-trigger group emits
+Space; the active D-pad group emits Escape on a short Down press (long Down is
+Tab). The owner confirmed the assigned in-game keyboard test passed on the
+paired iPad with the physical controller. No app update was required.
+
+- [x] Physical acceptance: a community layout emits observable keyboard keys in
+  the running game.
+- [x] Physical saved-Workshop recovery acceptance waived by the owner
+  (2026-11-13). Native/Swift host checks remain passing; recovery into an empty
+  runtime has not been physically accepted. This is separate from the accepted
+  Madeira-choice replay test.
+
+Milestone 3 accepted (2026-11-13) within the scope above, including the explicit
+physical saved-Workshop recovery waiver. Failed/racing/cancelled payload
+transfers are host-tested; the physical failure check covered an update lookup.
+
+Review corrections (2026-11-13): compatibility now checks enabled bindings rather
+than rejecting inactive inputs, unreferenced groups or advisory feature tags.
+Successful listing refresh invalidates subsequent cached pages. Selected-Workshop
+lookups use the bounded 120-second recovery wait instead of exhausting the ordinary
+30-second baseline wait before confirmed-choice replay. Regression checks cover
+these behaviors and offline selected-item resolution. Community source policy is
+owned by its cache, and bootstrap purpose distinguishes explicit requests, replay
+and selected-item recovery. Wine's local submodule metadata was repaired without
+changing source files or the required milestone-2 commit.
+
+Post-review validation: community/cache and Swift service regressions, defaults,
+selection, transactions, metadata, Dock integration, 15 runtime-component checks,
+native ASan/UBSan and software controller-notification checks pass. The signed
+Debug app was rebuilt with the committed Dock host, verified with self-contained
+runtime files and installed over the existing paired-iPad app. Signature and
+Steam Input runtime preflight pass. A follow-up physical smoke test of confirmed
+community replay, refreshed pagination and default restoration is pending the
+owner's report; the earlier acceptance and saved-Workshop waiver remain recorded
+above. Slow-lookup replay is covered deterministically by the host regression.
 
 Done when: a downloaded layout changes a known binding in-game through Valve's
 engine, survives relaunch and works from cache offline. A failed download/update
@@ -435,6 +590,12 @@ not only layouts that emit Xbox buttons.
 - [ ] Build an editable Steam layout model and lossless VDF writer. The separate
   branch's parser preserves repeated keys and may be useful as a reference, but
   its import-to-JSON path is not a native Steam Input layout writer.
+- [ ] Add a read-only mapping preview from community listings before saving or
+  applying a layout, as the first user-facing step before editing. Fetch the VDF
+  temporarily without adding it to saved downloads or changing the active layout.
+  Show button, stick and trigger mappings, gamepad/keyboard/mouse outputs, named
+  actions, activators and action sets/layers/mode shifts. Clearly identify
+  unsupported features and settings the viewer cannot interpret.
 - [ ] Support creating from the game default, a template, a community copy or an
   existing personal VDF. Assign stable local identities and revision history.
 - [ ] Reuse editor controls where possible, backed by the native model. Implement
@@ -458,6 +619,10 @@ not only layouts that emit Xbox buttons.
 Done when: a player creates a layout, changes a recognizable binding, uses it in
 the running game, restarts and gets the same result. Export/import preserves
 behavior and unknown fields. Editing a community copy leaves the original intact.
+A player can preview a community layout's mappings from its listing before saving
+or applying it, including conditional bindings and unsupported/uninterpreted
+settings. Opening or dismissing the preview leaves saved downloads and the active
+layout unchanged, including when fetching or parsing fails.
 
 ## Milestone 5 — Complete controller behavior and session lifecycle
 
@@ -516,8 +681,14 @@ support matrix. A passing generic Gamepad test alone does not close this plan.
 
 Implement milestones 1 → 2 → 3 → 4, then finish the cross-cutting work in 5 and
 the release checks in 6. Validate each milestone on device before building on it.
-The next implementation task is the selection model and acknowledged Dock service,
-followed immediately by resolving a real game recommendation from fresh metadata.
+Milestones 1, 2 and 3 are accepted within their recorded scope. Milestone 3
+physical acceptance includes community application, keyboard and mixed
+gamepad/mouse output, default restoration, held-input switching, relaunch and
+offline cache reuse. The owner waived physical saved-Workshop recovery acceptance;
+its host checks pass. Failed/racing/cancelled payload transfers remain covered
+by host tests; the physical failure check covered an update lookup. Milestone 4
+is next, starting with an editable native Steam layout model and lossless VDF
+writer.
 
 Local custom layout creation and VDF sharing are required here. Public Workshop
 publishing, new client-build adapters and hardware-specific features absent from

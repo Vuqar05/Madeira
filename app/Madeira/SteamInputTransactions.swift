@@ -724,6 +724,21 @@ enum DockSteamInputTransport {
         let workingHash: String
         let workingKnown: Bool
     }
+    static func workshopFrame(layout: Data, itemID: UInt64, session: [UInt8], appID: UInt32, epoch: UInt32) -> Data? {
+        guard session.count == 16, !layout.isEmpty, layout.count < 1 << 20 else { return nil }
+        let hash = Array(SHA256.hash(data: layout))
+        var out = [UInt8](repeating: 0, count: Int(SH_INPUT_WORKSHOP_HEADER) + layout.count)
+        let capacity = out.count
+        let size = session.withUnsafeBufferPointer { scope in
+            hash.withUnsafeBufferPointer { digest in
+                layout.withUnsafeBytes { bytes in
+                    sh_input_workshop_frame(scope.baseAddress!, appID, epoch, itemID, digest.baseAddress!,
+                        bytes.baseAddress!.assumingMemoryBound(to: CChar.self), layout.count, &out, capacity)
+                }
+            }
+        }
+        return size == capacity ? Data(out) : nil
+    }
     static func envelope(session: [UInt8], appID: UInt32, epoch: UInt32, sequence: UInt32,
                          reservation: DockSteamInputJournal.Reservation, apply: Data, rollback: Data) throws -> Data {
         guard session.count == 16, session.contains(where: { $0 != 0 }), appID > 0, epoch > 0, sequence > 0,

@@ -30,6 +30,14 @@ struct SteamWorkshopItem: Identifiable, Hashable, Codable, Sendable {
     var fileType: UInt32 = 0
     var banned = false
     var subscriptions: UInt32 = 0
+    // Optional additions keep older cached Workshop items decodable. Repeated
+    // KV tags stay repeated so conflicting game associations cannot collapse.
+    struct KVTag: Hashable, Codable, Sendable { var key: String; var value: String }
+    var visibility: UInt32?
+    var incompatible: Bool?
+    var tags: [String]?
+    var kvTags: [KVTag]?
+    var revisionChangeNumber: UInt64?
 
     /// EWorkshopFileType: Community (0), Microtransaction (1) and Game managed
     /// (15) items are content a game loads; collections, guides, art and
@@ -60,9 +68,31 @@ struct SteamWorkshopItem: Identifiable, Hashable, Codable, Sendable {
             case (16, .lengthDelimited): item.title = text(try decoder.readBytes(), limit: 200)
             case (18, .lengthDelimited): item.summary = text(try decoder.readBytes(), limit: 600)
             case (20, .varint): item.timeUpdated = UInt32(truncatingIfNeeded: try decoder.readVarint())
+            case (21, .varint): item.visibility = UInt32(truncatingIfNeeded: try decoder.readVarint())
             case (28, .varint): item.banned = try decoder.readVarint() != 0
+            case (32, .varint): item.incompatible = try decoder.readVarint() != 0
             case (34, .varint): item.fileType = UInt32(truncatingIfNeeded: try decoder.readVarint())
             case (36, .varint): item.subscriptions = UInt32(truncatingIfNeeded: try decoder.readVarint())
+            case (52, .lengthDelimited), (54, .lengthDelimited):
+                var nested = ProtobufDecoder(try decoder.readBytes())
+                var key = "", value = ""
+                while let field = try nested.readTag() {
+                    if field.wireType == .lengthDelimited, field.fieldNumber == 1 {
+                        key = text(try nested.readBytes(), limit: 256)
+                    } else if field.wireType == .lengthDelimited, field.fieldNumber == 2, tag.fieldNumber == 54 {
+                        value = text(try nested.readBytes(), limit: 256)
+                    } else { try nested.skip(wireType: field.wireType) }
+                }
+                if tag.fieldNumber == 52 {
+                    if item.tags == nil { item.tags = [] }
+                    guard item.tags!.count < 256 else { throw SteamFileError.invalid("Too many Workshop tags.") }
+                    item.tags!.append(key)
+                } else if ["app", "visibility", "deleted"].contains(key.lowercased()) {
+                    if item.kvTags == nil { item.kvTags = [] }
+                    guard item.kvTags!.count < 256 else { throw SteamFileError.invalid("Too many Workshop tags.") }
+                    item.kvTags!.append(.init(key: key, value: value))
+                }
+            case (67, .varint): item.revisionChangeNumber = try decoder.readVarint()
             default: try decoder.skip(wireType: tag.wireType)
             }
         }
@@ -152,6 +182,35 @@ enum SteamWorkshopRequests {
         request.writeBool(fieldNumber: 8, value: true)                    // short_description
         request.writeUInt32(fieldNumber: 14, value: appID)                // appid
         request.writeBool(fieldNumber: 15, value: true)                   // strip_description_bbcode
+        return request.data
+    }
+
+    /// Controller configs live in app 241100. Query filter 15 is
+    /// EPublishedFileInfoMatchingFileType_ControllerBindings; returned items
+    /// instead use EWorkshopFileType_ControllerBinding (12).
+    static func controllerQuery(appID: UInt32, order: UInt32, text: String, page: UInt32) -> Data {
+        var request = ProtobufEncoder()
+        request.writeUInt32(fieldNumber: 1, value: text.isEmpty ? order : 12)
+        request.writeUInt32(fieldNumber: 2, value: page)
+        request.writeUInt32(fieldNumber: 3, value: pageSize)
+        request.writeUInt32(fieldNumber: 5, value: 241100)
+        request.writeUInt32(fieldNumber: 12, value: 15)
+        if !text.isEmpty { request.writeString(fieldNumber: 11, value: text) }
+        for (key, value) in [("app", String(appID)), ("visibility", "public"), ("deleted", "0")] {
+            var tag = ProtobufEncoder()
+            tag.writeString(fieldNumber: 1, value: key)
+            tag.writeString(fieldNumber: 2, value: value)
+            request.writeSubmessage(fieldNumber: 34, value: tag.data)
+        }
+        for field: UInt32 in [18, 19, 22, 37, 38] { request.writeBool(fieldNumber: field, value: true) }
+        return request.data
+    }
+
+    static func controllerDetails(_ ids: [UInt64]) -> Data {
+        var request = ProtobufEncoder()
+        for id in ids.prefix(100) { request.writeFixed64(fieldNumber: 1, value: id) }
+        for field: UInt32 in [2, 5, 8, 15] { request.writeBool(fieldNumber: field, value: true) }
+        request.writeUInt32(fieldNumber: 14, value: 241100)
         return request.data
     }
 

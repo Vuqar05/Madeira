@@ -442,7 +442,6 @@ enum MadeiraDock {
     @MainActor static func writeHandoff(account: String, token: String, appID: Int) throws {
         cleanup()
         lastReport = Report()
-        DockFriends.shared.reset()
         let report = drive.appendingPathComponent("madeira-dock.txt")
         if FileManager.default.fileExists(atPath: report.path) { try FileManager.default.removeItem(at: report) }
         guard let url = transferURL else { throw DockError.message("Dock's private transfer folder is unavailable.") }
@@ -463,6 +462,7 @@ enum MadeiraDock {
         do {
             try fm.setAttributes([.protectionKey: FileProtectionType.complete], ofItemAtPath: url.path)
             try file.write(contentsOf: data); try file.close()
+            DockSteamInputService.resolveSelectedWorkshop = SteamInputCommunitySources.shared.selectedWorkshop(appID:itemID:)
             DockSteamInputService.begin(accountID: UInt32(truncatingIfNeeded: try subject(token)), appID: UInt32(appID))
             setenv("MADEIRA_DOCK_AUTH_FILE", handoffGuestPath(url), 1)
             SteamLog.event("[dock-handoff] protected-file-ready=1")
@@ -655,7 +655,7 @@ enum DockOffline {
 enum DockSteamInputWire {
     static let headerSize = 72
     static let maxFeedSize = headerSize + 4096
-    enum Action: UInt32 { case query = 1, sources, apply, restoreDefault, revisionProbe, bootstrap }
+    enum Action: UInt32 { case query = 1, sources, apply, restoreDefault, revisionProbe, bootstrap, workshop }
     enum State: UInt32 { case idle, disconnected, queued, cached, activationRequested, failed, active }
     struct Snapshot: Equatable {
         let session: [UInt8]
@@ -683,7 +683,7 @@ enum DockSteamInputWire {
         func u64(_ at: Int) -> UInt64 { (0..<8).reduce(0) { $0 | UInt64(b[at + $1]) << (8 * $1) } }
         let length = Int(u32(68))
         guard u32(24) > 0, u32(28) == 0, u32(40) <= 8,
-              u32(48) & ~UInt32(1) == 0, u32(52) & ~UInt32(127) == 0,
+              u32(48) & ~UInt32(1) == 0, u32(52) & ~UInt32(255) == 0,
               u32(64) & ~UInt32(15) == 0,
               let state = State(rawValue: u32(44)), length <= 4096,
               b.count == headerSize + length,
@@ -729,14 +729,27 @@ enum DockSteamInputWire {
     /// Workshop item. Nothing is loaded and no baseline exists.
     private static var noSavedSelection = false
     private static var bootstrapAutoTried = false
+    static var resolveSelectedWorkshop: ((UInt32, UInt64) async throws -> Data)?
+    private static var workshopTask: Task<Void, Never>?
+    private static var workshopAttempted = false
+    private(set) static var sourceFailure: String?
+    static var resolvingWorkshop: Bool { workshopTask != nil }
     /// One explicit layout handed to Dock so the game gets a working baseline.
     private struct Bootstrap {
         enum Phase { case sending, loading }
+        enum Purpose {
+            case requested(DockSteamInputSelection.Revision)
+            case replay
+            case selectedWorkshop(UInt64)
+            var workshopID: UInt64? {
+                if case .selectedWorkshop(let item) = self { return item }
+                return nil
+            }
+        }
         let source: Data
-        let choice: DockSteamInputSelection.Revision
         /// A player's request is applied through the normal journal once the
         /// baseline exists; a restored choice is reapplied by the restart path.
-        let thenApply: Bool
+        let purpose: Purpose
         var phase = Phase.sending
         var tries = 0
         var sent: (sequence: UInt32, at: Date)?
@@ -802,7 +815,7 @@ enum DockSteamInputWire {
     /// fallback or changes persisted intent. Reuses the bounded query loop.
     static func retrySources(appID: UInt32) {
         guard snapshot?.appID == appID, pending == nil, submission == nil, prepared == nil, bootstrap == nil else { return }
-        attempts = 0
+        attempts = 0; workshopAttempted = false; sourceFailure = nil
     }
 
     static func begin(accountID: UInt32, appID: UInt32) {
@@ -844,6 +857,7 @@ enum DockSteamInputWire {
 #endif
         restartAttempted = false; restartEpoch = nil; restartWaitStarted = nil
         noSavedSelection = false; bootstrapAutoTried = false; bootstrap = nil; bootstrapLastSend = nil
+        workshopTask?.cancel(); workshopTask = nil; workshopAttempted = false; sourceFailure = nil
         updateInputQuiesced()
         unsetenv("MADEIRA_DOCK_INPUT_SESSION")
         session = []; snapshot = nil; selection = nil; pending = nil
@@ -893,8 +907,7 @@ enum DockSteamInputWire {
         if !canChange, canBootstrap {
             try startBootstrap(source: recommendation.source,
                 choice: .init(source: .gameDefault, identity: nil, contentHash: recommendation.contentHash,
-                              detail: String(recommendation.sourceDescription.prefix(120))),
-                thenApply: true)
+                              detail: String(recommendation.sourceDescription.prefix(120))))
             return
         }
         guard canChange, let baseline = workingBaseline() else { throw DockSteamInputJournal.Failure.busy }
@@ -902,13 +915,28 @@ enum DockSteamInputWire {
                                    detail: String(recommendation.sourceDescription.prefix(120)))
         try submitPrepared()
     }
+    /// The caller validated the exact game's raw public layout. Community
+    /// selections share journal reservations, rollback and restart with defaults.
+    static func requestCommunity(appID: UInt32, source: Data, itemID: UInt64, detail: String) throws {
+        guard appID == self.appID, itemID > 0 else { throw DockSteamInputJournal.Failure.invalid }
+        let choice = DockSteamInputSelection.Revision(source: .community, identity: String(itemID),
+            contentHash: DockSteamInputNative.contentHash(source), detail: detail)
+        if !canChange, canBootstrap {
+            try startBootstrap(source: source, choice: choice)
+            return
+        }
+        guard canChange, let baseline = workingBaseline() else { throw DockSteamInputJournal.Failure.busy }
+        _ = try prepareChoice(source: source, baseline: baseline, choice: choice)
+        try submitPrepared()
+    }
+
     /// An explicit, clearly generic choice; never labelled as the game's own.
     static func requestGenericTemplate(clientRoot: URL) throws {
         if !canChange, canBootstrap {
             let source = try DockSteamInputDefault.genericTemplate(clientRoot: clientRoot)
             try startBootstrap(source: source,
                 choice: .init(source: .template, identity: DockSteamInputDefault.genericTemplate,
-                              contentHash: DockSteamInputNative.contentHash(source)), thenApply: true)
+                              contentHash: DockSteamInputNative.contentHash(source)))
             return
         }
         guard canChange, let baseline = workingBaseline() else { throw DockSteamInputJournal.Failure.busy }
@@ -1119,10 +1147,10 @@ enum DockSteamInputWire {
     }
     /// A bootstrap is in flight: the layout is being handed to Dock or loading.
     static var bootstrapping: Bool { bootstrap != nil }
-    private static func startBootstrap(source: Data, choice: DockSteamInputSelection.Revision, thenApply: Bool) throws {
+    private static func startBootstrap(source: Data, choice: DockSteamInputSelection.Revision) throws {
         guard canBootstrap else { throw DockSteamInputJournal.Failure.busy }
         _ = try DockSteamInputNative.revision(source)
-        bootstrap = Bootstrap(source: source, choice: choice, thenApply: thenApply)
+        bootstrap = Bootstrap(source: source, purpose: .requested(choice))
         updateInputQuiesced()
     }
     private static func refreshBootstrap(_ current: DockSteamInputWire.Snapshot) {
@@ -1137,12 +1165,15 @@ enum DockSteamInputWire {
             bootstrapAutoTried = true
             if let source = try? journal.reapplicationSource(hash: hash),
                (try? DockSteamInputNative.revision(source)) != nil {
-                bootstrap = Bootstrap(source: source, choice: choice, thenApply: false)
+                bootstrap = Bootstrap(source: source, purpose: .replay)
             }
         }
         guard var work = bootstrap else { return }
-        guard current.connected, current.flags & 16 != 0, Date().timeIntervalSince(work.started) < 120 else {
+        guard current.connected, current.flags & 16 != 0,
+              work.purpose.workshopID == nil || work.purpose.workshopID == current.workshopID,
+              Date().timeIntervalSince(work.started) < 120 else {
             bootstrap = nil
+            if case .selectedWorkshop = work.purpose { sourceFailure = "Steam's selected layout did not finish loading. Its saved selection is preserved; retry or relaunch." }
             SteamLog.event("[steam-input] initial layout not completed")
             return
         }
@@ -1161,11 +1192,19 @@ enum DockSteamInputWire {
             // Dock accepts this only after its own retries have failed, so pace it.
             if let last = bootstrapLastSend, Date().timeIntervalSince(last) < bootstrapPace { bootstrap = work; return }
             sequence = max(sequence, current.sequence)
-            guard sequence < UInt32.max,
-                  let frame = DockSteamInputTransport.initialFrame(layout: work.source, session: session,
-                                                                   appID: appID, epoch: current.epoch),
-                  let bytes = DockSteamInputWire.command(.bootstrap,
-                                                         snapshot: current, sequence: sequence + 1) else {
+            let initial: Data?
+            let action: DockSteamInputWire.Action
+            switch work.purpose {
+            case .selectedWorkshop(let item):
+                initial = DockSteamInputTransport.workshopFrame(layout: work.source, itemID: item,
+                    session: session, appID: appID, epoch: current.epoch)
+                action = .workshop
+            case .requested, .replay:
+                initial = DockSteamInputTransport.initialFrame(layout: work.source, session: session, appID: appID, epoch: current.epoch)
+                action = .bootstrap
+            }
+            guard sequence < UInt32.max, let frame = initial,
+                  let bytes = DockSteamInputWire.command(action, snapshot: current, sequence: sequence + 1) else {
                 bootstrap = nil; return
             }
             sequence += 1; work.tries += 1
@@ -1193,19 +1232,46 @@ enum DockSteamInputWire {
             }
             guard canChange, let baseline = workingBaseline() else { bootstrap = work; return }
             bootstrap = nil
-            guard work.thenApply else { return }
+            guard case .requested(let choice) = work.purpose else { return }
             do {
-                if work.choice.source == .gameDefault {
-                    _ = try prepareGameDefault(source: work.source, baseline: baseline, detail: work.choice.detail)
+                if choice.source == .gameDefault {
+                    _ = try prepareGameDefault(source: work.source, baseline: baseline, detail: choice.detail)
                 } else {
-                    _ = try prepareLocal(source: work.source, baseline: baseline, choice: work.choice)
+                    _ = try prepareChoice(source: work.source, baseline: baseline, choice: choice)
                 }
                 try submitPrepared()
             } catch { SteamLog.event("[steam-input] initial layout choice not recorded") }
         }
     }
+    private static func refreshSelectedWorkshop(_ current: DockSteamInputWire.Snapshot) {
+        guard attempts == 3, pending == nil, current.result == 1, !noSavedSelection,
+              current.connected, current.flags & 128 != 0,
+              current.state == .failed, current.workshopID > 0, bootstrapReady,
+              !workshopAttempted, workshopTask == nil, let resolveSelectedWorkshop else { return }
+        workshopAttempted = true
+        let launch = current.session, lease = current.epoch, game = current.appID, item = current.workshopID
+        workshopTask = Task { @MainActor in
+            defer { if snapshot?.session == launch, snapshot?.epoch == lease { workshopTask = nil } }
+            do {
+                let bytes = try await resolveSelectedWorkshop(game, item)
+                try Task.checkCancellation()
+                guard let latest = snapshot, latest.session == launch, latest.epoch == lease,
+                      latest.appID == game, latest.workshopID == item, bootstrapReady else { return }
+                _ = try DockSteamInputNative.revision(bytes)
+                bootstrap = Bootstrap(source: bytes, purpose: .selectedWorkshop(item))
+                updateInputQuiesced()
+            } catch is CancellationError {} catch {
+                if snapshot?.session == launch, snapshot?.epoch == lease {
+                    sourceFailure = (error as? LocalizedError)?.errorDescription ?? "Steam's selected Workshop layout could not be loaded. Retry when Steam is reachable; the selection is preserved."
+                }
+            }
+        }
+    }
     private static func expireRestartWait() {
-        if let started = restartWaitStarted, Date().timeIntervalSince(started) > (bootstrap == nil ? 30 : 120) {
+        // The selected-item lookup is part of baseline recovery too. Keep the
+        // same bounded recovery budget while its network work is still pending.
+        let recovering = bootstrap != nil || workshopTask != nil
+        if let started = restartWaitStarted, Date().timeIntervalSince(started) > (recovering ? 120 : 30) {
             restartAttempted = true
             SteamLog.event("[steam-input] working baseline unavailable for restart")
         }
@@ -1294,6 +1360,7 @@ enum DockSteamInputWire {
             }
             epoch = current.epoch; attempts = 0; pending = nil
             noSavedSelection = false; bootstrapAutoTried = false; bootstrap = nil
+            workshopTask?.cancel(); workshopTask = nil; workshopAttempted = false; sourceFailure = nil
         }
         sequence = max(sequence, current.sequence)
         refreshSubmission(current)
@@ -1316,6 +1383,7 @@ enum DockSteamInputWire {
                 if current.result == 1 { noSavedSelection = current.selection.isEmpty && current.workshopID == 0 }
             } else if Date().timeIntervalSince(request.sent) > 10 { pending = nil }
         }
+        refreshSelectedWorkshop(current)
         refreshBootstrap(current)
         updateInputQuiesced()
         refreshRestart(current)

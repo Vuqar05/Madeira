@@ -902,3 +902,41 @@ Ordinary builds in `build/madeira-dock/build.sh` and `madeira-dock/tools/build.s
 now enable `SH_STEAM_INPUT_LOCAL_APPLY=1` by default (`DOCK_LOCAL_APPLY=0` opts out).
 Host sanitizers, C/Swift regressions, `build/madeira-dock/build.sh --check` and
 `tools/check-steam-input-runtime.py` pass. Milestone 1 is complete.
+
+
+## Community layouts implementation (2026-11-13)
+
+Steam Input's Game details/session controls now open native community layouts.
+Anonymous public queries support pagination, search, sorting and controller
+filtering. A successful first-page refresh invalidates subsequent cached pages.
+Compatibility follows enabled bindings; inactive and unreferenced groups do not
+disable an otherwise compatible layout. Downloads retain complete original VDF revisions, game association,
+Workshop identity, attribution and SHA-256; metadata is rechecked after transfer.
+Cached revisions remain usable offline, failed/racing updates preserve previous
+bytes, and updates require explicit download/apply. Unsupported physical inputs
+and overlay menus are shown before applying. Account/game-scoped personal copies
+retain original bytes and attribution and can be exported; editing is milestone 4.
+
+Explicit community choices use the common revision journal, acknowledged native
+transaction, rollback and restart service. A separate bounded action-7 recovery
+can establish a baseline from only the exact public Workshop item Steam selected,
+with scope/digest verification and a fresh native selection read. It never replaces
+a named selection with a generic fallback or manufactures an explicit choice.
+The selected-item lookup shares the bounded 120-second baseline recovery wait,
+preserving confirmed-choice replay after a slow download.
+The January UI checker records the inspected UGC/selection contract; Dock calls no
+new private UGC API. Host tests cover source/cache/revision failures, community
+receipt/relaunch and native selected-item recovery. The owner confirmed physical
+community application, keyboard and mixed gamepad/mouse output, default
+restoration, held-input switching, relaunch, offline cached reuse and a failed
+offline update lookup on the paired iPad with Terraria and a DualSense.
+Failed/racing/cancelled payload transfers remain host-tested. Physical recovery
+of a Workshop layout selected in Steam itself was explicitly waived; its host
+checks pass. See `docs/STEAM_INPUT_INTEGRATION_PLAN.md` for the evidence and waiver.
+
+Host validation also rebuilt stale local ntdll-unix/wineserver archives and the
+targeted ARM64EC/i386 controller DLLs. The final iOS Debug build passes
+`tools/check-steam-input-runtime.py`, including scoped Workshop recovery,
+overlay-write/HID-owner, XInput forwarding and device notifications. This is a
+build/preflight result; milestone 3 is also physically accepted within the scope
+and waiver recorded above (2026-11-13).

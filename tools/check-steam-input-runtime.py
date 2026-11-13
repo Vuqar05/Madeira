@@ -23,6 +23,8 @@ def check(bundle):
             raise ValueError('missing Dock runtime dependency: ' + name)
     if b'MSICTX01' not in (folder / 'dockhost.exe').read_bytes():
         raise ValueError('Dock lacks game-default source context; rebuild build/madeira-dock/build.sh')
+    if b'MSIWSH01' not in (folder / 'dockhost.exe').read_bytes():
+        raise ValueError('Dock lacks selected-Workshop recovery; rebuild build/madeira-dock/build.sh')
     # A 32-bit game exits before its loader can report an error if the i386
     # runtime folder was left empty in a local build. Validate both halves of
     # WoW64 before installation, not just the Steam controller dependencies.
