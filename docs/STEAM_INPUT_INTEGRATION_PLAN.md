@@ -327,7 +327,11 @@ checks below are pending and must not be inferred from passing host tests.
     revision 94 before a later swapped-template comparison at revision 96. The
     Steam-selection feed remains empty across launches; no named selection was
     exercised in this run.
-  - [ ] A game with no recommendation offers an explicit generic fallback.
+  - [x] A game with no recommendation offers an explicit generic fallback.
+    Owner confirms App 1625450 reports no recommendation and shows
+    `Active: Generic template` after explicit selection. Its manifest-free
+    runtime context, active feed and confirmed revision-1 receipt share a launch
+    scope; the persisted choice is the unmodified generic Gamepad template.
   - [ ] Cached default works offline while keeping the Wi-Fi/JIT transport alive.
 
 Current relaunch evidence (2026-11-13): the owner reports working controls
@@ -344,8 +348,8 @@ this run does not prove preservation of a named Steam selection.
 Earlier device evidence (2026-11-06): a fixed template default, A/B-swapped
 Debug override and restoration worked in an XInput game; a bundled native-action
 manifest bootstrapped and worked in menus and brief gameplay; a generic template
-worked in a third game. The current context and recommendation additions still
-need the final device matrix above. Host tests cover uncached metadata, failed
+worked in a third game. The current context and recommendation additions have passed the online
+device checks above; offline acceptance remains open. Host tests cover uncached metadata, failed
 refresh, ordering, branch fallbacks, device-specific manifests and offline reuse.
 
 Done when: a fresh install with no hand-copied controller files obtains a game's

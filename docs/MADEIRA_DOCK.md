@@ -684,8 +684,11 @@ controls and PlayStation glyphs, including after restarting Madeira; the
 swapped template uses Xbox glyphs. The next fresh launch confirmed native
 source revision 94, followed by a later swapped-template comparison at 96.
 Steam's selection feed stayed empty across launches; this run did not
-exercise a named Steam selection. No-recommendation fallback and offline
-checks remain pending; see `STEAM_INPUT_INTEGRATION_PLAN.md`.
+exercise a named Steam selection. The owner also confirmed the explicit
+no-recommendation fallback for App 1625450: its active feed and confirmed
+revision-1 receipt match a manifest-free runtime context, and the persisted
+choice is the unmodified generic Gamepad template. Offline acceptance remains
+pending; see `STEAM_INPUT_INTEGRATION_PLAN.md`.
 
 Dock's version-1 protocol and transport capability bits are documented in its
 README. Commands have a launch nonce, App ID, controller index, observed
