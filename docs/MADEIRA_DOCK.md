@@ -679,9 +679,13 @@ the same launch/connection: active working revision 86, reserved high-water 87.
 A later fresh launch confirmed revision 88 for the persisted Debug A/B-swapped
 template, matching the owner's report of working swapped controls and
 `Active: Generic template`. That verifies restoration of the last confirmed
-override. Switching back to Game default, its automatic relaunch,
-no-recommendation fallback and offline checks remain pending; see
-`STEAM_INPUT_INTEGRATION_PLAN.md` for the checklist.
+override. The owner subsequently confirmed that Game default restores normal
+controls and PlayStation glyphs, including after restarting Madeira; the
+swapped template uses Xbox glyphs. The next fresh launch confirmed native
+source revision 94, followed by a later swapped-template comparison at 96.
+Steam's selection feed stayed empty across launches; this run did not
+exercise a named Steam selection. No-recommendation fallback and offline
+checks remain pending; see `STEAM_INPUT_INTEGRATION_PLAN.md`.
 
 Dock's version-1 protocol and transport capability bits are documented in its
 README. Commands have a launch nonce, App ID, controller index, observed

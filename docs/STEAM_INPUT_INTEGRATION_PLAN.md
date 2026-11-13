@@ -318,9 +318,15 @@ checks below are pending and must not be inferred from passing host tests.
   - [x] Native action-manifest default: controller menus and gameplay. Owner
     reports the menu opens and Game default/controls work; matching scoped feed
     and confirmed native receipt captured on 2026-11-13.
-  - [ ] Distinctive override, then Game default restores the original controls.
-  - [ ] Relaunch automatically reuses the confirmed default without changing the
-    saved Steam selection.
+  - [x] Distinctive override, then Game default restores the original controls.
+    Owner confirms normal controls and PlayStation glyphs return; the A/B-swapped
+    Gamepad override instead shows Xbox glyphs.
+  - [x] Relaunch automatically reuses the confirmed default without changing the
+    saved Steam selection. Owner confirms Game default and normal controls after
+    restarting Madeira; fresh-launch history confirms the native source at
+    revision 94 before a later swapped-template comparison at revision 96. The
+    Steam-selection feed remains empty across launches; no named selection was
+    exercised in this run.
   - [ ] A game with no recommendation offers an explicit generic fallback.
   - [ ] Cached default works offline while keeping the Wi-Fi/JIT transport alive.
 
@@ -328,10 +334,12 @@ Current relaunch evidence (2026-11-13): the owner reports working controls
 and `Active: Generic template`, with A/B still swapped. The persisted
 requested/last-activated choice is the Debug A/B-swapped template. A fresh
 launch nonce and confirmed working revision 88 verify its reapplication.
-Game default must be selected and confirmed before its own relaunch check;
-the Game default relaunch item above remains open. The saved-selection feed
-remains empty; the stored original-selection observation is absent, so this
-run does not prove preservation of a named Steam selection.
+The subsequent Game default restoration/restart check passed: the owner
+reports normal controls, `Active: Game default` and PlayStation glyphs after
+restarting Madeira. A fresh launch confirmed the native source at revision
+94 before the later A/B-swapped comparison at revision 96. The saved-selection
+feed remains empty; the stored original-selection observation is absent, so
+this run does not prove preservation of a named Steam selection.
 
 Earlier device evidence (2026-11-06): a fixed template default, A/B-swapped
 Debug override and restoration worked in an XInput game; a bundled native-action
