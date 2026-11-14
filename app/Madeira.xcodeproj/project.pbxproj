@@ -8,6 +8,10 @@
 
 /* Begin PBXBuildFile section */
 		C380F0187A89425896505D30 /* SteamInputCommunityView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C380F0187A89425896505D31 /* SteamInputCommunityView.swift */; };
+		A100069A /* SteamInputVDF.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200069A /* SteamInputVDF.swift */; };
+		A100069B /* SteamInputModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200069B /* SteamInputModel.swift */; };
+		A100069C /* SteamInputPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200069C /* SteamInputPreview.swift */; };
+		A100069D /* SteamInputPreviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200069D /* SteamInputPreviewView.swift */; };
 		A1000699 /* SteamInputCommunity.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000699 /* SteamInputCommunity.swift */; };
 		A1000598 /* steam_input_service.c in Sources */ = {isa = PBXBuildFile; fileRef = A2000598 /* steam_input_service.c */; };
 		A1000599 /* SteamInputTransactions.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000599 /* SteamInputTransactions.swift */; };
@@ -292,6 +296,10 @@
 /* Begin PBXFileReference section */
 		C380F0187A89425896505D31 /* SteamInputCommunityView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SteamInputCommunityView.swift"; sourceTree = "<group>"; };
 		A2000699 /* SteamInputCommunity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SteamInputCommunity.swift"; sourceTree = "<group>"; };
+		A200069A /* SteamInputVDF.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SteamInputVDF.swift"; sourceTree = "<group>"; };
+		A200069B /* SteamInputModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SteamInputModel.swift"; sourceTree = "<group>"; };
+		A200069C /* SteamInputPreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SteamInputPreview.swift"; sourceTree = "<group>"; };
+		A200069D /* SteamInputPreviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SteamInputPreviewView.swift"; sourceTree = "<group>"; };
 		A2000598 /* steam_input_service.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = "../../madeira-dock/src/steam_input_service.c"; sourceTree = "<group>"; };
 		A2000599 /* SteamInputTransactions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SteamInputTransactions.swift"; sourceTree = "<group>"; };
 		A2000698 /* SteamInputDefaults.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SteamInputDefaults.swift"; sourceTree = "<group>"; };
@@ -628,6 +636,10 @@
 				A2000698 /* SteamInputDefaults.swift */,
 				C380F0187A89425896505D31 /* SteamInputCommunityView.swift */,
 				A2000699 /* SteamInputCommunity.swift */,
+				A200069A /* SteamInputVDF.swift */,
+				A200069B /* SteamInputModel.swift */,
+				A200069C /* SteamInputPreview.swift */,
+				A200069D /* SteamInputPreviewView.swift */,
 				A2000598 /* steam_input_service.c */,
 				A2000521 /* MadeiraDockView.swift */,
 				A2000650 /* DockStartScreen.swift */,
@@ -1105,6 +1117,10 @@
 				A1000698 /* SteamInputDefaults.swift in Sources */,
 				C380F0187A89425896505D30 /* SteamInputCommunityView.swift in Sources */,
 				A1000699 /* SteamInputCommunity.swift in Sources */,
+				A100069A /* SteamInputVDF.swift in Sources */,
+				A100069B /* SteamInputModel.swift in Sources */,
+				A100069C /* SteamInputPreview.swift in Sources */,
+				A100069D /* SteamInputPreviewView.swift in Sources */,
 				A1000598 /* steam_input_service.c in Sources */,
 				A1000521 /* MadeiraDockView.swift in Sources */,
 				A1000650 /* DockStartScreen.swift in Sources */,

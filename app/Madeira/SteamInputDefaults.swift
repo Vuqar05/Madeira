@@ -143,16 +143,27 @@ import Darwin
         guard response.eresult == 1, response.body.count <= 2 << 20 else { throw Failure.unavailable }
         return try SteamWorkshopRequests.page(response.body, itemsField: 1, totalField: nil).items
     }
-    static func fetchBytes(_ url: URL) async throws -> Data {
+    static func fetchBytes(_ url: URL) async throws -> Data { try await fetchBytes(url, protocols: nil) }
+    /// `protocols` lets a host check answer the request in-process, so the real
+    /// session, redirect delegate, response checks and byte limit run offline.
+    static func fetchBytes(_ url: URL, protocols: [AnyClass]?) async throws -> Data {
         guard allowed(url) else { throw Failure.invalid }
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 20; config.timeoutIntervalForResource = 30
         config.httpCookieStorage = nil; config.urlCredentialStorage = nil
+        if let protocols { config.protocolClasses = protocols }
         let session = URLSession(configuration: config, delegate: SteamInputDefaultRedirects(), delegateQueue: nil)
         defer { session.invalidateAndCancel() }
         let (stream, response) = try await session.bytes(from: url)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200,
               let finalURL = http.url, allowed(finalURL), response.expectedContentLength <= limit else { throw Failure.unavailable }
+        return try await collect(stream, limit: limit)
+    }
+    /// Keeps at most `limit` bytes. The byte that would exceed it fails the
+    /// transfer at once, without reading the rest of a body whose length the
+    /// server understated or did not declare. Cancellation stops before the
+    /// next byte is kept. Runs off the main actor; it touches no shared state.
+    nonisolated static func collect<Stream: AsyncSequence & Sendable>(_ stream: Stream, limit: Int) async throws -> Data where Stream.Element == UInt8 {
         var bytes = Data()
         for try await byte in stream {
             try Task.checkCancellation()
@@ -163,11 +174,13 @@ import Darwin
     }
 }
 
-private final class SteamInputDefaultRedirects: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
-    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+public final class SteamInputDefaultRedirects: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    public override init() { super.init() }
+    public func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
         // The policy is pure; callback queues do not read the main-actor cache/session.
         let allowed = request.url.map(SteamInputDefaultSources.allowed) ?? false
         completionHandler(allowed ? request : nil)
     }
 }
+

@@ -128,6 +128,9 @@ private struct SteamInputCommunityDetail: View {
     @State private var message: String?
     @State private var copyTitle = ""
     @State private var operation: Task<Void, Never>?
+    /// The only preview state: request, loading, error and sheet all live in the model.
+    @State private var preview = SteamInputPreviewPresentationModel()
+    private var working: Bool { busy || preview.isLoading }
     private var accountID: UInt32 {
         if let saved = DockSteamInputService.selection, saved.appID == appID { return saved.accountID }
         return SteamOwnedLibrary.shared.workshopAccountID
@@ -140,14 +143,18 @@ private struct SteamInputCommunityDetail: View {
                 Text("Workshop item \(item.id)").font(.caption).foregroundStyle(.secondary)
                 if let url = item.storeURL { Link("View attribution on Steam Workshop", destination: url) }
             }
-            Section("Download") {
+            Section("Inspection & Download") {
+                Button("Preview layout mappings") {
+                    failure = nil; message = nil
+                    preview.requestPreview(appID: appID, item: item, sources: .shared)
+                }.disabled(working)
                 Button(history.isEmpty ? "Download layout" : "Download listed revision") {
                     run {
                         let value = try await SteamInputCommunitySources.shared.download(appID: appID, item: item)
                         layout = value
                         history = try SteamInputCommunitySources.shared.cached(appID: appID, id: item.id)
                     }
-                }.disabled(busy)
+                }.disabled(working)
                 Button("Check for updates") {
                     run {
                         let latest = try await SteamInputCommunitySources.shared.latest(appID: appID, id: item.id)
@@ -155,9 +162,9 @@ private struct SteamInputCommunityDetail: View {
                         message = history.contains { $0.matches(latest) }
                             ? "This revision is cached." : "A revision is available to download. Your active layout is kept until you apply it."
                     }
-                }.disabled(busy)
-                if busy { ProgressView("Working…") }
-                Button("Cancel download or lookup") { operation?.cancel() }.disabled(!busy)
+                }.disabled(working)
+                if working { ProgressView("Working…") }
+                Button("Cancel download or lookup") { operation?.cancel(); preview.cancel() }.disabled(!working)
             }
             if !history.isEmpty {
                 Section("Cached revisions") {
@@ -175,7 +182,7 @@ private struct SteamInputCommunityDetail: View {
                                 Spacer()
                                 if revision.hash == layout?.revision.hash { Image(systemName: "checkmark") }
                             }
-                        }.disabled(busy)
+                        }.disabled(working)
                     }
                     Text("Cached revisions work offline. A download or update does not apply a layout, and previous revisions remain available for rollback.")
                         .font(.caption).foregroundStyle(.secondary)
@@ -198,7 +205,7 @@ private struct SteamInputCommunityDetail: View {
                                     itemID: layout.revision.item.id, detail: layout.revision.attribution)
                                 failure = nil; message = "Layout change requested. Waiting for Steam Input to confirm it."
                             } catch { failure = "The layout change could not start. Wait for the current layout to settle, then retry." }
-                        }.disabled(busy || isActive || !layout.compatibility.canApply || !current ||
+                        }.disabled(working || isActive || !layout.compatibility.canApply || !current ||
                             !(DockSteamInputService.canChange || DockSteamInputService.canBootstrap))
                         ForEach(Array(DockSteamInputPresentation.lines(appID: appID, snapshot: DockSteamInputService.snapshot,
                             active: DockSteamInputService.activeChoice, selection: DockSteamInputService.selection).enumerated()), id: \.offset) { _, line in
@@ -220,12 +227,12 @@ private struct SteamInputCommunityDetail: View {
                             message = "Saved a local personal VDF copy with its community attribution. Find it under Personal copies."
                             failure = nil
                         } catch { failure = error.localizedDescription }
-                    }.disabled(busy || accountID == 0 || copyTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }.disabled(working || accountID == 0 || copyTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     Text("The downloaded original stays unchanged. Personal copies are local to this account and game.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
-            if let failure { Section { Text(failure).foregroundStyle(.red) } }
+            if let failure = failure ?? preview.errorMessage { Section { Text(failure).foregroundStyle(.red) } }
             if let message { Section { Text(message).foregroundStyle(.secondary) } }
         }
         .navigationTitle("Steam Input layout")
@@ -236,11 +243,16 @@ private struct SteamInputCommunityDetail: View {
                 if let latest = history.first { layout = try SteamInputCommunitySources.shared.load(latest) }
             } catch { failure = error.localizedDescription }
         }
-        .onDisappear { operation?.cancel() }
+        .onDisappear { operation?.cancel(); preview.cancel() }
+        .sheet(isPresented: Binding(get: { preview.isPresented }, set: { preview.isPresented = $0 })) {
+            if let data = preview.previewData {
+                SteamInputPreviewView(preview: data)
+            }
+        }
     }
     @MainActor private func run(_ body: @escaping @MainActor () async throws -> Void) {
-        guard !busy else { return }
-        busy = true; failure = nil; message = nil
+        guard !working else { return }
+        busy = true; failure = nil; message = nil; preview.clearError()
         operation = Task { @MainActor in
             defer { busy = false; operation = nil }
             do { try await body() }

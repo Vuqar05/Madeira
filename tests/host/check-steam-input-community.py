@@ -181,6 +181,7 @@ with tempfile.TemporaryDirectory(prefix='madeira-input-community-') as temporary
     subprocess.run([shutil.which('clang'), '-std=c11', '-Wall', '-Wextra', '-Werror', '-fsanitize=address', '-c', str(header.with_suffix('.c')), '-o', str(tmp / 'service.o')], check=True)
     subprocess.run([shutil.which('swiftc'), '-parse-as-library', '-sanitize=address', '-module-cache-path', str(tmp / 'modules'), '-import-objc-header', str(header),
                     str(app/'SwiftSteam/Library/SteamAppInfo.swift'), str(app/'SwiftSteam/Proto/SteamProtoMessages.swift'), str(app/'SwiftSteam/Core/SteamError.swift'),
-                    str(app/'SteamKeyValues.swift'), str(app/'SteamInputTransactions.swift'), str(app/'SteamInputDefaults.swift'),
+                    str(app/'SteamKeyValues.swift'), str(app/'SteamInputVDF.swift'), str(app/'SteamInputModel.swift'), str(app/'SteamInputPreview.swift'),
+                    str(app/'SteamInputTransactions.swift'), str(app/'SteamInputDefaults.swift'),
                     str(app/'SteamInputCommunity.swift'), str(tmp/'workshop.swift'), str(tmp/'main.swift'), str(tmp/'service.o'), '-o', str(tmp/'check')], check=True)
     subprocess.run([str(tmp/'check'), str(tmp/'cache')], check=True)

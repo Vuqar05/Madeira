@@ -1,6 +1,6 @@
 # Finish Steam Input integration
 
-Updated: 2026-11-13. Status: implementation plan; unchecked items are outstanding.
+Updated: 2026-11-14. Status: implementation plan; unchecked items are outstanding.
 
 This is the current plan for using Valve's Steam Input engine in Madeira.
 `STEAM_INPUT.md` records the investigation and verified runtime fix.
@@ -618,6 +618,40 @@ not only layouts that emit Xbox buttons.
 - [ ] Establish whether account cloud sync is supported by this client path. If it
   is, implement conflict handling and test it; otherwise label layouts as local
   and provide explicit import/export. Do not claim cloud backup without evidence.
+
+Initial slice (2026-11-14, host-tested only; no item above is complete or
+accepted, and nothing here has run on a device):
+
+- `SteamInputVDF.swift`: a source-preserving parser whose unmodified documents
+  serialize byte-for-byte, with targeted byte-patch mutation of a leaf value. It
+  keeps every condition written on a node, before and after its value or body.
+  There is no structural insert/delete writer yet.
+- `SteamInputModel.swift`: a read-only domain model of sets, layers, presets,
+  groups, inputs, activators and bindings. Content it does not interpret is kept
+  as raw source. It is not yet an editable model.
+- `SteamInputPreview.swift`, `SteamInputPreviewView.swift`: a read-only mapping
+  preview opened from a community listing. The VDF is fetched into memory only;
+  saved downloads, personal copies, the selection journal and the active layout
+  are not touched, including on failure or cancellation. One presentation model
+  owns loading, errors and the sheet; a superseded, cancelled or dismissed
+  request cannot publish a late result or error.
+- Conditions are preserved and shown with the node they are written on, at every
+  level from the root to a binding, on containers as well as their children.
+  They are never evaluated or combined; each produces the diagnostic “Condition
+  not evaluated by this preview; current apply validation rejects conditional
+  layouts.” and withholds the compatibility badge. Download and apply validation
+  are unchanged and still reject conditional layouts.
+- The download byte limit is enforced while streaming by the helper `fetchBytes`
+  uses, covered through that helper and through the real session.
+
+Still outstanding in this milestone: interactive editing UI, personal-layout
+identities and revision lifecycle, named actions from the game's action manifest
+(the preview shows raw `set:action` references as unresolved), mode-shift
+presentation, reference validation before apply, apply integration for personal
+layouts, and physical validation of the preview.
+
+Host checks: `tests/host/check-steam-input-vdf.py` and
+`tests/host/check-steam-input-preview.py`.
 
 Done when: a player creates a layout, changes a recognizable binding, uses it in
 the running game, restarts and gets the same result. Export/import preserves

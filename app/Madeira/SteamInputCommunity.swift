@@ -335,6 +335,27 @@ private extension Optional {
         guard items.count == 1, let item = items.first, item.id == id, Self.associated(item, appID: appID) else { throw Failure.unavailable }
         return item
     }
+    /// Pure, non-persisting ephemeral preview fetch. Zero disk writes, zero journal touches.
+    /// It holds no transfer slot: it writes nothing a second fetch could race, and a
+    /// cancelled fetch that has not unwound yet must not block the player's retry.
+    func preview(appID: UInt32, item: SteamWorkshopItem) async throws -> SteamInputPreviewData {
+        guard Self.associated(item, appID: appID) else { throw Failure.invalid }
+
+        let before = try await latest(appID: appID, id: item.id)
+        guard Revision.sameContent(before, item) else { throw Failure.changed }
+        let bytes = try await download(try SteamInputDefaultSources.downloadURL(before.fileURL).unwrap())
+        try Task.checkCancellation()
+        guard bytes.count == before.fileSize, !bytes.isEmpty, bytes.count <= Self.limit else { throw Failure.invalid }
+
+        let document = try VDFDocument.parse(bytes)
+        let after = try await latest(appID: appID, id: item.id)
+        guard Revision.sameContent(before, after) else { throw Failure.changed }
+        try Task.checkCancellation()
+
+        let model = try SteamInputLayoutModel(document: document)
+        return SteamInputPreviewData(model: model)
+    }
+
     func download(appID: UInt32, item: SteamWorkshopItem) async throws -> Layout {
         guard Self.associated(item, appID: appID) else { throw Failure.invalid }
         if let saved = try cached(appID: appID, id: item.id).first(where: { $0.matches(item) }) { return try load(saved) }
