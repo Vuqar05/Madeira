@@ -604,7 +604,7 @@ not only layouts that emit Xbox buttons.
 - [ ] Reuse editor controls where possible, backed by the native model. Implement
   buttons/chords, stick and trigger behavior, dead zones/curves, activators,
   toggle/turbo, action sets/layers/mode shifts, gyro, touchpad and menu bindings.
-- [ ] Use the game's action manifest for named actions in native Steam Input games.
+- [x] Use the game's action manifest for named actions in native Steam Input games.
   Validate references to groups, action sets and layers before applying changes.
 - [ ] For fields outside the editor's supported surface, preserve them and clearly
   show that they cannot yet be edited. Never remove them on an unrelated save.
@@ -613,14 +613,14 @@ not only layouts that emit Xbox buttons.
 - [ ] Make deletion safe for active/referenced layouts and retain the prior revision
   until a replacement is acknowledged. Live editing releases held outputs before
   switching and restores the working revision if validation/activation fails.
-- [ ] Store personal layouts persistently and register/select them using the pinned
+- [x] Store personal layouts persistently and register/select them using the pinned
   client's proven local-layout contract. Do not invent Steam selection keys.
-- [ ] Establish whether account cloud sync is supported by this client path. If it
+- [x] Establish whether account cloud sync is supported by this client path. If it
   is, implement conflict handling and test it; otherwise label layouts as local
   and provide explicit import/export. Do not claim cloud backup without evidence.
 
-Initial slice (2026-11-14, host-tested only; no item above is complete or
-accepted, and nothing here has run on a device):
+Initial slice (2026-11-14; historical implementation snapshot, superseded by
+the item reports and device acceptance below):
 
 - `SteamInputVDF.swift`: a source-preserving parser whose unmodified documents
   serialize byte-for-byte, with targeted byte-patch mutation of a leaf value. It
@@ -645,14 +645,14 @@ accepted, and nothing here has run on a device):
   uses, covered through that helper and through the real session.
 
 Still outstanding in this milestone: interactive editing UI, personal-layout
-revision history and the rest of items 1, 3, 4, 6, 7 and 8, and physical
-validation of everything in this milestone.
+revision history and the rest of items 1, 3, 4, 6, 7 and 8. Remaining physical
+acceptance is recorded below.
 
 Host checks: `tests/host/check-steam-input-vdf.py` and
 `tests/host/check-steam-input-preview.py`.
 
-Item 5, action names and reference validation (2026-11-14; implemented and
-host-tested, not run on a device, checkbox left open until device acceptance):
+Item 5, action names and reference validation (implemented and host-tested
+2026-11-14; owner device acceptance recorded below):
 
 - Grammar evidence. The initial slice's binding grammar was written against
   synthetic fixtures. It was checked read-only against the 139 layouts a local
@@ -705,8 +705,8 @@ host-tested, not run on a device, checkbox left open until device acceptance):
   unchanged.
 - Host check: `tests/host/check-steam-input-actions.py`.
 
-Item 2, read-only community preview (2026-11-14; implemented and host-tested,
-not run on a device, checkbox left open until device acceptance). This
+Item 2, read-only community preview (implemented and host-tested 2026-11-14;
+device test results and remaining cancellation retest recorded below). This
 supersedes the initial slice's description of what the preview shows:
 
 - Named actions. A `game_action` binding and a group's analog `gameactions`
@@ -751,10 +751,10 @@ supersedes the initial slice's description of what the preview shows:
 - Against the 139 sampled layouts the preview produces no unverified binding,
   expands all 29 mode shifts, and yields distinct row identifiers throughout.
 - Host check: `tests/host/check-steam-input-preview.py`. The SwiftUI sheet is
-  pinned by source checks and has not been exercised on a device.
+  pinned by source checks, supplemented by the owner's device tests below.
 
-Item 9, storing and selecting personal layouts (2026-11-14; implemented and
-host-tested, not run on a device, checkbox left open until device acceptance):
+Item 9, storing and selecting personal layouts (implemented and host-tested
+2026-11-14; owner device acceptance recorded below):
 
 - The contract, from the pinned client and the accepted milestones. A layout is
   registered with Valve's engine by handing its bytes to the pinned loader
@@ -797,8 +797,8 @@ host-tested, not run on a device, checkbox left open until device acceptance):
   journal's copy even if its stored file is later damaged; applying it again is
   then refused.
 
-Item 10, local storage and explicit import/export (2026-11-14; implemented and
-host-tested, not run on a device, checkbox left open until device acceptance):
+Item 10, local storage and explicit import/export (implemented and host-tested
+2026-11-14; owner device acceptance recorded below):
 
 - Evidence and scope. The item 9 path supplies bytes to the pinned client's
   `LoadConfigFromVDFString` and `ActivateConfig`; it does not save an account
@@ -832,7 +832,8 @@ host-tested, not run on a device, checkbox left open until device acceptance):
   round trips, existing records, account/game isolation, invalid files,
   conditions, broken references, unsupported inputs, size/count bounds and
   unchanged community downloads. File-picker and share-sheet behavior, applying
-  the reimported layout and persistence on the iPad await device acceptance.
+  the reimported layout and persistence on the iPad are covered by the owner's
+  acceptance below.
 
 Four-item handoff verification (2026-11-14): the VDF, preview, community,
 service, action-manifest, personal-layout and Dock-contract host checks pass,
@@ -878,6 +879,30 @@ iOS build pass. Retrying imports without relaunching still awaits the owner's
 physical retest; the milestone checkboxes remain open.
 The updated Debug build was signed, passed individual native-binary signature
 and runtime checks, and was installed over the existing iPad app with data kept.
+
+Owner device acceptance (2026-11-15; Debug `327927dd`, following the earlier
+preview tests and the two menu corrections above):
+
+- The owner previously reported test steps 1 and 2 working: community mapping
+  preview and cancellation/dismissal. The intermittent cancellation crash found
+  during those tests was subsequently fixed in `bade53d4`; an explicit physical
+  cancellation retest after that correction has not yet been reported. Item 2
+  therefore stays open for that remaining confirmation.
+- Step 3 produced the expected broken-group-reference, conditional-layout and
+  malformed-file refusals. The owner then confirmed that the import retry fix
+  in `327927dd` works, so a refused import no longer requires restarting Madeira.
+  Together with the earlier preview report, this accepts item 5's implemented
+  action-name/reference-validation surface; the manifest limitations documented
+  above still apply.
+- The owner now reports steps 4, 5 and 6 all passing: applying a personal copy
+  with working controls, restart reapplication and an unchanged community
+  original; local-only labels and export/import under a separate identity with
+  the same behavior; and restoring Game default with working controls. Items 9
+  and 10 are accepted. Apply being disabled before the game starts is intentional:
+  activation requires a running Steam Input session and confirmation.
+- Items 5, 9 and 10 are checked above. No editor/revision-history item is accepted,
+  and Milestone 4 as a whole remains incomplete. These are the owner's reported
+  physical results, supplemented by the offline checks documented above.
 
 Done when: a player creates a layout, changes a recognizable binding, uses it in
 the running game, restarts and gets the same result. Export/import preserves
