@@ -843,6 +843,24 @@ reports no configured account/profiles for Madeira and its JIT helper, and no
 development team for the memory host. The paired iPad is unavailable, so this
 handoff does not install a new build or add physical acceptance evidence.
 
+Physical acceptance follow-up (2026-11-15): the owner confirmed that the mapping
+preview and cancellation/dismissal tests generally work from Madeira's menu,
+without starting a game, but reported an intermittent crash while cancelling.
+The iPad report `Madeira-2026-11-15-002448.ips` identifies a second resume of the
+checked continuation in `SteamConnection.connect(to:)`'s WebSocket ping callback.
+An offline regression reproduces the same trap by delivering that callback twice.
+The handshake now retains the first completion under a lock and resumes only
+once; cancellation also completes the wait, including cancellation before the
+continuation is installed. Late callbacks cannot complete it again. The new
+`check-steam-cm-handshake.py`, existing CM transport, Steam session and preview
+checks, and the Debug iOS build pass. Physical cancellation acceptance remains
+open until the owner retries with this correction; items 5, 9 and 10 still await
+the rest of the device test script. The earlier installation-only signing fault
+(unsigned Debug dylibs) was corrected before these menu tests.
+The corrected Debug build was installed over the existing iPad app, after
+individual signature checks of all nine native binaries and the bundled-runtime
+preflight passed. App data was retained.
+
 Done when: a player creates a layout, changes a recognizable binding, uses it in
 the running game, restarts and gets the same result. Export/import preserves
 behavior and unknown fields. Editing a community copy leaves the original intact.

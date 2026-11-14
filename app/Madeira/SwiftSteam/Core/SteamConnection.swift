@@ -43,6 +43,36 @@ private final class SteamWebSocketDelegate: NSObject, URLSessionWebSocketDelegat
     }
 }
 
+/// A ping callback may arrive more than once around WebSocket cancellation.
+/// Cancellation can also precede installation of the continuation. Retain the
+/// first result and resume exactly once, outside the lock, for either ordering.
+private final class SteamConnectionHandshake: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Error>?
+    private var result: Result<Void, Error>?
+
+    func install(_ continuation: CheckedContinuation<Void, Error>) {
+        lock.lock()
+        if let result {
+            lock.unlock()
+            continuation.resume(with: result)
+        } else {
+            self.continuation = continuation
+            lock.unlock()
+        }
+    }
+
+    func finish(_ result: Result<Void, Error>) {
+        lock.lock()
+        guard self.result == nil else { lock.unlock(); return }
+        self.result = result
+        let continuation = self.continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume(with: result)
+    }
+}
+
 // MARK: - SteamConnection
 
 /// WebSocket transport to a Steam CM server (wss://).
@@ -133,17 +163,20 @@ actor SteamConnection {
         task.resume()
 
         // Verify the connection completed (WebSocket handshake + ping round-trip)
+        let handshake = SteamConnectionHandshake()
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+                handshake.install(cont)
                 task.sendPing { error in
                     if let error {
-                        cont.resume(throwing: error)
+                        handshake.finish(.failure(error))
                     } else {
-                        cont.resume()
+                        handshake.finish(.success(()))
                     }
                 }
             }
         } onCancel: {
+            handshake.finish(.failure(CancellationError()))
             task.cancel(with: .goingAway, reason: nil)
         }
     }
