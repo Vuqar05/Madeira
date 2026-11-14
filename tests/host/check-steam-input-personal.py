@@ -312,6 +312,8 @@ for needle, why in [
 if view.count('requestPersonal(') != 1 or 'requestCommunity(' in view:
     raise SystemExit('FAIL: the personal layout page must apply through requestPersonal exactly once')
 listing = (app / 'SteamInputCommunityView.swift').read_text()
+if listing.count('importing = false') != 2:
+    raise SystemExit('FAIL: the picker must reset its presentation state after every result, including refused imports')
 if listing.count('SteamInputPersonalDetail(appID: appID, copy: copy)') != 1:
     raise SystemExit('FAIL: each personal layout must open its own page')
 

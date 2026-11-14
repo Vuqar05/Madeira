@@ -20,6 +20,15 @@ class SteamSession {
     private(set) var accountName: String = ""
     private(set) var personaName: String = ""
     private(set) var cellID: UInt32 = 0
+    /// Last identity confirmed by Steam in this process. Local, account-scoped
+    /// files remain usable when the network connection idles or is suspended.
+    private var localIdentity: (accountName: String, steamID: UInt64)?
+
+    func localAccountID(for signedInAccount: String?) -> UInt32 {
+        guard !anonymous, let signedInAccount, let localIdentity,
+              localIdentity.accountName == signedInAccount else { return 0 }
+        return UInt32(truncatingIfNeeded: localIdentity.steamID)
+    }
     /// While true the session neither connects nor reconnects: a game session
     /// runs, and Valve's own client must be the only one logged on with this
     /// account (see `suspend()`).
@@ -354,6 +363,9 @@ class SteamSession {
                 }
 
                 self.steamID = message.header.steamid
+                if !self.anonymous {
+                    self.localIdentity = (accountName: self.accountName, steamID: message.header.steamid)
+                }
                 self.sessionID = message.header.clientSessionid
                 self.heartbeatInterval = heartbeatSecs
                 self.cellID = outCellID

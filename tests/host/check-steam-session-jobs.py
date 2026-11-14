@@ -39,13 +39,34 @@ def require(condition, label):
 session = (steam / 'Core/SteamSession.swift').read_text()
 session = 'import Observation\n' + session[:session.index('// MARK: - Data Extensions')]
 
+def declaration(text, marker):
+    start = text.index(marker)
+    brace = text.index('{', start)
+    depth = 1
+    end = brace + 1
+    while depth:
+        depth += (text[end] == '{') - (text[end] == '}')
+        end += 1
+    return text[start:end]
+
+# Compile the real page's account lookup as well: a redraw after a refused
+# import must not disable the picker just because the Steam connection idled.
+owned = (root / 'app/Madeira/SteamOwnedLibrary.swift').read_text()
+page = (root / 'app/Madeira/SteamInputCommunityView.swift').read_text()
+account_lookup = declaration(page, '    private var accountID: UInt32').replace('private var', 'var', 1)
+account_methods = declaration(owned, '    var workshopAccountID: UInt32')
+if '    var personalLayoutAccountID: UInt32' in owned:
+    account_methods += '\n' + declaration(owned, '    var personalLayoutAccountID: UInt32')
+
 stubs = r'''
 import Foundation
 enum SteamLog { static func trace(_ m: @autoclosure () -> String) {}; static func event(_ m: String) {} }
 enum SteamDevice { static let name = "host" }
 @MainActor enum SteamSignIn {
     static var credentialReads = 0
-    static func credentialsForDock() -> (accountName: String, refreshToken: String)? { credentialReads += 1; return nil }
+    static var credentials: (accountName: String, refreshToken: String)?
+    static var accountName: String? { credentials?.accountName }
+    static func credentialsForDock() -> (accountName: String, refreshToken: String)? { credentialReads += 1; return credentials }
 }
 actor CMServerList {}
 extension Data { func gunzip(expectedSize: Int = 0) -> Data? { nil } }
@@ -56,6 +77,7 @@ actor SteamConnection {
     private var parked: CheckedContinuation<Void, Never>?
     private var handler: ((Data) -> Void)?
     private var automatic = false
+    private var logonSteamID: UInt64 = 0x01A0_0000_0000_0001
     private(set) var sent: [SteamMessageCodec.IncomingMessage] = []
     init() { Self.last = self }
     var isConnected: Bool { true }
@@ -72,15 +94,33 @@ actor SteamConnection {
             if message.eMsg == .clientLogon {
                 var body = ProtobufEncoder(); body.writeUInt32(fieldNumber: 1, value: 1); body.writeUInt32(fieldNumber: 3, value: 30)
                 handler?(SteamMessageCodec.encodeClientMessage(eMsg: .clientLogonResponse, body: body.data,
-                    steamID: 0x01A0_0000_0000_0001, sessionID: 7))
+                    steamID: logonSteamID, sessionID: 7))
             }
             return
         }
         await withCheckedContinuation { parked = $0 }
         throw SteamError.disconnected
     }
-    func automaticLogon() { automatic = true }
+    func automaticLogon(steamID: UInt64 = 0x01A0_0000_0000_0001) { automatic = true; logonSteamID = steamID }
     func release() { parked?.resume(); parked = nil }
+}
+'''
+
+stubs += r'''
+@MainActor enum DockSteamInputService {
+    struct Selection { let appID: UInt32; let accountID: UInt32 }
+    static var selection: Selection?
+}
+@MainActor final class SteamOwnedLibrary {
+    static var shared: SteamOwnedLibrary!
+    let session: SteamSession
+    var signedIn: Bool { SteamSignIn.accountName != nil }
+    init(_ session: SteamSession) { self.session = session }
+''' + account_methods + r'''
+}
+@MainActor struct PersonalAccountHarness {
+    let appID: UInt32
+''' + account_lookup + r'''
 }
 '''
 
@@ -137,6 +177,31 @@ var failures = 0
             } else { try decoder.skip(wireType: tag.wireType) }
         }
         publicSession.disconnect()
+        // Local import must remain available when an authenticated connection
+        // goes idle while a file picker or validation refusal is displayed.
+        let personalSession = SteamSession()
+        let personalConnection = SteamConnection.last!
+        SteamSignIn.credentials = ("fixture-account", "fixture-token")
+        SteamOwnedLibrary.shared = SteamOwnedLibrary(personalSession)
+        let personalPage = PersonalAccountHarness(appID: 480)
+        require(personalPage.accountID == 0, "a local account is not guessed before successful authentication")
+        await personalConnection.automaticLogon(steamID: 0x0110_0001_0000_0018)
+        try await personalSession.ensureConnected()
+        require(personalPage.accountID == 24, "the import page uses the authenticated account")
+        personalSession.disconnect()
+        require(personalSession.steamID == 0, "idle disconnect clears only the live protocol identity")
+        require(personalPage.accountID == 24, "personal import remains enabled after idle disconnect and refusal redraw")
+        DockSteamInputService.selection = .init(appID: 480, accountID: 24)
+        SteamSignIn.credentials = nil
+        require(personalPage.accountID == 0, "sign-out prevents imports under the previous account")
+        SteamSignIn.credentials = ("another-account", "another-fixture-token")
+        require(personalPage.accountID == 0, "switching accounts cannot reuse a previous identity")
+        SteamSignIn.credentials = ("fixture-account", "fixture-token")
+        try await personalSession.ensureConnected()
+        require(personalPage.accountID == 24, "the same account can reconnect and retry without relaunching Madeira")
+        personalSession.disconnect()
+        SteamSignIn.credentials = nil
+        DockSteamInputService.selection = nil
         if failures > 0 { print("FAILURES: \(failures)"); exit(1) }
         print("PASS: all SteamSession job checks")
     }

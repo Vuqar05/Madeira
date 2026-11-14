@@ -26,8 +26,7 @@ struct SteamInputCommunityView: View {
     @State private var importFailure: String?
     private var support: URL { FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0] }
     private var accountID: UInt32 {
-        if let saved = DockSteamInputService.selection, saved.appID == appID { return saved.accountID }
-        return SteamOwnedLibrary.shared.workshopAccountID
+        SteamOwnedLibrary.shared.personalLayoutAccountID
     }
     private var queryKey: String { "\(order.rawValue):\(SteamInputCommunitySources.search(search))" }
     private var visible: [SteamWorkshopItem] {
@@ -109,6 +108,7 @@ struct SteamInputCommunityView: View {
     }
     /// Keeps the picked file's exact bytes as a personal layout. Nothing is applied.
     @MainActor private func importLayout(_ result: Result<[URL], Error>) {
+        importing = false
         importMessage = nil; importFailure = nil
         do {
             guard let url = try result.get().first else { return }
@@ -160,8 +160,7 @@ private struct SteamInputCommunityDetail: View {
     @State private var preview = SteamInputPreviewPresentationModel()
     private var working: Bool { busy || preview.isLoading }
     private var accountID: UInt32 {
-        if let saved = DockSteamInputService.selection, saved.appID == appID { return saved.accountID }
-        return SteamOwnedLibrary.shared.workshopAccountID
+        SteamOwnedLibrary.shared.personalLayoutAccountID
     }
     var body: some View {
         Form {

@@ -861,6 +861,24 @@ The corrected Debug build was installed over the existing iPad app, after
 individual signature checks of all nine native binaries and the bundled-runtime
 preflight passed. App data was retained.
 
+Import acceptance follow-up (2026-11-15): the owner reported the expected
+refusal text for the broken-reference, conditional and malformed VDF fixtures.
+After some refusals the Import button became disabled until Madeira restarted.
+The button used the live CM connection's account ID, which is cleared on idle
+disconnect; returning from the picker or showing an error redrew the page with
+account ID zero. A host regression reproduces this with the production session
+and the page's account lookup. Local layout operations now use the identity
+confirmed by a successful login in this process, retained across disconnects
+and checked against the current usable sign-in. Sign-out or switching accounts
+cannot use the prior account's identity or a stale saved layout selection.
+The file picker also resets its presentation state on every result. No live
+connection is needed to retry a refused file after that initial authentication.
+Session/account, personal-layout, community and preview checks and the Debug
+iOS build pass. Retrying imports without relaunching still awaits the owner's
+physical retest; the milestone checkboxes remain open.
+The updated Debug build was signed, passed individual native-binary signature
+and runtime checks, and was installed over the existing iPad app with data kept.
+
 Done when: a player creates a layout, changes a recognizable binding, uses it in
 the running game, restarts and gets the same result. Export/import preserves
 behavior and unknown fields. Editing a community copy leaves the original intact.

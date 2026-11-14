@@ -686,6 +686,14 @@ final class SteamOwnedLibrary: ObservableObject {
     /// client records it beside an item it keeps for that account.
     var workshopAccountID: UInt32 { UInt32(truncatingIfNeeded: session.steamID) }
 
+    /// Local layouts do not require a live CM connection. Use only an identity
+    /// Steam confirmed for the currently stored, usable sign-in; sign-out or an
+    /// account switch cannot borrow a previous session's identity.
+    var personalLayoutAccountID: UInt32 {
+        guard signedIn else { return 0 }
+        return session.localAccountID(for: SteamSignIn.accountName)
+    }
+
     /// One PublishedFile call (SteamWorkshop.swift). `body` gets the account's SteamID.
     func workshopCall(_ method: SteamServiceMethod, timeout: TimeInterval = 20,
                       body: (UInt64) -> Data) async throws -> (eresult: Int32, body: Data) {
