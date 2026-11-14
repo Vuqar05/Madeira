@@ -61,19 +61,31 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
     }
 
     public struct ParsedBinding: Equatable, Sendable {
+        public enum LayerOperation: String, Equatable, Sendable {
+            case add = "add_layer", remove = "remove_layer", hold = "hold_layer"
+        }
         public enum Verb: Equatable, Sendable {
             case xinputButton(String)
             case keyPress(String)
             case mouseButton(String)
             case mouseWheel(String)
-            case controllerAction(String)
             case gameAction(setID: String, actionID: String)
-            case modeShift(groupID: String)
+            /// `mode_shift <source> <group>`: while the input is held, `source` uses that group.
+            case modeShift(source: String, groupID: String)
+            /// `controller_action CHANGE_PRESET <n> …`. Steam counts presets from 1,
+            /// so `n` names the preset whose `id` is `n - 1`.
+            case actionSetChange(preset: Int)
+            /// `controller_action add_layer|remove_layer|hold_layer <n> …`, counted the same way.
+            case layerChange(LayerOperation, preset: Int)
+            /// Any other `controller_action`: something Steam itself carries out.
+            case steamAction(command: String, arguments: [String])
             case unverified(verb: String, arguments: [String])
         }
 
         public let verb: Verb
         public let label: String?
+        /// The third field Steam writes after the label: an icon file and colours.
+        public let icon: String?
         /// Conditions on the enclosing `bindings` block, then on this binding.
         public let conditions: [Condition]
         public let rawString: String
@@ -91,79 +103,75 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
             "left", "right", "middle", "forward", "back", "mouse4", "mouse5"
         ]
 
+        /// Steam writes `command[, label[, icon]]`. The command ends at the first
+        /// comma. A trailing field is the icon only when it is empty or names an
+        /// image, so a label that itself contains a comma is kept whole.
+        static func fields(_ raw: String) -> (command: String, label: String?, icon: String?) {
+            guard let first = raw.firstIndex(of: ",") else { return (raw, nil, nil) }
+            var rest = raw[raw.index(after: first)...]
+            var icon: String?
+            if let last = rest.lastIndex(of: ",") {
+                let tail = rest[rest.index(after: last)...].trimmingCharacters(in: .whitespaces)
+                let file = tail.split(separator: " ").first.map { $0.lowercased() } ?? ""
+                if tail.isEmpty || file.hasSuffix(".png") || file.hasSuffix(".svg") {
+                    icon = tail.isEmpty ? nil : tail
+                    rest = rest[..<last]
+                }
+            }
+            let label = rest.trimmingCharacters(in: .whitespaces)
+            return (String(raw[..<first]), label.isEmpty ? nil : label, icon)
+        }
+
         public init(raw: String, conditions: [Condition] = []) {
             self.rawString = raw
             self.conditions = conditions
+            let fields = Self.fields(raw)
+            self.label = fields.label
+            self.icon = fields.icon
 
-            // Split strictly on the FIRST comma to preserve user labels containing commas
-            let commaIndex = raw.firstIndex(of: ",")
-            let verbSegment: String
-            if let commaIndex = commaIndex {
-                verbSegment = String(raw[..<commaIndex])
-                let labelPart = String(raw[raw.index(after: commaIndex)...]).trimmingCharacters(in: .whitespaces)
-                self.label = labelPart.isEmpty ? nil : labelPart
-            } else {
-                verbSegment = raw
-                self.label = nil
-            }
-
-            let words = verbSegment.split(separator: " ").map(String.init)
+            let words = fields.command.split(separator: " ").map(String.init)
             let rawVerb = words.first?.lowercased() ?? ""
             let args = Array(words.dropFirst())
+            let unverified = Verb.unverified(verb: rawVerb, arguments: args)
 
             switch rawVerb {
             case "xinput_button":
-                if args.count == 1, Self.recognizedPadButtons.contains(args[0].lowercased()) {
-                    self.verb = .xinputButton(args[0])
-                } else {
-                    self.verb = .unverified(verb: rawVerb, arguments: args)
-                }
+                verb = args.count == 1 && Self.recognizedPadButtons.contains(args[0].lowercased()) ? .xinputButton(args[0]) : unverified
             case "key_press":
-                if args.count == 1 {
-                    self.verb = .keyPress(args[0])
-                } else {
-                    self.verb = .unverified(verb: rawVerb, arguments: args)
-                }
+                verb = args.count == 1 ? .keyPress(args[0]) : unverified
             case "mouse_button":
-                if args.count == 1, Self.recognizedMouseButtons.contains(args[0].lowercased()) {
-                    self.verb = .mouseButton(args[0])
-                } else {
-                    self.verb = .unverified(verb: rawVerb, arguments: args)
-                }
+                verb = args.count == 1 && Self.recognizedMouseButtons.contains(args[0].lowercased()) ? .mouseButton(args[0]) : unverified
             case "mouse_wheel":
-                if args.count == 1 {
-                    let dir = args[0].uppercased()
-                    if dir == "SCROLL_UP" || dir == "SCROLL_DOWN" {
-                        self.verb = .mouseWheel(dir)
-                    } else {
-                        self.verb = .unverified(verb: rawVerb, arguments: args)
-                    }
-                } else {
-                    self.verb = .unverified(verb: rawVerb, arguments: args)
-                }
+                let direction = args.first?.uppercased() ?? ""
+                verb = args.count == 1 && ["SCROLL_UP", "SCROLL_DOWN"].contains(direction) ? .mouseWheel(direction) : unverified
             case "game_action":
-                if args.count == 2 {
-                    self.verb = .gameAction(setID: args[0], actionID: args[1])
-                } else {
-                    self.verb = .unverified(verb: rawVerb, arguments: args)
-                }
-            case "controller_action":
-                if args.count == 1 {
-                    self.verb = .controllerAction(args[0])
-                } else {
-                    self.verb = .unverified(verb: rawVerb, arguments: args)
-                }
+                verb = args.count == 2 ? .gameAction(setID: args[0], actionID: args[1]) : unverified
             case "mode_shift":
-                if args.count == 1 {
-                    self.verb = .modeShift(groupID: args[0])
-                } else {
-                    self.verb = .unverified(verb: rawVerb, arguments: args)
+                verb = args.count == 2 ? .modeShift(source: args[0].lowercased(), groupID: args[1]) : unverified
+            case "controller_action":
+                guard let command = args.first else { verb = unverified; break }
+                let rest = Array(args.dropFirst())
+                switch command.lowercased() {
+                case "change_preset":
+                    if let number = Self.presetNumber(rest.first) { verb = .actionSetChange(preset: number) } else { verb = unverified }
+                case "add_layer", "remove_layer", "hold_layer":
+                    if let number = Self.presetNumber(rest.first), let operation = LayerOperation(rawValue: command.lowercased()) {
+                        verb = .layerChange(operation, preset: number)
+                    } else { verb = unverified }
+                default:
+                    verb = .steamAction(command: command, arguments: rest)
                 }
             default:
-                self.verb = .unverified(verb: rawVerb, arguments: args)
+                verb = unverified
             }
         }
 
+        private static func presetNumber(_ text: String?) -> Int? {
+            guard let text, let number = Int(text), number >= 1, String(number) == text else { return nil }
+            return number
+        }
+
+        /// What the binding does, without resolving the names of anything it refers to.
         public var displayText: String {
             var text: String
             switch verb {
@@ -175,13 +183,16 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
                 text = "\(btn.capitalized) Click"
             case .mouseWheel(let dir):
                 text = dir.uppercased() == "SCROLL_UP" ? "Wheel Up" : "Wheel Down"
-            case .controllerAction(let act):
-                text = "Controller: " + act.replacingOccurrences(of: "_", with: " ").capitalized
             case .gameAction(let setID, let actionID):
-                // Depot action manifest dictionary parser is deferred to next slice; display explicit unresolved fallback.
-                text = "Action: [\(setID):\(actionID)] (Unresolved Action Name)"
-            case .modeShift(let grp):
-                text = "Mode Shift (Group \(grp))"
+                text = "Game action \(setID) › \(actionID)"
+            case .modeShift(let source, let group):
+                text = "Mode shift: \(Self.formatSource(source)) uses group \(group)"
+            case .actionSetChange(let preset):
+                text = "Change action set (preset \(preset))"
+            case .layerChange(let operation, let preset):
+                text = "\(Self.formatLayerOperation(operation)) (preset \(preset))"
+            case .steamAction(let command, let args):
+                text = "Steam: " + ([command] + args).joined(separator: " ").replacingOccurrences(of: "_", with: " ").capitalized
             case .unverified(let verb, let args):
                 let argStr = args.joined(separator: " ")
                 text = "Unverified: \(verb)\(argStr.isEmpty ? "" : " " + argStr) (\(rawString))"
@@ -192,13 +203,40 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
             return text
         }
 
+        public static func formatLayerOperation(_ operation: LayerOperation) -> String {
+            switch operation {
+            case .add: return "Add layer"
+            case .remove: return "Remove layer"
+            case .hold: return "Hold layer"
+            }
+        }
+
+        public static func formatSource(_ source: String) -> String {
+            switch source.lowercased() {
+            case "button_diamond": return "Face buttons"
+            case "dpad": return "D-pad"
+            case "joystick": return "Left stick"
+            case "right_joystick": return "Right stick"
+            case "left_trigger": return "Left trigger"
+            case "right_trigger": return "Right trigger"
+            case "switch": return "Bumpers and menu buttons"
+            case "left_trackpad": return "Left trackpad"
+            case "right_trackpad": return "Right trackpad"
+            case "center_trackpad": return "Touchpad"
+            case "gyro": return "Gyro"
+            default: return source.replacingOccurrences(of: "_", with: " ").capitalized
+            }
+        }
+
         public var outputCategory: OutputCategory {
             switch verb {
             case .xinputButton: return .gamepad
             case .keyPress: return .keyboard
             case .mouseButton, .mouseWheel: return .mouse
             case .gameAction: return .action
-            case .controllerAction, .modeShift, .unverified: return .unverified
+            case .modeShift, .actionSetChange, .layerChange: return .layout
+            case .steamAction: return .steam
+            case .unverified: return .unverified
             }
         }
 
@@ -252,6 +290,10 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
         case keyboard
         case mouse
         case action
+        /// Switches what the layout itself does: a mode shift, action set or layer.
+        case layout
+        /// Carried out by Steam, not sent to the game as input.
+        case steam
         case unverified
     }
 
@@ -292,14 +334,21 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
             case "button_b": return "Circle (B)"
             case "button_x": return "Square (X)"
             case "button_y": return "Triangle (Y)"
-            case "shoulder_left": return "L1 (LB)"
-            case "shoulder_right": return "R1 (RB)"
+            // The names Steam writes for the bumper and menu inputs of the `switch` source.
+            case "left_bumper", "shoulder_left": return "L1 (LB)"
+            case "right_bumper", "shoulder_right": return "R1 (RB)"
             case "trigger_left": return "L2 (LT)"
             case "trigger_right": return "R2 (RT)"
             case "joystick_left": return "Left Stick Click (L3)"
             case "joystick_right": return "Right Stick Click (R3)"
-            case "start": return "Options (Menu)"
-            case "select", "back": return "Create / Share (View)"
+            case "button_escape", "start": return "Options (Menu)"
+            case "button_menu", "select", "back": return "Create / Share (View)"
+            case "button_back_left": return "Rear Left"
+            case "button_back_right": return "Rear Right"
+            case "button_back_left_upper": return "Rear Left Upper"
+            case "button_back_right_upper": return "Rear Right Upper"
+            case "button_capture": return "Capture"
+            case "edge": return "Outer Ring"
             case "dpad_north", "dpad_up": return "D-Pad Up"
             case "dpad_south", "dpad_down": return "D-Pad Down"
             case "dpad_west", "dpad_left": return "D-Pad Left"
@@ -312,12 +361,13 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
         }
     }
 
-    public struct ModeShift: Equatable, Sendable {
-        public let id: String
-        public let mode: String
-        public let source: String?
-        public let settings: [String: String]
-        public let inputs: [Input]
+    /// One `gameactions` entry of a group: the analog game action the whole
+    /// group feeds, such as a stick bound to "Move".
+    public struct GameActionReference: Equatable, Sendable {
+        public let setID: String
+        public let actionID: String
+        /// Conditions on the enclosing `gameactions` block, then on this entry.
+        public let conditions: [Condition]
     }
 
     public struct Group: Equatable, Sendable {
@@ -327,7 +377,7 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
         /// Conditions on the `group` block itself.
         public let conditions: [Condition]
         public let settings: [String: String]
-        public let modeShifts: [ModeShift]
+        public let gameActions: [GameActionReference]
 
         public func input(_ name: String) -> Input? {
             inputs.first { $0.name.caseInsensitiveCompare(name) == .orderedSame }
@@ -410,7 +460,11 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
     public let actionSets: [ActionSet]
     public let actionLayers: [ActionLayer]
     public let presets: [Preset]
-    public let groups: [String: Group]
+    /// Every `group` block in source order. Two blocks may carry the same id;
+    /// neither is dropped, and `lookup(group:)` reports that as ambiguous.
+    public let groupDefinitions: [Group]
+    /// False when the layout has no `actions` block and `actionSets` was derived from its presets.
+    public let declaresActionSets: Bool
     /// Conditions on the `controller_mappings` block itself.
     public let conditions: [Condition]
     /// Every condition in the interpreted layout, once each, in source order.
@@ -558,7 +612,7 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
             var mode = ""
             var inputs: [Input] = []
             var settings: [String: String] = [:]
-            var modeShifts: [ModeShift] = []
+            var gameActions: [GameActionReference] = []
             for child in children {
                 switch child {
                 case .leaf(let leafKey, let leafValue, _):
@@ -592,24 +646,16 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
                             settings[key(settingKey)] = text(settingValue)
                             note(entry, as: "Setting", in: scope)
                         }
-                    case "mode_shift":
-                        note(child, as: "Block", in: scope)
-                        var shiftMode = ""
-                        var shiftSource: String?
-                        var shiftSettings: [String: String] = [:]
+                    case "gameactions":
+                        let container = conditions(blockTokens, scope: "Game Actions Container", slug: "gameactions-\(name)", in: scope)
                         for entry in entries {
-                            guard case .leaf(let shiftKey, let shiftValue, _) = entry else {
-                                uninterpreted(entry, under: "\(path)/mode_shift")
+                            guard case .leaf(let setKey, let actionValue, let entryTokens) = entry else {
+                                uninterpreted(entry, under: "\(path)/gameactions")
                                 continue
                             }
-                            switch key(shiftKey) {
-                            case "mode": shiftMode = text(shiftValue)
-                            case "source": shiftSource = text(shiftValue)
-                            default: shiftSettings[key(shiftKey)] = text(shiftValue)
-                            }
-                            note(entry, as: "Property", in: "\(scope) › Mode Shift")
+                            let leaf = conditions(entryTokens, scope: "Game Action '\(text(actionValue))'", slug: "gameaction-\(name)", in: scope)
+                            gameActions.append(GameActionReference(setID: text(setKey), actionID: text(actionValue), conditions: container + leaf))
                         }
-                        modeShifts.append(ModeShift(id: id, mode: shiftMode, source: shiftSource, settings: shiftSettings, inputs: []))
                     default:
                         uninterpreted(child, under: path)
                     }
@@ -618,7 +664,7 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
                 }
             }
             guard !id.isEmpty else { return nil }
-            return Group(id: id, mode: mode, inputs: inputs, conditions: own, settings: settings, modeShifts: modeShifts)
+            return Group(id: id, mode: mode, inputs: inputs, conditions: own, settings: settings, gameActions: gameActions)
         }
 
         mutating func input(_ name: String, _ body: [VDFNode], tokens: [VDFToken], container: [Condition],
@@ -753,7 +799,8 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
         var parsedSets: [ActionSet] = []
         var parsedLayers: [ActionLayer] = []
         var parsedPresets: [Preset] = []
-        var parsedGroups: [String: Group] = [:]
+        var parsedGroups: [Group] = []
+        var declaresSets = false
 
         for child in mappingChildren {
             switch child {
@@ -773,13 +820,14 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
             case .block(let key, _, let blockChildren, _, let blockTokens):
                 switch builder.key(key) {
                 case "actions":
+                    declaresSets = true
                     let container = builder.conditions(blockTokens, scope: "Action Sets Container", slug: "sets", in: "")
                     parsedSets += builder.actionSets(blockChildren, container: container)
                 case "action_layers":
                     let container = builder.conditions(blockTokens, scope: "Action Layers Container", slug: "layers", in: "")
                     parsedLayers += builder.actionLayers(blockChildren, container: container)
                 case "group":
-                    if let group = builder.group(blockChildren, tokens: blockTokens) { parsedGroups[group.id] = group }
+                    if let group = builder.group(blockChildren, tokens: blockTokens) { parsedGroups.append(group) }
                 case "preset":
                     parsedPresets.append(builder.preset(blockChildren, tokens: blockTokens))
                 default:
@@ -814,18 +862,40 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
         }
         self.actionLayers = parsedLayers
         self.presets = parsedPresets
-        self.groups = parsedGroups
+        self.groupDefinitions = parsedGroups
+        self.declaresActionSets = declaresSets
         self.conditionSites = builder.sites
         self.unrecognizedEntries = builder.unrecognized
     }
 
-    /// Primary active group mapped to a physical input source in a specific preset.
-    public func activeGroup(for source: String, in preset: Preset? = nil) -> Group? {
-        guard let p = preset ?? presets.first else { return nil }
-        guard let binding = p.bindings.first(where: { $0.source.caseInsensitiveCompare(source) == .orderedSame && $0.isActive }) else {
-            return nil
+    /// What an id resolves to. A reference is usable only when exactly one
+    /// definition carries the id; the model never picks among several.
+    public enum GroupLookup: Equatable, Sendable {
+        case defined(Group)
+        case missing
+        case ambiguous([Group])
+    }
+
+    public func lookup(group id: String) -> GroupLookup {
+        let found = groupDefinitions.filter { $0.id == id }
+        switch found.count {
+        case 0: return .missing
+        case 1: return .defined(found[0])
+        default: return .ambiguous(found)
         }
-        return groups[binding.groupID]
+    }
+
+    /// The presets a `CHANGE_PRESET` or layer binding's number names: Steam
+    /// counts from 1, the layout's preset ids from 0.
+    public func presets(numbered number: Int) -> [Preset] {
+        presets.filter { $0.id == String(number - 1) }
+    }
+
+    /// The action set or layer a preset holds the bindings of, matched as `preset(for:)` does.
+    public func title(of preset: Preset) -> String? {
+        if let layer = actionLayers.first(where: { self.preset(for: $0) == preset }) { return layer.title }
+        if let set = actionSets.first(where: { self.preset(for: $0) == preset }) { return set.title }
+        return nil
     }
 
     /// Resolves the corresponding preset for an action set without guessing by array position or sole preset.

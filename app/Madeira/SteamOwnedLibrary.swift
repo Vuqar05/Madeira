@@ -620,6 +620,24 @@ final class SteamOwnedLibrary: ObservableObject {
         return resolved
     }
 
+    /// The game's own names for its Steam Input actions, for a read-only
+    /// preview. Uses only app data that is already cached and the installed
+    /// game's files: nothing is fetched and nothing is written.
+    func steamInputActionNames(appID: UInt32) async -> SteamInputActionNames {
+        let id = Int(appID)
+        let installed = await Task.detached { MadeiraDock.games(drive: MadeiraDock.drive).first { $0.id == id } }.value
+        let metadata = game(id)?.steamInputMetadata
+        var directory: URL?
+        var windowsDirectory: String?
+        if let installed, installed.installed {
+            directory = try? ExternalDrives.nativeURL(installed.library + "/common/" + installed.installDir)
+            windowsDirectory = "C:/" + installed.library + "/common/" + installed.installDir
+        }
+        return SteamInputActionNames.load(hintKnown: metadata != nil, manifestPath: metadata?.manifestPath,
+            runtimePath: DockSteamInputService.context(appID: appID)?.manifestPath,
+            gameDirectory: directory, windowsDirectory: windowsDirectory)
+    }
+
     private func handleSessionError(_ error: Error, context: String, report: Bool = true) {
         if case SteamError.logonDenied(let code) = error, SteamError.signInExpiredCodes.contains(code) {
             self.error = "Your Steam sign-in is no longer valid. Sign out and sign in again in Settings › Steam."

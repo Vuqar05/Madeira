@@ -127,6 +127,9 @@ struct SteamInputCompatibility: Equatable {
         let roots = document.all("controller_mappings")
         guard roots.count == 1, case .list = roots[0] else { throw SteamInputCommunitySources.Failure.invalid }
         let mapping = roots[0]
+        // A group, action set or layer the layout names but does not define
+        // exactly once is refused here, with the reason, before anything below.
+        try SteamInputReferences.check(bytes)
         let nativeType = try SteamInputDefaultSources.controllerType(bytes).unwrap()
         let tagged = Set(tags.filter { $0.hasPrefix("controller_") && $0 != "controller_native" })
         guard tagged.count <= 1 else { throw SteamInputCommunitySources.Failure.invalid }

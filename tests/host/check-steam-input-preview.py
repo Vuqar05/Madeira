@@ -761,7 +761,7 @@ final class StubTransport: URLProtocol, @unchecked Sendable {
         let previewMissing = try await sources.preview(appID: 480, item: itemMissing)
 
         require(!previewMissing.isFullyCompatible, "missing group reference makes layout incompatible")
-        let missingDiags = previewMissing.diagnoses.filter { $0.category == .unresolvedReference && $0.id.contains("999") }
+        let missingDiags = previewMissing.diagnoses.filter { $0.category == .unresolvedReference && $0.title == "Missing Group 999" }
         require(!missingDiags.isEmpty, "unresolved reference diagnosis generated for missing group 999")
         let missingInput = previewMissing.actionSets.first?.regions.first { $0.id == "diamond" }?.inputs.first { $0.isMissingReference }
         require(missingInput != nil, "inspectable placeholder input mapping inserted for missing group")
@@ -859,7 +859,7 @@ final class StubTransport: URLProtocol, @unchecked Sendable {
         let pairedExpressions = pairedChain.map { String($0[$0.firstIndex(of: "=")!...].dropFirst()) }
 
         let pairedModel = try SteamInputLayoutModel(document: try VDFDocument.parse(Data(pairedConditionsText.utf8)))
-        let pairedInputModel = pairedModel.groups["0"]!.inputs[0]
+        let pairedInputModel = pairedModel.groupDefinitions.first { $0.id == "0" }!.inputs[0]
         require(pairs(pairedModel.presets[0].bindings[0].conditions) == Array(pairedChain[0..<2]), "domain source binding keeps its container's condition and its own")
         require(pairs(pairedInputModel.conditions) == Array(pairedChain[2..<4]), "domain input keeps the inputs container's condition and its own")
         require(pairs(pairedInputModel.activators[0].conditions) == Array(pairedChain[4..<6]), "domain activator keeps the activators container's condition and its own")
@@ -1239,7 +1239,8 @@ with tempfile.TemporaryDirectory(prefix='madeira-input-preview-') as temporary:
     subprocess.run([shutil.which('clang'), '-std=c11', '-Wall', '-Wextra', '-Werror', '-fsanitize=address', '-c', str(header.with_suffix('.c')), '-o', str(tmp / 'service.o')], check=True)
     subprocess.run([shutil.which('swiftc'), '-parse-as-library', '-sanitize=address', '-module-cache-path', str(tmp / 'modules'), '-import-objc-header', str(header),
                     str(app/'SwiftSteam/Library/SteamAppInfo.swift'), str(app/'SwiftSteam/Proto/SteamProtoMessages.swift'), str(app/'SwiftSteam/Core/SteamError.swift'),
-                    str(app/'SteamKeyValues.swift'), str(app/'SteamInputVDF.swift'), str(app/'SteamInputModel.swift'), str(app/'SteamInputPreview.swift'),
+                    str(app/'SteamKeyValues.swift'), str(app/'SteamInputVDF.swift'), str(app/'SteamInputModel.swift'), str(app/'SteamInputReferences.swift'), str(app/'SteamInputActions.swift'),
+                    str(app/'SteamInputPreview.swift'),
                     str(app/'SteamInputTransactions.swift'), str(app/'SteamInputDefaults.swift'),
                     str(app/'SteamInputCommunity.swift'), str(tmp/'workshop.swift'), str(tmp/'main.swift'), str(tmp/'service.o'), '-o', str(tmp/'check')], check=True)
     subprocess.run([str(tmp/'check'), str(tmp/'isolated_roots')], check=True)

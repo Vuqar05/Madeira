@@ -645,13 +645,66 @@ accepted, and nothing here has run on a device):
   uses, covered through that helper and through the real session.
 
 Still outstanding in this milestone: interactive editing UI, personal-layout
-identities and revision lifecycle, named actions from the game's action manifest
-(the preview shows raw `set:action` references as unresolved), mode-shift
-presentation, reference validation before apply, apply integration for personal
-layouts, and physical validation of the preview.
+identities and revision lifecycle, showing the resolved action names and
+mode-shift contents in the preview, apply integration for personal layouts, and
+physical validation of everything in this milestone.
 
 Host checks: `tests/host/check-steam-input-vdf.py` and
 `tests/host/check-steam-input-preview.py`.
+
+Item 5, action names and reference validation (2026-11-14; implemented and
+host-tested, not run on a device, checkbox left open until device acceptance):
+
+- Grammar evidence. The initial slice's binding grammar was written against
+  synthetic fixtures. It was checked read-only against the 139 layouts a local
+  Steam client holds (Workshop downloads and Valve's own templates and UI
+  layouts; none is copied into this repository) and against Valve's published
+  action-manifest and In-Game Actions documentation. Steam writes
+  `mode_shift <source> <group>`, `controller_action CHANGE_PRESET <n> …` and
+  `add_layer|remove_layer|hold_layer <n> …` where `n` counts presets from 1 (the
+  preset whose `id` is `n − 1`), `game_action <set> <action>`, a group-level
+  `gameactions` block for analog actions, and three comma-separated binding
+  fields (`command, label, icon`). `SteamInputModel.swift` now reads all of
+  these; the earlier one-argument `mode_shift` and an invented group-level
+  `mode_shift` block are gone. After the change the model reads every binding
+  in those 139 layouts without an unverified verb.
+- Action names. `SteamInputActions.swift` reads a native Steam Input game's
+  action-set, layer and action titles and their localization from its
+  depot-bundled action manifest (root `Action Manifest`, or the older `In Game
+  Actions`). The manifest is located the way the game default locates it: a
+  path the running game registered outranks the cached app-data hint, and the
+  file is read beneath the installed game directory without following links.
+  Only app data that is already cached is used, so nothing is fetched and
+  nothing is written. A game that is not installed, whose app data is not
+  cached, whose app data names no bundled manifest, or whose manifest cannot be
+  read resolves no name and reports which of these applies. A game whose actions
+  come only from a Steamworks-hosted In-Game Actions file is not resolved; no
+  local copy kept by the pinned client has been identified.
+- Reference validation. `SteamInputReferences.swift` requires every reference
+  to resolve to exactly one definition: a preset's `group_source_bindings`
+  entry and a mode shift to a group; a set or layer change to a preset; a layer's
+  `parent_set_name`, a `game_action` binding and a `gameactions` entry to a
+  declared action set (or layer). Nothing is resolved by position or by taking
+  the first or last of several definitions. In the 139 real layouts every
+  reference resolves, except in the two files noted next.
+- Duplicate group ids, decided deliberately. Valve's own
+  `chord_steamcontroller_gordon.vdf` and `basicui_neptune.vdf` each define one
+  group id twice with different bindings, so the client loads such files, but
+  which definition it uses is not established for the pinned client. The model
+  therefore keeps every definition instead of the last, reports the id as
+  ambiguous, and the layout is refused rather than applied on a guess. The
+  download check already refused these with a generic “invalid layout” message;
+  the refusal is unchanged and now says why. No Workshop layout in the sample
+  has a duplicate id.
+- Before apply. `SteamInputCompatibility` runs the reference check after it
+  rejects conditional layouts and before its other checks, and throws a
+  `SteamInputReferenceError` whose text names the first broken reference in
+  plain words and counts the rest. A refused layout is not cached by a download,
+  cannot be loaded from an older cache, and is not supplied as Steam's selected
+  Workshop baseline. The read-only preview lists the same problems from the same
+  check. Rejection of conditional layouts and the unsupported-input report are
+  unchanged.
+- Host check: `tests/host/check-steam-input-actions.py`.
 
 Done when: a player creates a layout, changes a recognizable binding, uses it in
 the running game, restarts and gets the same result. Export/import preserves

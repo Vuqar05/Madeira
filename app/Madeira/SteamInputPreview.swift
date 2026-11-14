@@ -214,23 +214,20 @@ public struct SteamInputPreviewData: Equatable, Sendable {
             ))
         }
 
-        for p in model.presets {
-            for b in p.bindings {
-                // Missing group reference check
-                if b.isActive && model.groups[b.groupID] == nil {
-                    detectedDiagnoses.append(FeatureDiagnosis(
-                        id: "diag-missing-group-\(b.groupID)-in-preset-\(p.id)",
-                        category: .unresolvedReference,
-                        title: "Missing Group Reference [\(b.groupID)]",
-                        detail: "Preset '\(p.name)' binds source '\(b.source)' to group \(b.groupID), which is not defined in the layout."
-                    ))
-                }
-            }
+        // References to groups, action sets and layers: the same check that
+        // refuses a layout before it is applied, so the two cannot disagree.
+        for problem in SteamInputReferences.problems(in: model) {
+            detectedDiagnoses.append(FeatureDiagnosis(
+                id: "diag-\(problem.id)",
+                category: .unresolvedReference,
+                title: problem.title,
+                detail: problem.reason
+            ))
         }
 
-        // Binding semantics, in a stable group order
-        for gid in model.groups.keys.sorted(by: { ($0.count, $0) < ($1.count, $1) }) {
-            guard let group = model.groups[gid] else { continue }
+        // Binding semantics, in source order
+        for group in model.groupDefinitions {
+            let gid = group.id
             for input in group.inputs {
                 for act in input.activators {
                     for b in act.bindings {
@@ -239,15 +236,7 @@ public struct SteamInputPreviewData: Equatable, Sendable {
                                 id: "diag-unresolved-action-\(sid)-\(aid)",
                                 category: .unresolvedReference,
                                 title: "Action Manifest Reference: [\(sid):\(aid)]",
-                                detail: "Localized in-game action title lookup requires depot actions.vdf manifest parsing (deferred to next slice)."
-                            ))
-                        }
-                        if case .modeShift(let grpID) = b.verb, model.groups[grpID] == nil {
-                            detectedDiagnoses.append(FeatureDiagnosis(
-                                id: "diag-missing-group-\(grpID)",
-                                category: .unresolvedReference,
-                                title: "Missing Mode Shift Group \(grpID)",
-                                detail: "Binding references group \(grpID) which is not defined in the layout VDF."
+                                detail: "Shown as the layout writes it; this preview does not look up the game's name for the action."
                             ))
                         }
                         if case .unverified(let verb, _) = b.verb {
@@ -282,8 +271,7 @@ public struct SteamInputPreviewData: Equatable, Sendable {
             }
         }
 
-        for gid in activeGroupIDs {
-            guard let group = model.groups[gid] else { continue }
+        for group in model.groupDefinitions where activeGroupIDs.contains(group.id) {
             let mode = group.mode.lowercased()
             if mode.contains("radial") || mode.contains("touch_menu") {
                 hasRadialMenu = true
@@ -457,14 +445,15 @@ public struct SteamInputPreviewData: Equatable, Sendable {
 
                 let srcBindingConditions = presetConditions + binding.conditions
 
-                guard let group = model.groups[binding.groupID] else {
-                    // Surface missing group reference as inspectable placeholder input
+                let lookup = model.lookup(group: binding.groupID)
+                guard case .defined(let group) = lookup else {
+                    // A missing or ambiguous group is shown as a placeholder, never resolved by guessing.
                     addInput(
                         InputMappingView(
                             id: "missing-group-\(binding.groupID)-\(src)",
-                            inputName: "Missing Group [\(binding.groupID)] (\(src))",
+                            inputName: "\(lookup == .missing ? "Missing" : "Ambiguous") Group [\(binding.groupID)] (\(src))",
                             activators: [],
-                            settings: ["Source": src, "GroupID": binding.groupID, "Status": "Unresolved Reference"],
+                            settings: ["Source": src, "GroupID": binding.groupID, "Status": lookup == .missing ? "Unresolved Reference" : "Defined More Than Once"],
                             conditions: srcBindingConditions,
                             isLayerOverride: isLayer,
                             isInherited: false,
@@ -559,13 +548,14 @@ public struct SteamInputPreviewData: Equatable, Sendable {
 
                 let srcBindingConditions = parentPresetConditions + binding.conditions
 
-                guard let group = model.groups[binding.groupID] else {
+                let lookup = model.lookup(group: binding.groupID)
+                guard case .defined(let group) = lookup else {
                     addInput(
                         InputMappingView(
                             id: "inherited-missing-group-\(binding.groupID)-\(src)",
-                            inputName: "Missing Group [\(binding.groupID)] (\(src))",
+                            inputName: "\(lookup == .missing ? "Missing" : "Ambiguous") Group [\(binding.groupID)] (\(src))",
                             activators: [],
-                            settings: ["Source": src, "GroupID": binding.groupID, "Status": "Unresolved Reference"],
+                            settings: ["Source": src, "GroupID": binding.groupID, "Status": lookup == .missing ? "Unresolved Reference" : "Defined More Than Once"],
                             conditions: srcBindingConditions,
                             isLayerOverride: false,
                             isInherited: true,

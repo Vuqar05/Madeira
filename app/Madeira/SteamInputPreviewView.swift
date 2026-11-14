@@ -180,6 +180,10 @@ public struct SteamInputPreviewView: View {
             BadgeView(text: "Mouse", color: .purple)
         case .action:
             BadgeView(text: "Action", color: .orange)
+        case .layout:
+            BadgeView(text: "Layout", color: .teal)
+        case .steam:
+            BadgeView(text: "Steam", color: .indigo)
         case .unverified:
             BadgeView(text: "Unverified", color: .gray)
         }

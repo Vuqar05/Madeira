@@ -485,6 +485,15 @@ enum DockSteamInputBundledManifest {
         }
         return bytes
     }
+    /// The action manifest's own bytes, whether or not it lists a layout for
+    /// this controller: its `actions` and `localization` name the game's actions.
+    static func manifest(gameDirectory: URL, manifestPath: String) throws -> Data {
+        let parts = try components(manifestPath)
+        let root = open(gameDirectory.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+        guard root >= 0 else { throw DockSteamInputJournal.Failure.corrupt }
+        defer { close(root) }
+        return try read(root: root, components: parts)
+    }
     static func candidate(gameDirectory: URL, manifestPath: String, device: DockSteamInputContext? = nil) throws -> Candidate? {
         let manifestParts = try components(manifestPath)
         let root = open(gameDirectory.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
