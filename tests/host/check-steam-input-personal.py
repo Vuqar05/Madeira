@@ -298,24 +298,40 @@ func snapshot(_ url: URL) throws -> [String: String] {
 '''
 
 # SwiftUI views are not built on the host, so pin the wiring: the personal
-# layout page applies only what the checked request returns.
-view = (app / 'SteamInputPersonalView.swift').read_text()
+# layout page applies only what the checked request returns. The list, the
+# page and the editor share a file, so each view is checked in its own body.
+whole = (app / 'SteamInputPersonalView.swift').read_text()
+def view_body(text, name):
+    start = text.index(f'struct {name}: View {{')
+    following = [text.find('\nstruct ', start + 1), text.find('\nprivate struct ', start + 1)]
+    following = [index for index in following if index > 0]
+    return text[start:min(following)] if following else text[start:]
+view = view_body(whole, 'SteamInputPersonalDetail')
+listing = view_body(whole, 'SteamInputPersonalLayoutsSection')
 for needle, why in [
     ('let request = try copy.applyRequest(root: support)', 'apply reads and checks the stored bytes first'),
     ('try DockSteamInputService.requestPersonal(appID: request.appID, accountID: request.accountID,', 'the checked request goes to the layout service'),
     ('source: request.source, id: request.id, detail: request.detail)', 'with the checked bytes, UUID and attribution'),
     ('let isActive = active?.source == .personal && active?.identity == copy.id.uuidString && active?.contentHash == copy.hash', 'active means confirmed for this UUID and content'),
     ('.disabled(isActive || compatibility?.canApply != true || !current ||', 'apply is offered only for a checked layout in a running session'),
+    ('references: DockSteamInputService.personalReferences(accountID: copy.accountID, appID: copy.appID), root: support)', 'deletion is checked against the saved selection and the service'),
 ]:
     if view.count(needle) != 1:
-        raise SystemExit(f'FAIL: {why}: expected exactly one `{needle}` in SteamInputPersonalView.swift')
-if view.count('requestPersonal(') != 1 or 'requestCommunity(' in view:
-    raise SystemExit('FAIL: the personal layout page must apply through requestPersonal exactly once')
-listing = (app / 'SteamInputCommunityView.swift').read_text()
+        raise SystemExit(f'FAIL: {why}: expected exactly one `{needle}` in SteamInputPersonalDetail')
+if whole.count('requestPersonal(') != 1 or 'requestCommunity(' in whole:
+    raise SystemExit('FAIL: the personal layout pages must apply a saved revision through requestPersonal exactly once')
+editor = (app / 'SteamInputEditorView.swift').read_text()
+if 'requestPersonal(' in editor or editor.count('SteamInputLiveEdit.apply(') != 1 or editor.count('SteamInputLiveEdit.settle(') != 1:
+    raise SystemExit('FAIL: the editor must apply live edits only through SteamInputLiveEdit')
 if listing.count('importing = false') != 2:
     raise SystemExit('FAIL: the picker must reset its presentation state after every result, including refused imports')
-if listing.count('SteamInputPersonalDetail(appID: appID, copy: copy)') != 1:
+if listing.count('SteamInputPersonalDetail(appID: appID, copy: copy, onChange: reload)') != 1:
     raise SystemExit('FAIL: each personal layout must open its own page')
+if 'SteamInputPersonalCopy.inventory(' not in listing or 'SteamInputPersonalCopy.list(' in whole:
+    raise SystemExit('FAIL: the list must show damaged layouts for recovery instead of failing as a whole')
+community = (app / 'SteamInputCommunityView.swift').read_text()
+if community.count('SteamInputPersonalLayoutsSection(appID: appID, accountID: accountID,') != 1:
+    raise SystemExit('FAIL: the community page must show the personal layouts section')
 
 # Item 10: personal layouts are labelled local, import and export are wired,
 # and no screen or message claims cloud sync or backup.
@@ -337,7 +353,7 @@ for needle, why, text in [
 # Code lines only (comments may explain why nothing is synced); `async` is not a claim.
 wording = re.compile(r'cloud|\bsync|backed up|backup', re.I)
 claims = {}
-for name, text in [('SteamInputPersonalView.swift', view), ('SteamInputCommunityView.swift', listing), ('SteamInputCommunity.swift', store)]:
+for name, text in [('SteamInputPersonalView.swift', whole), ('SteamInputCommunityView.swift', community + editor), ('SteamInputCommunity.swift', store)]:
     claims[name] = [line.strip() for line in text.splitlines() if not line.strip().startswith('//') and wording.search(line)]
 if claims['SteamInputPersonalView.swift'] or claims['SteamInputCommunityView.swift']:
     raise SystemExit(f'FAIL: storage wording in the views must come from SteamInputPersonalCopy.storageNote only: {claims}')

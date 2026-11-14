@@ -1,6 +1,6 @@
 # Finish Steam Input integration
 
-Updated: 2026-11-14. Status: implementation plan; unchecked items are outstanding.
+Updated: 2026-11-15. Status: implementation plan; unchecked items are outstanding.
 
 This is the current plan for using Valve's Steam Input engine in Madeira.
 `STEAM_INPUT.md` records the investigation and verified runtime fix.
@@ -644,9 +644,8 @@ the item reports and device acceptance below):
 - The download byte limit is enforced while streaming by the helper `fetchBytes`
   uses, covered through that helper and through the real session.
 
-Still outstanding in this milestone: interactive editing UI, personal-layout
-revision history and the rest of items 1, 3, 4, 6, 7 and 8. Remaining physical
-acceptance is recorded below.
+Items 1, 3, 4, 6, 7 and 8 were implemented afterwards; see "Editor items" below.
+Their checkboxes stay open until the owner's device acceptance.
 
 Host checks: `tests/host/check-steam-input-vdf.py` and
 `tests/host/check-steam-input-preview.py`.
@@ -904,6 +903,97 @@ preview tests and the two menu corrections above):
   and Milestone 4 as a whole remains incomplete. These are the owner's reported
   physical results, supplemented by the offline checks documented above.
 
+Editor items 1, 3, 4, 6, 7 and 8 (implemented 2026-11-15; host- and
+simulator-tested; owner device acceptance outstanding, so their boxes stay open):
+
+- Item 1, editable model and lossless writer. `SteamInputVDF.swift` adds
+  insert, copy-of-a-node, remove, rename and set-leaf edits. Each edit is one byte
+  patch followed by a reparse, so every byte outside the edit is unchanged.
+  Inserted text uses the file's own newline and indentation. Where a key is
+  repeated, the last occurrence (the one read) is the one set. Model nodes carry
+  their document paths. `SteamInputLayoutDraft` (`SteamInputEditor.swift`) edits:
+  - bindings, and chords as several bindings on one activator;
+  - activators: kind, toggle, turbo (Steam's `hold_repeats`/`repeat_rate`, which
+    the model now reads instead of an invented `turbo` key) and timing settings;
+  - inputs and group settings (dead zones, curve, sensitivity, outputs, menu
+    button count);
+  - modes, switched as Steam switches them: the old group is kept `inactive`, and
+    switching back reactivates it with its bindings;
+  - gyro, touchpad and touch/radial/hotbar menus;
+  - mode shifts (a new group marked `active modeshift` plus a `mode_shift`
+    binding);
+  - action sets (copied from an existing set's groups as exact text under new
+    ids), layers, renaming, and removal, which is refused while still referenced.
+  Command spellings are those in Valve's templates and the sampled layouts
+  (`xinput_button A`, `CHANGE_PRESET n 1 1`, `add_layer n 0 0`). Ambiguous group
+  ids and version 2 layouts are not edited. `SteamInputEditHistory` gives bounded
+  undo and redo.
+- Item 6, unsupported surface. Nothing is ever serialized from the model.
+  Uninterpreted fields, repeated keys, comments and every condition are kept;
+  each unsupported field is addressable and listed in the editor as "Kept
+  unchanged · not editable yet". A read-only sweep with
+  `MADEIRA_STEAM_LAYOUT_CORPUS` edited 145 local Valve and Workshop layouts
+  (nothing copied into the repository) without losing a condition or an
+  unsupported field.
+- Items 3 and 7, sources and lifecycle (`SteamInputPersonalRevisions.swift`).
+  - Sources: game default, a Steam template (read from the installed client's
+    pinned PS5 table), a community copy, an imported VDF, or a duplicate of a
+    personal layout. Each gets its own UUID.
+  - Revisions are content-addressed. `layout.json`, replaced atomically, is the
+    single commit point for save, rename, restore and recovery. History is
+    bounded at 64 revisions, and restoring adds a new entry.
+  - Drafts are written after every edit and offered again after a restart. A
+    damaged draft is reported and can be discarded.
+  - Version 1 records load and apply unchanged. Interrupted saves, creations and
+    deletions leave the previous state, and their leftovers are removed.
+  - Damaged layouts are listed (`inventory`) with recovery: the newest readable
+    revision, or a rebuilt record under the same identity. They are no longer
+    hidden by a failing list.
+  - A saved layout that cannot be applied yet (an unforwarded input, a broken
+    reference while editing) stays editable. Conditional layouts are refused at
+    save and staging, as at import and apply.
+- Item 8, safe deletion and live editing.
+  - Deletion is refused while the saved selection names the layout, while a
+    change for it is in flight, or when the selection cannot be read
+    (`DockSteamInputService.personalReferences`). The revision Steam Input last
+    confirmed, and the requested one, are kept beyond history pruning.
+  - `SteamInputLiveEdit` stages the edit as a pending revision while the working
+    revision stays current. It runs the existing apply checks and then
+    `requestPersonal`, whose input quiesce releases held output before the
+    command is written. Only a receipt for exactly that revision makes it
+    current. Rollback, failure, refusal by Dock and an interrupted session keep
+    the working revision active and the edits in the draft.
+- Item 4, editor UI (`SteamInputEditorView.swift`, `SteamInputPersonalView.swift`).
+  - The personal list has New layout (game default, template, duplicate), import
+    and recovery.
+  - Each layout's page adds Edit, Rename, Duplicate, Revision history with
+    Restore, and Delete with confirmation.
+  - The editor provides: title and notes; reference and compatibility status;
+    action sets and layers; a mode per source (face buttons, d-pad, sticks,
+    triggers, bumpers, touchpad, gyro); and per-group bindings, activators,
+    toggle, turbo, timing and behavior settings. It also has a binding chooser
+    (gamepad, key, mouse, wheel, game action, action set, layer), mode shifts,
+    undo, redo, Save, Revert, and Save and apply while the game runs.
+  - Keyboard bindings carry a note that Madeira does not yet deliver keyboard
+    input to games.
+  - A simulator run found that presentation modifiers on a list `Section` were
+    never presented; New layout and Import now present from their own rows.
+- Checks: `check-steam-input-editor.py`, `check-steam-input-revisions.py`,
+  `check-steam-input-live-edit.py` (the real service, journal and C
+  confirm/rollback/fail receipts under ASan/UBSan), the updated personal check,
+  and `check-steam-input-editor-ui.py --simulator <UUID>`. The last builds the
+  production editor, store, service and C sources into a probe app and runs six
+  XCUITests: edit, undo, redo, save, history and restore; unsaved edits across a
+  relaunch; create, rename, duplicate and delete; refusal to delete the chosen
+  layout; recovery of a damaged layout; and modes and action sets. The Debug iOS
+  app build succeeds.
+- Not established offline, and so left for the device: Valve's engine executing
+  an edited layout (including the written `CHANGE_PRESET`/layer argument forms
+  and mode shifts), held output on a real pad during a live switch, and the
+  file picker, share sheet and SwiftUI behavior on the iPad. Gyro, touchpad and
+  menu bindings can be edited, but a layout that uses them still cannot be
+  applied. Those inputs belong to milestone 5.
+
 Done when: a player creates a layout, changes a recognizable binding, uses it in
 the running game, restarts and gets the same result. Export/import preserves
 behavior and unknown fields. Editing a community copy leaves the original intact.
@@ -975,8 +1065,8 @@ gamepad/mouse output, default restoration, held-input switching, relaunch and
 offline cache reuse. The owner waived physical saved-Workshop recovery acceptance;
 its host checks pass. Failed/racing/cancelled payload transfers remain covered
 by host tests; the physical failure check covered an update lookup. Milestone 4
-is next, starting with an editable native Steam layout model and lossless VDF
-writer.
+items 2, 5, 9 and 10 are accepted. Items 1, 3, 4, 6, 7 and 8 are implemented and
+host- and simulator-tested, and await the owner's device acceptance.
 
 Local custom layout creation and VDF sharing are required here. Public Workshop
 publishing, new client-build adapters and hardware-specific features absent from

@@ -3,7 +3,8 @@
 // Madeira Converter Exception: see LICENSE-EXCEPTION.md
 
 import SwiftUI
-import UniformTypeIdentifiers
+
+struct SteamInputUnavailable: LocalizedError { let errorDescription: String? }
 
 /// Native Steam Input layouts; never imports into ControllerSetup or changes
 /// the game's controller mode. Download/inspect and apply are separate actions.
@@ -20,11 +21,6 @@ struct SteamInputCommunityView: View {
     @State private var request: UUID?
     @State private var fetched: Date?
     @State private var downloaded: [SteamInputCommunitySources.Revision] = []
-    @State private var copies: [SteamInputPersonalCopy] = []
-    @State private var importing = false
-    @State private var importMessage: String?
-    @State private var importFailure: String?
-    private var support: URL { FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0] }
     private var accountID: UInt32 {
         SteamOwnedLibrary.shared.personalLayoutAccountID
     }
@@ -49,25 +45,8 @@ struct SteamInputCommunityView: View {
                     }
                 }
             }
-            Section {
-                ForEach(copies) { copy in
-                    NavigationLink {
-                        SteamInputPersonalDetail(appID: appID, copy: copy)
-                    } label: {
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(copy.title)
-                            Text(copy.provenance).font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                }
-                Button("Import VDF file…") { importing = true }.disabled(accountID == 0)
-                if let importMessage { Text(importMessage).font(.caption).foregroundStyle(.secondary) }
-                if let importFailure { Text(importFailure).font(.caption).foregroundStyle(.red) }
-            } header: {
-                Text("Personal layouts · local")
-            } footer: {
-                Text(SteamInputPersonalCopy.storageNote)
-            }
+            SteamInputPersonalLayoutsSection(appID: appID, accountID: accountID, gameDefault: { try await gameDefault() },
+                                             templates: { SteamInputTemplates.available(clientRoot: MadeiraDock.clientRoot) })
             Section("Community layouts") {
                 ForEach(visible) { item in
                     NavigationLink {
@@ -98,29 +77,22 @@ struct SteamInputCommunityView: View {
         .searchable(text: $search, prompt: "Search Steam layouts")
         .task(id: queryKey) { await load(reset: true) }
         .refreshable { await load(reset: true, refresh: true) }
-        .fileImporter(isPresented: $importing, allowedContentTypes: [.data], allowsMultipleSelection: false) { importLayout($0) }
         .onAppear {
             do {
                 downloaded = try SteamInputCommunitySources.shared.downloaded(appID: appID)
-                copies = try SteamInputPersonalCopy.list(root: support, accountID: accountID, appID: appID)
             } catch { failure = error.localizedDescription }
         }
     }
-    /// Keeps the picked file's exact bytes as a personal layout. Nothing is applied.
-    @MainActor private func importLayout(_ result: Result<[URL], Error>) {
-        importing = false
-        importMessage = nil; importFailure = nil
-        do {
-            guard let url = try result.get().first else { return }
-            let scoped = url.startAccessingSecurityScopedResource()
-            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-            let copy = try SteamInputPersonalCopy.importVDF(SteamInputPersonalCopy.readImport(url), fileName: url.lastPathComponent,
-                                                            accountID: accountID, appID: appID, root: support)
-            copies = try SteamInputPersonalCopy.list(root: support, accountID: accountID, appID: appID)
-            importMessage = "Imported “\(copy.title)”. It is kept on this device; open it to apply or export it."
-        } catch {
-            importFailure = error.localizedDescription
+    /// The game's own default layout, resolved as the Steam Input controls resolve it.
+    @MainActor private func gameDefault() async throws -> (bytes: Data, detail: String) {
+        let id = Int(appID)
+        let game = await Task.detached { MadeiraDock.games(drive: MadeiraDock.drive).first { $0.id == id } }.value
+        guard let game else { throw SteamInputUnavailable(errorDescription: "The game is not installed.") }
+        let resolution = await SteamOwnedLibrary.shared.resolveSteamInputDefault(game: game, refresh: false)
+        guard case .recommended(let value) = resolution else {
+            throw SteamInputUnavailable(errorDescription: DockSteamInputDefault.explanation(resolution))
         }
+        return (value.source, String(value.sourceDescription.prefix(120)))
     }
     @MainActor private func load(reset: Bool, refresh: Bool = false) async {
         if !reset && loading { return }

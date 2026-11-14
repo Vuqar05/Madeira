@@ -429,3 +429,30 @@ extension SteamInputPersonalCopy {
         return value
     }
 }
+
+/// Steam's own PlayStation 5 templates, as a starting point for a personal
+/// layout. They are read from the installed client (the pinned January
+/// template table), never bundled, and only the ones present are offered.
+enum SteamInputTemplates {
+    struct Template: Identifiable, Equatable {
+        let name: String
+        let title: String
+        let bytes: Data
+        var id: String { name }
+    }
+
+    static let catalog: [(index: UInt32, title: String)] = [
+        (4, "Gamepad"), (2, "Gamepad with Camera Controls"), (3, "Gamepad with Mouse Trackpad"),
+        (12, "Gamepad with Flick Stick"), (6, "Keyboard (WASD) and Mouse"), (8, "Mouse"), (9, "Relative Mouse"),
+    ]
+
+    static func available(clientRoot: URL) -> [Template] {
+        var seen = Set<String>()
+        return catalog.compactMap { entry in
+            guard let name = sh_input_january_ps5_template(entry.index).flatMap({ String(validatingUTF8: $0) }), seen.insert(name).inserted,
+                  let bytes = try? DockSteamInputBundledManifest.januaryPS5Template(clientRoot: clientRoot, index: entry.index),
+                  (try? DockSteamInputNative.revision(bytes)) != nil else { return nil }
+            return Template(name: name, title: entry.title, bytes: bytes)
+        }
+    }
+}
