@@ -14,15 +14,22 @@ struct SteamInputPersonalDetail: View {
     @State private var problem: String?
     @State private var failure: String?
     @State private var message: String?
+    @State private var exportURL: URL?
     private var support: URL { FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0] }
 
     var body: some View {
         Form {
             Section {
                 Text(copy.title).font(.headline)
-                Text("Copied from " + copy.origin.attribution).font(.caption).foregroundStyle(.secondary)
-                Text("The downloaded community original is separate and is not changed by applying this copy.")
-                    .font(.caption).foregroundStyle(.secondary)
+                Text(copy.provenance).font(.caption).foregroundStyle(.secondary)
+                if copy.origin != nil {
+                    Text("The downloaded community original is separate and is not changed by applying this copy.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            Section("Storage") {
+                Label("Local to this device", systemImage: "internaldrive")
+                Text(SteamInputPersonalCopy.storageNote).font(.caption).foregroundStyle(.secondary)
             }
             Section("Compatibility") {
                 if let compatibility {
@@ -55,17 +62,26 @@ struct SteamInputPersonalDetail: View {
                 }
             }
             Section("Export") {
-                if let url = try? copy.source(root: support) { ShareLink("Export VDF", item: url) }
+                if let exportURL {
+                    ShareLink("Export VDF file", item: exportURL)
+                    Text("The exported file holds this layout's exact bytes. Import it on another device, or here again, from Personal layouts.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    Text("The stored layout cannot be exported.").foregroundStyle(.secondary)
+                }
             }
             if let failure { Section { Text(failure).foregroundStyle(.red) } }
             if let message { Section { Text(message).foregroundStyle(.secondary) } }
         }
         .navigationTitle("Personal layout")
         .task {
+            // A copy under the layout's own name, made in the temporary folder for the share sheet.
+            exportURL = try? copy.exportFile(root: support,
+                directory: FileManager.default.temporaryDirectory.appendingPathComponent("SteamInputExport", isDirectory: true))
             do { compatibility = try copy.applyRequest(root: support).compatibility }
             catch SteamInputPersonalCopy.ApplyFailure.incompatible {
                 // Unforwarded inputs: say which, as a community layout's page does.
-                compatibility = try? SteamInputCompatibility(copy.bytes(root: support), tags: copy.origin.item.tags ?? [])
+                compatibility = try? SteamInputCompatibility(copy.bytes(root: support), tags: copy.origin?.item.tags ?? [])
             } catch { problem = error.localizedDescription }
         }
     }

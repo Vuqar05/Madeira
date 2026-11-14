@@ -797,6 +797,52 @@ host-tested, not run on a device, checkbox left open until device acceptance):
   journal's copy even if its stored file is later damaged; applying it again is
   then refused.
 
+Item 10, local storage and explicit import/export (2026-11-14; implemented and
+host-tested, not run on a device, checkbox left open until device acceptance):
+
+- Evidence and scope. The item 9 path supplies bytes to the pinned client's
+  `LoadConfigFromVDFString` and `ActivateConfig`; it does not save an account
+  configuration or upload a file. Personal records and VDFs live in Madeira's
+  application support directory, and the selection and journal are also local.
+  No Steam Cloud registration, upload or conflict contract is established for
+  this path. This does not establish that Steam lacks cloud support elsewhere:
+  Madeira's personal-layout path does not provide it, so the local-only branch
+  of item 10 is implemented. No account cloud backup is claimed.
+- The personal-layout list and detail page label layouts as local to this
+  device and state that they are not synced or backed up to Steam Cloud. Both
+  explain that exporting the VDF is how to keep a copy or move it to another
+  device. The community-copy page uses the same storage wording.
+- Import. The list offers an explicit file picker. A picked file is read with
+  the existing layout byte limit and validated through the community-layout
+  compatibility check before storage. Malformed files, conditional layouts and
+  broken references are refused with readable reasons and leave nothing behind.
+  A layout needing an input Madeira cannot forward can be kept, as with a
+  downloaded layout, but cannot be applied. Each successful import has a new
+  UUID, its file's exact bytes and hash, import time and source file name, scoped
+  to the current account and game. Existing community-copy records still load.
+  Importing never selects or applies a layout. Imports are bounded to 256
+  personal layouts per account and game.
+- Export. A personal page shares a checked copy of the stored bytes from a
+  temporary directory, under a readable `.vdf` name. Export does not change the
+  stored layout. Exporting and importing again preserves every byte, including
+  unknown fields, under a new personal identity; the community original stays
+  unchanged. This supplies only the import/export needed for item 10 and does
+  not implement the editor lifecycle in item 7.
+- Host check: `tests/host/check-steam-input-personal.py`, including byte-exact
+  round trips, existing records, account/game isolation, invalid files,
+  conditions, broken references, unsupported inputs, size/count bounds and
+  unchanged community downloads. File-picker and share-sheet behavior, applying
+  the reimported layout and persistence on the iPad await device acceptance.
+
+Four-item handoff verification (2026-11-14): the VDF, preview, community,
+service, action-manifest, personal-layout and Dock-contract host checks pass,
+as does `build/madeira-dock/build.sh --check`. The generic iOS Debug build with
+`CODE_SIGNING_ALLOWED=NO` succeeds and its bundled Steam Input runtime preflight
+passes. A development-signed Debug build cannot currently be produced: Xcode
+reports no configured account/profiles for Madeira and its JIT helper, and no
+development team for the memory host. The paired iPad is unavailable, so this
+handoff does not install a new build or add physical acceptance evidence.
+
 Done when: a player creates a layout, changes a recognizable binding, uses it in
 the running game, restarts and gets the same result. Export/import preserves
 behavior and unknown fields. Editing a community copy leaves the original intact.

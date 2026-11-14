@@ -422,17 +422,35 @@ private extension Optional {
     }
 }
 
-/// A personal layout is a byte-for-byte copy, never an edit of its community
-/// original. It is stored under its own UUID and can be applied as the
+/// A personal layout is exact bytes the player keeps under their own name:
+/// a copy of a community layout (never an edit of its original) or a VDF file
+/// they imported. It is stored under its own UUID and can be applied as the
 /// player's choice. Editing and revision history are later milestone 4 items.
+///
+/// Personal layouts are local. They live in the app's own storage and reach
+/// Valve's engine only as bytes handed to the pinned loader; nothing puts
+/// them in the account's Steam Cloud, so the app never says they are synced
+/// or backed up. Export and import are the way to move or keep one.
 struct SteamInputPersonalCopy: Codable, Identifiable {
     var version = 1
     let id: UUID
     let accountID: UInt32
     let appID: UInt32
     let title: String
-    let origin: SteamInputCommunitySources.Revision
+    /// The community revision this was copied from; nil for an imported file.
+    let origin: SteamInputCommunitySources.Revision?
     let hash: String
+    /// When an imported file was imported, and the name it had.
+    var imported: Date? = nil
+    var sourceName: String? = nil
+
+    /// Said wherever a personal layout is listed or shown.
+    static let storageNote = "Stored on this device only. Personal layouts are not synced or backed up to Steam Cloud; export the VDF to keep a copy or move it to another device."
+    /// Where the layout came from, for its row and page.
+    var provenance: String {
+        if let origin { return "Copied from " + origin.attribution }
+        return "Imported" + (sourceName.map { " from " + $0 } ?? " VDF file")
+    }
     static func folder(root: URL, accountID: UInt32, appID: UInt32) -> URL {
         root.appendingPathComponent("SteamInputPersonal/\(accountID)/\(appID)")
     }
@@ -446,7 +464,8 @@ struct SteamInputPersonalCopy: Codable, Identifiable {
             guard let id = UUID(uuidString: url.lastPathComponent) else { return nil }
             let value = try JSONDecoder().decode(Self.self, from: SteamInputCommunitySources.read(url.appendingPathComponent("layout.json"), limit: 256 << 10))
             guard value.version == 1, value.id == id, value.accountID == accountID, value.appID == appID,
-                  value.origin.appID == appID, value.hash == value.origin.hash else { throw SteamInputCommunitySources.Failure.invalid }
+                  value.hash.utf8.count == 64, value.hash.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }),
+                  value.origin.map({ $0.appID == appID && $0.hash == value.hash }) ?? true else { throw SteamInputCommunitySources.Failure.invalid }
             return value
         }.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
     }
@@ -462,7 +481,7 @@ struct SteamInputPersonalCopy: Codable, Identifiable {
     }
     /// Shown with the active choice. At most 512 UTF-8 bytes, as the selection store requires.
     var detail: String {
-        var text = title + " · personal copy of " + origin.attribution
+        var text = title + (origin.map { " · personal copy of " + $0.attribution } ?? " · imported VDF file")
         while text.utf8.count > 512 { text.removeLast() }
         return text
     }
@@ -500,7 +519,7 @@ struct SteamInputPersonalCopy: Codable, Identifiable {
         do { source = try bytes(root: root) } catch { throw ApplyFailure.damaged }
         let compatibility: SteamInputCompatibility
         // A conditional layout and a broken reference keep their own wording.
-        do { compatibility = try SteamInputCompatibility(source, tags: origin.item.tags ?? []) }
+        do { compatibility = try SteamInputCompatibility(source, tags: origin?.item.tags ?? []) }
         catch is SteamInputCommunitySources.Failure { throw ApplyFailure.notALayout }
         guard compatibility.canApply else { throw ApplyFailure.incompatible(compatibility.description) }
         return ApplyRequest(appID: appID, accountID: accountID, id: id, source: source, detail: detail, compatibility: compatibility)
@@ -510,15 +529,90 @@ struct SteamInputPersonalCopy: Codable, Identifiable {
         guard accountID > 0, !title.isEmpty, !title.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),
               DockSteamInputNative.contentHash(layout.bytes) == layout.revision.hash else { throw SteamInputCommunitySources.Failure.invalid }
         let copy = Self(id: UUID(), accountID: accountID, appID: layout.revision.appID, title: title, origin: layout.revision, hash: layout.revision.hash)
-        let encoded = try JSONEncoder().encode(copy)
+        try copy.store(layout.bytes, root: root)
+        return copy
+    }
+    /// Both files appear together or not at all.
+    private func store(_ bytes: Data, root: URL) throws {
+        let encoded = try JSONEncoder().encode(self)
         guard encoded.count <= 256 << 10 else { throw SteamInputCommunitySources.Failure.invalid }
-        let parent = folder(root: root, accountID: accountID, appID: copy.appID)
-        let staging = parent.appendingPathComponent(".\(copy.id.uuidString).tmp")
+        let parent = Self.folder(root: root, accountID: accountID, appID: appID)
+        let staging = parent.appendingPathComponent(".\(id.uuidString).tmp")
         try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: staging) }
-        try layout.bytes.write(to: staging.appendingPathComponent("source.vdf"), options: .atomic)
+        try bytes.write(to: staging.appendingPathComponent("source.vdf"), options: .atomic)
         try encoded.write(to: staging.appendingPathComponent("layout.json"), options: .atomic)
-        try FileManager.default.moveItem(at: staging, to: parent.appendingPathComponent(copy.id.uuidString))
+        try FileManager.default.moveItem(at: staging, to: parent.appendingPathComponent(id.uuidString))
+    }
+
+    // MARK: Import and export
+
+    enum ImportFailure: LocalizedError, Equatable {
+        case unreadable, tooLarge, notALayout, tooMany, noAccount
+        case invalidLayout(String)
+        var errorDescription: String? {
+            switch self {
+            case .unreadable: return "The file could not be read."
+            case .tooLarge: return "The file is too large to be a Steam Input layout."
+            case .notALayout: return "The file is not a valid Steam Input layout, so it was not imported."
+            case .invalidLayout(let reason): return "The file was not imported. " + reason
+            case .tooMany: return "This game already has the most personal layouts Madeira keeps. Nothing was imported."
+            case .noAccount: return "Sign in to Steam before importing a layout: personal layouts are kept per account."
+            }
+        }
+    }
+    /// How many personal layouts one account keeps for one game.
+    static let limit = 256
+
+    /// A picked file's bytes, bounded before anything is parsed. The file is
+    /// only read; Madeira keeps its own copy.
+    @MainActor static func readImport(_ url: URL) throws -> Data {
+        guard let file = try? FileHandle(forReadingFrom: url) else { throw ImportFailure.unreadable }
+        defer { try? file.close() }
+        guard let bytes = try? file.read(upToCount: SteamInputCommunitySources.limit + 1), !bytes.isEmpty else { throw ImportFailure.unreadable }
+        guard bytes.count <= SteamInputCommunitySources.limit else { throw ImportFailure.tooLarge }
+        return bytes
+    }
+    /// A layout's name taken from a file name: its extension and anything that is not printable removed.
+    static func importTitle(fileName: String) -> String {
+        var name = (fileName as NSString).lastPathComponent
+        if name.lowercased().hasSuffix(".vdf") { name.removeLast(4) }
+        name = String(String.UnicodeScalarView(name.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) }))
+        name = String(name.trimmingCharacters(in: .whitespacesAndNewlines).prefix(160))
+        return name.isEmpty ? "Imported layout" : name
+    }
+    /// Keeps the file's exact bytes as a new personal layout for this account
+    /// and game. The file must pass the same checks as a community layout
+    /// (conditional layouts rejected, references resolved, the native reader);
+    /// a layout that only needs inputs Madeira cannot forward is kept and
+    /// cannot be applied, like a downloaded one. Nothing is selected or
+    /// applied, and a refused file leaves nothing behind.
+    @MainActor static func importVDF(_ bytes: Data, fileName: String, accountID: UInt32, appID: UInt32, root: URL,
+                                     now: Date = Date()) throws -> Self {
+        guard accountID > 0 else { throw ImportFailure.noAccount }
+        guard appID > 0, !bytes.isEmpty else { throw ImportFailure.notALayout }
+        guard bytes.count <= SteamInputCommunitySources.limit else { throw ImportFailure.tooLarge }
+        do { _ = try SteamInputCompatibility(bytes) }
+        catch is SteamInputCommunitySources.Failure { throw ImportFailure.notALayout }
+        catch SteamFileError.invalid(let reason) { throw ImportFailure.invalidLayout(reason) }
+        guard (try? list(root: root, accountID: accountID, appID: appID).count) ?? limit < limit else { throw ImportFailure.tooMany }
+        let name = String((fileName as NSString).lastPathComponent.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) }.prefix(120).map(String.init).joined())
+        let copy = Self(id: UUID(), accountID: accountID, appID: appID, title: importTitle(fileName: fileName), origin: nil,
+                        hash: DockSteamInputNative.contentHash(bytes), imported: now, sourceName: name.isEmpty ? nil : name)
+        try copy.store(bytes, root: root)
         return copy
+    }
+    /// A copy of the stored bytes under a readable file name, for sharing.
+    /// `directory` is a scratch location; the stored layout is not moved.
+    @MainActor func exportFile(root: URL, directory: URL) throws -> URL {
+        let data = try bytes(root: root)
+        let unsafe = CharacterSet(charactersIn: "/\\:*?\"<>|").union(.controlCharacters).union(.newlines)
+        var name = String(String.UnicodeScalarView(title.unicodeScalars.map { unsafe.contains($0) ? " " : $0 }))
+        name = String(name.trimmingCharacters(in: CharacterSet.whitespaces.union(CharacterSet(charactersIn: "."))).prefix(80))
+        let folder = directory.appendingPathComponent(id.uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let url = folder.appendingPathComponent((name.isEmpty ? "Steam Input layout" : name) + ".vdf")
+        try data.write(to: url, options: .atomic)
+        return url
     }
 }

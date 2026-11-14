@@ -178,12 +178,121 @@ func snapshot(_ url: URL) throws -> [String: String] {
         require(try snapshot(communityRoot) == communityAfterDownloads, "refused applies leave the community cache untouched")
         require(try sources.load(downloaded.revision).bytes == original)
 
+        // =============================================================
+        // 3. Local only: explicit VDF import and export, no cloud claim
+        // =============================================================
+        require(Personal.storageNote.contains("Stored on this device only") && Personal.storageNote.contains("not synced or backed up to Steam Cloud")
+                && Personal.storageNote.contains("export the VDF"), "personal layouts are described as local, with export as the way to keep one")
+        let importedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        let beforeImport = try snapshot(support)
+        let imported = try Personal.importVDF(original, fileName: "My pad.vdf", accountID: 24, appID: 480, root: support, now: importedAt)
+        require(imported.title == "My pad" && imported.origin == nil && imported.sourceName == "My pad.vdf" && imported.imported == importedAt)
+        require(imported.hash == DockSteamInputNative.contentHash(original) && imported.accountID == 24 && imported.appID == 480)
+        require(imported.provenance == "Imported from My pad.vdf" && imported.detail == "My pad · imported VDF file")
+        require(copy.provenance == "Copied from Community fixture · Workshop 123")
+        require(try imported.bytes(root: support) == original, "an imported layout keeps the file's exact bytes, unknown fields included")
+        require(String(decoding: try imported.bytes(root: support), as: UTF8.self).contains(#""future_block" { "kept" "exactly" }"#))
+        let importedRequest = try imported.applyRequest(root: support)
+        require(importedRequest.source == original && importedRequest.id == imported.id && importedRequest.id != copy.id && importedRequest.compatibility.canApply,
+                "an imported layout can be applied under its own identity")
+        let afterImport = try snapshot(support)
+        require(Set(afterImport.keys).subtracting(beforeImport.keys).count == 3 && beforeImport.allSatisfy { afterImport[$0.key] == $0.value },
+                "an import adds its own folder and two files and changes nothing else")
+        require(try snapshot(communityRoot) == communityAfterDownloads, "importing touches no community download")
+        let relisted = try Personal.list(root: support, accountID: 24, appID: 480)
+        require(relisted.contains { $0.id == imported.id && $0.origin == nil && $0.imported == importedAt } && relisted.contains { $0.id == copy.id && $0.origin != nil },
+                "copies and imports are listed together; records written before imports existed still load")
+
+        // A refused file leaves nothing behind and says why in plain words.
+        func importRefusal(_ bytes: Data, account: UInt32 = 24, name: String = "bad.vdf") throws -> String {
+            let before = try snapshot(support)
+            do { _ = try Personal.importVDF(bytes, fileName: name, accountID: account, appID: 480, root: support); fatalError("\(name): imported") }
+            catch {
+                require(try snapshot(support) == before, "\(name): a refused import leaves nothing behind")
+                guard let reason = (error as? LocalizedError)?.errorDescription, !reason.isEmpty else { fatalError("\(name): unreadable refusal \(error)") }
+                require(reason != Sources.Failure.invalid.errorDescription, "\(name): not the community download wording")
+                return reason
+            }
+        }
+        require(try importRefusal(Data()) == Personal.ImportFailure.notALayout.errorDescription)
+        require(try importRefusal(Data("hello".utf8)) == "The file was not imported. The layout ends after a name.",
+                "a malformed file explains the import refusal rather than exposing a generic error")
+        require(try importRefusal(Data([0xff])) == "The file was not imported. The layout is not UTF-8 text.")
+        require(try importRefusal(Data(#""controller_mappings" { "version" "3" } "controller_mappings" { }"#.utf8)) == Personal.ImportFailure.notALayout.errorDescription)
+        require(try importRefusal(Data([0xef, 0xbb, 0xbf]) + original) == Personal.ImportFailure.notALayout.errorDescription, "the native reader's refusal of a byte-order mark is kept")
+        require(try importRefusal(original + Data(repeating: 0x20, count: Sources.limit + 1 - original.count)) == "The file is too large to be a Steam Input layout.")
+        require(try importRefusal(original, account: 0) == Personal.ImportFailure.noAccount.errorDescription)
+        require(try importRefusal(Data(layoutText().replacingOccurrences(of: #""mode" "four_buttons""#, with: #""mode" "four_buttons" [$WIN32]"#).utf8)).contains("Conditional layouts are not supported yet."))
+        require(try importRefusal(Data(layoutText(binding: "mode_shift right_joystick 99, , ").utf8))
+                == "This layout cannot be applied. A mode shift on Cross (A) in group 0 switches right stick to group 99, which the layout does not define.",
+                "a file with a broken reference is refused at import, with the reference named")
+        // A layout that only needs an input Madeira cannot forward is kept, like a download, and cannot be applied.
+        let importedGyro = try Personal.importVDF(Data(layoutText(source: "gyro").utf8), fileName: "gyro.vdf", accountID: 24, appID: 480, root: support)
+        require(refusal(importedGyro) == "This layout cannot be applied. Unavailable inputs or features: gyro.")
+
+        // Names taken from files.
+        require(Personal.importTitle(fileName: "pad.VDF") == "pad" && Personal.importTitle(fileName: ".vdf") == "Imported layout" && Personal.importTitle(fileName: "") == "Imported layout")
+        require(Personal.importTitle(fileName: "../../etc/Layout one.vdf") == "Layout one" && Personal.importTitle(fileName: "a\u{7}b\n.vdf") == "ab")
+        require(Personal.importTitle(fileName: String(repeating: "x", count: 400) + ".vdf").count == 160)
+
+        // Export, then import: the same bytes come back under a new identity.
+        let scratch = temp.appendingPathComponent("export", isDirectory: true)
+        let storeBeforeExport = try snapshot(support)
+        let exported = try copy.exportFile(root: support, directory: scratch)
+        require(exported.lastPathComponent == "My jump layout.vdf" && exported.path.hasPrefix(scratch.path), "the exported file carries the layout's name: \(exported.lastPathComponent)")
+        require(try Data(contentsOf: exported) == original, "the exported file is the stored layout, byte for byte")
+        require(try snapshot(support) == storeBeforeExport, "exporting changes nothing in the store")
+        let picked = try Personal.readImport(exported)
+        require(picked == original)
+        let roundTrip = try Personal.importVDF(picked, fileName: exported.lastPathComponent, accountID: 24, appID: 480, root: support)
+        require(roundTrip.hash == copy.hash && roundTrip.id != copy.id && roundTrip.title == "My jump layout" && roundTrip.origin == nil)
+        require(try roundTrip.bytes(root: support) == (try copy.bytes(root: support)), "export then import preserves every byte")
+        require(try roundTrip.applyRequest(root: support).source == request.source, "and what it applies")
+        require(try copy.applyRequest(root: support) == request, "the layout that was exported is unchanged")
+        let unsafeName = try storedCopy(original, id: 301)
+        _ = unsafeName
+        let slashes = try Personal.importVDF(original, fileName: "a:b.vdf", accountID: 24, appID: 480, root: support)
+        require(slashes.title == "a:b")
+        require(try slashes.exportFile(root: support, directory: scratch).lastPathComponent == "a b.vdf", "characters a file name cannot hold are replaced")
+        require(try longCopy.exportFile(root: support, directory: scratch).lastPathComponent == String(repeating: "é", count: 80) + ".vdf")
+        do { _ = try tampered.exportFile(root: support, directory: scratch); fatalError("changed bytes exported") } catch {}
+
+        // Reading a picked file is bounded and never follows into a directory.
+        do { _ = try Personal.readImport(temp.appendingPathComponent("absent.vdf")); fatalError("absent file read") } catch Personal.ImportFailure.unreadable {}
+        do { _ = try Personal.readImport(scratch); fatalError("directory read") } catch Personal.ImportFailure.unreadable {}
+        let big = temp.appendingPathComponent("big.vdf")
+        try Data(repeating: 0x41, count: Sources.limit + 1).write(to: big)
+        do { _ = try Personal.readImport(big); fatalError("oversized file read") } catch Personal.ImportFailure.tooLarge {}
+        try Data(repeating: 0x41, count: Sources.limit).write(to: big)
+        require(try Personal.readImport(big).count == Sources.limit, "a file at the limit is read; whether it is a layout is decided afterwards")
+        try Data().write(to: big)
+        do { _ = try Personal.readImport(big); fatalError("empty file read") } catch Personal.ImportFailure.unreadable {}
+
+        // The count kept per account and game is bounded.
+        for index in 0..<Personal.limit {
+            _ = try Personal.importVDF(original, fileName: "fill \(index).vdf", accountID: 26, appID: 480, root: support)
+        }
+        require(try Personal.list(root: support, accountID: 26, appID: 480).count == Personal.limit)
+        let full = try snapshot(support)
+        do { _ = try Personal.importVDF(original, fileName: "one more.vdf", accountID: 26, appID: 480, root: support); fatalError("limit exceeded") }
+        catch Personal.ImportFailure.tooMany {}
+        require(try snapshot(support) == full)
+        // A record whose hash is not a hash is not listed as a usable layout.
+        let brokenRecord = Personal.folder(root: support, accountID: 27, appID: 480).appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: brokenRecord, withIntermediateDirectories: true)
+        let json = String(decoding: try JSONEncoder().encode(imported), as: UTF8.self)
+            .replacingOccurrences(of: imported.id.uuidString, with: brokenRecord.lastPathComponent)
+            .replacingOccurrences(of: "\"accountID\":24", with: "\"accountID\":27").replacingOccurrences(of: imported.hash, with: "not-a-hash")
+        try Data(json.utf8).write(to: brokenRecord.appendingPathComponent("layout.json"))
+        do { _ = try Personal.list(root: support, accountID: 27, appID: 480); fatalError("invalid record listed") } catch Sources.Failure.invalid {}
+        require(try snapshot(communityRoot) == communityAfterDownloads, "nothing in this check changed a community download")
+
         // Another account or game never sees the layout.
         require(try Personal.list(root: support, accountID: 25, appID: 480).isEmpty)
         require(try Personal.list(root: support, accountID: 24, appID: 481).isEmpty)
         _ = payload; payload = original
 
-        print("PASS: personal layout apply request, exact stored bytes, UUID identity, attribution, refusals before apply, and untouched community original")
+        print("PASS: personal layout apply request, exact stored bytes, UUID identity, attribution, refusals before apply, untouched community original, local-only labelling, and byte-exact VDF import and export")
     }
 }
 '''
@@ -205,6 +314,34 @@ if view.count('requestPersonal(') != 1 or 'requestCommunity(' in view:
 listing = (app / 'SteamInputCommunityView.swift').read_text()
 if listing.count('SteamInputPersonalDetail(appID: appID, copy: copy)') != 1:
     raise SystemExit('FAIL: each personal layout must open its own page')
+
+# Item 10: personal layouts are labelled local, import and export are wired,
+# and no screen or message claims cloud sync or backup.
+import re
+store = (app / 'SteamInputCommunity.swift').read_text()
+for needle, why, text in [
+    ('Text(SteamInputPersonalCopy.storageNote)', 'the personal layout page says where the layout is stored', view),
+    ('Label("Local to this device", systemImage: "internaldrive")', 'the personal layout page labels the layout local', view),
+    ('ShareLink("Export VDF file", item: exportURL)', 'the page exports the named copy', view),
+    ('exportURL = try? copy.exportFile(root: support,', 'the export file is made from the checked stored bytes', view),
+    ('Text(SteamInputPersonalCopy.storageNote)', 'the list says where personal layouts are stored', listing),
+    ('Text("Personal layouts · local")', 'the list labels personal layouts local', listing),
+    ('Button("Import VDF file…") { importing = true }.disabled(accountID == 0)', 'the list offers import', listing),
+    ('.fileImporter(isPresented: $importing, allowedContentTypes: [.data], allowsMultipleSelection: false) { importLayout($0) }', 'the picker hands the file to the import', listing),
+    ('let copy = try SteamInputPersonalCopy.importVDF(SteamInputPersonalCopy.readImport(url), fileName: url.lastPathComponent,', 'the import reads bounded bytes and validates them', listing),
+]:
+    if text.count(needle) != 1:
+        raise SystemExit(f'FAIL: {why}: expected exactly one `{needle}`')
+# Code lines only (comments may explain why nothing is synced); `async` is not a claim.
+wording = re.compile(r'cloud|\bsync|backed up|backup', re.I)
+claims = {}
+for name, text in [('SteamInputPersonalView.swift', view), ('SteamInputCommunityView.swift', listing), ('SteamInputCommunity.swift', store)]:
+    claims[name] = [line.strip() for line in text.splitlines() if not line.strip().startswith('//') and wording.search(line)]
+if claims['SteamInputPersonalView.swift'] or claims['SteamInputCommunityView.swift']:
+    raise SystemExit(f'FAIL: storage wording in the views must come from SteamInputPersonalCopy.storageNote only: {claims}')
+if len(claims['SteamInputCommunity.swift']) != 1 or 'static let storageNote = ' not in claims['SteamInputCommunity.swift'][0] \
+        or 'not synced or backed up to Steam Cloud' not in claims['SteamInputCommunity.swift'][0]:
+    raise SystemExit(f"FAIL: the only cloud wording may be the statement that layouts are not synced or backed up: {claims['SteamInputCommunity.swift']}")
 
 with tempfile.TemporaryDirectory(prefix='madeira-input-personal-') as temporary:
     tmp = Path(temporary)
