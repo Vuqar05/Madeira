@@ -593,7 +593,7 @@ not only layouts that emit Xbox buttons.
 - [ ] Build an editable Steam layout model and lossless VDF writer. The separate
   branch's parser preserves repeated keys and may be useful as a reference, but
   its import-to-JSON path is not a native Steam Input layout writer.
-- [ ] Add a read-only mapping preview from community listings before saving or
+- [x] Add a read-only mapping preview from community listings before saving or
   applying a layout, as the first user-facing step before editing. Fetch the VDF
   temporarily without adding it to saved downloads or changing the active layout.
   Show button, stick and trigger mappings, gamepad/keyboard/mouse outputs, named
@@ -706,7 +706,7 @@ Item 5, action names and reference validation (implemented and host-tested
 - Host check: `tests/host/check-steam-input-actions.py`.
 
 Item 2, read-only community preview (implemented and host-tested 2026-11-14;
-device test results and remaining cancellation retest recorded below). This
+owner device acceptance, including the cancellation retest, recorded below). This
 supersedes the initial slice's description of what the preview shows:
 
 - Named actions. A `game_action` binding and a group's analog `gameactions`
@@ -885,9 +885,9 @@ preview tests and the two menu corrections above):
 
 - The owner previously reported test steps 1 and 2 working: community mapping
   preview and cancellation/dismissal. The intermittent cancellation crash found
-  during those tests was subsequently fixed in `bade53d4`; an explicit physical
-  cancellation retest after that correction has not yet been reported. Item 2
-  therefore stays open for that remaining confirmation.
+  during those tests was subsequently fixed in `bade53d4`. The owner has now
+  explicitly confirmed that cancellation no longer crashes after the fix.
+  This closes the remaining physical retest and accepts item 2.
 - Step 3 produced the expected broken-group-reference, conditional-layout and
   malformed-file refusals. The owner then confirmed that the import retry fix
   in `327927dd` works, so a refused import no longer requires restarting Madeira.
@@ -900,7 +900,7 @@ preview tests and the two menu corrections above):
   the same behavior; and restoring Game default with working controls. Items 9
   and 10 are accepted. Apply being disabled before the game starts is intentional:
   activation requires a running Steam Input session and confirmation.
-- Items 5, 9 and 10 are checked above. No editor/revision-history item is accepted,
+- Items 2, 5, 9 and 10 are checked above. No editor/revision-history item is accepted,
   and Milestone 4 as a whole remains incomplete. These are the owner's reported
   physical results, supplemented by the offline checks documented above.
 
