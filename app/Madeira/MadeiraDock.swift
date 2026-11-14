@@ -949,6 +949,41 @@ enum DockSteamInputWire {
         try submitPrepared()
     }
 
+    /// What the saved selection and this launch's layout service say about
+    /// personal layouts of one account and game: which are chosen (and which
+    /// of their revisions), which revision Steam Input last confirmed, and
+    /// which have a change in flight. Personal layouts are deleted and their
+    /// old revisions pruned only against this. A selection that cannot be
+    /// read is reported as unknown, so nothing is deleted on a guess.
+    static func personalReferences(accountID: UInt32, appID: UInt32) -> SteamInputPersonalReferences {
+        let live = accountID == self.accountID && appID == self.appID && accountID > 0
+        let saved: DockSteamInputSelection
+        if live, let selection { saved = selection }
+        else {
+            guard accountID > 0, appID > 0,
+                  let loaded = try? DockSteamInputSelection.load(in: storage, accountID: accountID, appID: appID, controllerID: controllerID)
+            else { return .unknown }
+            saved = loaded
+        }
+        func personal(_ revision: DockSteamInputSelection.Revision?) -> (UUID, String?)? {
+            guard let revision, revision.source == .personal, let identity = revision.identity,
+                  identity != baselineRestoreIdentity, let id = UUID(uuidString: identity) else { return nil }
+            return (id, revision.contentHash)
+        }
+        var references = SteamInputPersonalReferences()
+        for revision in [saved.requested, saved.lastActivated] {
+            guard let (id, hash) = personal(revision) else { continue }
+            references.selected[id, default: []].formUnion(hash.map { [$0] } ?? [])
+        }
+        if let (id, hash) = personal(saved.lastActivated), let hash { references.confirmed[id] = hash }
+        if live {
+            var flight = [preparedChoice, submission?.choice]
+            if case .requested(let choice)? = bootstrap?.purpose { flight.append(choice) }
+            for choice in flight { if let (id, _) = personal(choice) { references.inFlight.insert(id) } }
+        }
+        return references
+    }
+
     /// An explicit, clearly generic choice; never labelled as the game's own.
     static func requestGenericTemplate(clientRoot: URL) throws {
         if !canChange, canBootstrap {
