@@ -534,3 +534,223 @@ struct VDFDocumentParser {
         }
     }
 }
+
+// MARK: - Structural writer
+
+/// A node to be written into a document: a leaf or a block of nodes.
+public indirect enum VDFNewNode: Equatable, Sendable {
+    case leaf(String, String)
+    case block(String, [VDFNewNode])
+}
+
+/// Structural edits. Every edit is one byte patch against `sourceData`, and the
+/// result is parsed again, so bytes outside the patched range stay identical:
+/// unknown fields, repeated keys, comments, ordering and every condition
+/// written anywhere else are kept. A removed node takes its own conditions
+/// with it; nothing else is ever removed. Inserted text follows the style of
+/// the surrounding source: its newline and its indentation unit.
+extension VDFDocument {
+    /// "\r\n" when the source uses it, otherwise "\n".
+    var newline: String {
+        sourceData.range(of: Data("\r\n".utf8)) != nil ? "\r\n" : "\n"
+    }
+
+    /// One indentation step: a tab unless the source indents with spaces only.
+    private var indentUnit: String {
+        let text = String(decoding: sourceData, as: UTF8.self)
+        if text.contains("\n\t") { return "\t" }
+        for width in [4, 2] where text.contains("\n" + String(repeating: " ", count: width) + "\"") {
+            return String(repeating: " ", count: width)
+        }
+        return "\t"
+    }
+
+    /// Spaces and tabs at the start of the line holding `offset`.
+    private func indentation(ofLineAt offset: Int) -> String {
+        var start = offset
+        while start > 0, sourceData[start - 1] != 0x0A { start -= 1 }
+        var end = start
+        while end < sourceData.count, sourceData[end] == 0x20 || sourceData[end] == 0x09 { end += 1 }
+        return String(decoding: sourceData[start..<end], as: UTF8.self)
+    }
+
+    /// True when only spaces and tabs precede `offset` on its line.
+    private func startsLine(_ offset: Int) -> Bool {
+        var index = offset
+        while index > 0 {
+            let byte = sourceData[index - 1]
+            if byte == 0x0A { return true }
+            if byte != 0x20 && byte != 0x09 { return false }
+            index -= 1
+        }
+        return true
+    }
+
+    /// The offset just after the line break ending the line at `offset`, when
+    /// only spaces, tabs or a `//` comment follow `offset` on it; else nil.
+    private func endOfLine(after offset: Int) -> Int? {
+        var index = offset
+        while index < sourceData.count, sourceData[index] == 0x20 || sourceData[index] == 0x09 || sourceData[index] == 0x0D { index += 1 }
+        if index + 1 < sourceData.count, sourceData[index] == 0x2F, sourceData[index + 1] == 0x2F {
+            while index < sourceData.count, sourceData[index] != 0x0A { index += 1 }
+        }
+        if index == sourceData.count { return index }
+        return sourceData[index] == 0x0A ? index + 1 : nil
+    }
+
+    private func render(_ node: VDFNewNode, indent: String, unit: String, newline: String) -> String {
+        switch node {
+        case .leaf(let key, let value):
+            return indent + Self.formatQuotedString(key) + "\t\t" + Self.formatQuotedString(value)
+        case .block(let key, let children):
+            var text = indent + Self.formatQuotedString(key) + newline + indent + "{" + newline
+            for child in children { text += render(child, indent: indent + unit, unit: unit, newline: newline) + newline }
+            return text + indent + "}"
+        }
+    }
+
+    private static func validate(_ node: VDFNewNode) throws {
+        switch node {
+        case .leaf(let key, let value):
+            guard !key.isEmpty, !key.contains("\0"), !value.contains("\0") else { throw VDFMutationError.invalidValue }
+        case .block(let key, let children):
+            guard !key.isEmpty, !key.contains("\0") else { throw VDFMutationError.invalidValue }
+            try children.forEach(validate)
+        }
+    }
+
+    /// Element children (leaves and blocks) of a block.
+    private static func elements(_ children: [VDFNode]) -> [VDFNode] {
+        children.filter { if case .standaloneComment = $0 { return false }; if case .directive = $0 { return false }; return true }
+    }
+
+    private func rebuilt(_ patch: BytePatch) throws -> VDFDocument {
+        try Self.parse(try applying(patches: [patch]))
+    }
+
+    /// Inserts `node` into the block at `parent`, before its element child at
+    /// `index` (counted over leaves and blocks), or after the last one.
+    public func inserting(_ node: VDFNewNode, into parent: VDFPath, at index: Int? = nil) throws -> VDFDocument {
+        try Self.validate(node)
+        let nl = newline, unit = indentUnit
+        return try insertText(into: parent, at: index) { indent in self.render(node, indent: indent, unit: unit, newline: nl) }
+    }
+
+    /// Inserts a copy of the exact source text of the node at `source`
+    /// (its conditions, comments inside it, unknown fields and repeated keys
+    /// included) into `parent`, after its last element child.
+    public func insertingCopy(of source: VDFPath, into parent: VDFPath) throws -> VDFDocument {
+        guard let node = findNode(at: source) else { throw VDFMutationError.pathNotFound(source) }
+        let span = node.fullSpan
+        let raw = String(decoding: sourceData[span.lower..<span.upper], as: UTF8.self)
+        return try insertText(into: parent, at: nil) { indent in indent + raw }
+    }
+
+    private func insertText(into parent: VDFPath, at index: Int?, render: (String) -> String) throws -> VDFDocument {
+        guard case .block(_, let open, let allChildren, let close, _)? = findNode(at: parent) else {
+            throw VDFMutationError.pathNotFound(parent)
+        }
+        let children = Self.elements(allChildren)
+        let nl = newline, unit = indentUnit
+        let parentIndent = indentation(ofLineAt: open.span.lower)
+        let indent: String
+        if let first = children.first, startsLine(first.fullSpan.lower) {
+            indent = indentation(ofLineAt: first.fullSpan.lower)
+        } else {
+            indent = parentIndent + unit
+        }
+        if let index, index < 0 || index > children.count { throw VDFMutationError.pathNotFound(parent) }
+        if let index, index < children.count {
+            let before = children[index].fullSpan.lower
+            if startsLine(before) {
+                var lineStart = before
+                while lineStart > 0, sourceData[lineStart - 1] != 0x0A { lineStart -= 1 }
+                return try rebuilt(BytePatch(offset: lineStart, replacement: Data((render(indent) + nl).utf8)))
+            }
+            return try rebuilt(BytePatch(offset: before, replacement: Data((render("") + " ").utf8)))
+        }
+        let anchor = children.last?.fullSpan.upper ?? open.span.upper
+        if let lineEnd = endOfLine(after: anchor), lineEnd <= close.span.lower {
+            // The anchor ends its line: the new node gets lines of its own.
+            let text = render(indent) + nl
+            if lineEnd == sourceData.count, sourceData.last != 0x0A {
+                return try rebuilt(BytePatch(offset: lineEnd, replacement: Data((nl + text).utf8)))
+            }
+            return try rebuilt(BytePatch(offset: lineEnd, replacement: Data(text.utf8)))
+        }
+        // Inline block such as `{ "a" "b" }`: break the line before the new node.
+        let tail = children.isEmpty ? nl + parentIndent : ""
+        return try rebuilt(BytePatch(offset: anchor, replacement: Data((nl + render(indent) + tail).utf8)))
+    }
+
+    /// Removes the node at `path`, with its own conditions. When it is alone
+    /// on its lines, those lines go with it; anything else is untouched.
+    public func removing(at path: VDFPath) throws -> VDFDocument {
+        guard let node = findNode(at: path) else { throw VDFMutationError.pathNotFound(path) }
+        var lower = node.fullSpan.lower
+        var upper = node.fullSpan.upper
+        if startsLine(lower), let lineEnd = endOfLine(after: upper),
+           !(upper..<lineEnd).contains(where: { sourceData[$0] == 0x2F }) {
+            while lower > 0, sourceData[lower - 1] == 0x20 || sourceData[lower - 1] == 0x09 { lower -= 1 }
+            upper = lineEnd
+        }
+        return try rebuilt(BytePatch(range: lower..<upper, replacement: Data()))
+    }
+
+    /// Replaces the key of the node at `path`; its value or body and its
+    /// conditions are unchanged.
+    public func renamingKey(at path: VDFPath, to key: String) throws -> VDFDocument {
+        guard !key.isEmpty, !key.contains("\0") else { throw VDFMutationError.invalidValue }
+        guard let node = findNode(at: path) else { throw VDFMutationError.pathNotFound(path) }
+        let token: VDFToken
+        switch node {
+        case .leaf(let k, _, _), .block(let k, _, _, _, _): token = k
+        case .standaloneComment, .directive: throw VDFMutationError.pathNotFound(path)
+        }
+        return try rebuilt(BytePatch(range: token.span.lower..<token.span.upper, replacement: Data(Self.formatQuotedString(key).utf8)))
+    }
+
+    /// How many element children named `key` the block at `parent` has.
+    public func count(_ key: String, in parent: VDFPath) -> Int {
+        guard case .block(_, _, let children, _, _)? = findNode(at: parent) else { return 0 }
+        return children.filter { child in
+            switch child {
+            case .leaf(let k, _, _), .block(let k, _, _, _, _): return stringValue(for: k).caseInsensitiveCompare(key) == .orderedSame
+            default: return false
+            }
+        }.count
+    }
+
+    /// Sets the leaf `key` in the block at `parent`. Where the key is repeated,
+    /// the last occurrence is the one read, so it is the one changed; when the
+    /// key is absent a leaf is appended. `nil` removes every occurrence.
+    public func settingLeaf(_ key: String, to value: String?, in parent: VDFPath) throws -> VDFDocument {
+        let existing = count(key, in: parent)
+        guard let value else {
+            var document = self
+            for index in stride(from: existing - 1, through: 0, by: -1) {
+                document = try document.removing(at: VDFPath(parent.steps + [.init(key, index: index)]))
+            }
+            return document
+        }
+        if existing > 0 {
+            let path = VDFPath(parent.steps + [.init(key, index: existing - 1)])
+            guard case .leaf? = findNode(at: path) else { throw VDFMutationError.pathNotFound(path) }
+            return try updatingValue(at: path, to: value)
+        }
+        return try inserting(.leaf(key, value), into: parent)
+    }
+
+    /// The path of the last block named `key` in `parent`, creating an empty
+    /// one at the end when there is none.
+    public func ensuringBlock(_ key: String, in parent: VDFPath) throws -> (VDFDocument, VDFPath) {
+        let existing = count(key, in: parent)
+        if existing > 0 {
+            let path = VDFPath(parent.steps + [.init(key, index: existing - 1)])
+            if case .block? = findNode(at: path) { return (self, path) }
+            throw VDFMutationError.pathNotFound(path)
+        }
+        let document = try inserting(.block(key, []), into: parent)
+        return (document, VDFPath(parent.steps + [.init(key, index: 0)]))
+    }
+}

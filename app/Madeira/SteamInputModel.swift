@@ -14,6 +14,8 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
         public let rawContent: String
         public let span: SourceSpan
         public let children: [UnrecognizedEntry]
+        /// The node in the document, when it is addressable.
+        public var nodePath: VDFPath? = nil
 
         public init(id: String, path: String, key: String, rawContent: String, span: SourceSpan, children: [UnrecognizedEntry] = []) {
             self.id = id
@@ -89,6 +91,8 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
         /// Conditions on the enclosing `bindings` block, then on this binding.
         public let conditions: [Condition]
         public let rawString: String
+        /// Where the binding leaf is written; empty for a binding made outside a document.
+        public var path = VDFPath([])
 
         private static let recognizedPadButtons: Set<String> = [
             "a", "b", "x", "y",
@@ -307,6 +311,8 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
 
     public struct Activator: Equatable, Sendable {
         public let kind: String
+        /// The activator block, e.g. `…/activators[0]/Full_Press[0]`.
+        public var path = VDFPath([])
         public let bindings: [ParsedBinding]
         public let toggle: Bool
         public let turbo: Bool
@@ -330,6 +336,7 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
 
     public struct Input: Equatable, Sendable {
         public let name: String
+        public var path = VDFPath([])
         public let activators: [Activator]
         /// Activators kept in the layout's `disabled_activators` block: written, but switched off.
         public let disabledActivators: [Activator]
@@ -375,6 +382,7 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
     /// group feeds, such as a stick bound to "Move".
     public struct GameActionReference: Equatable, Sendable {
         public let setID: String
+        public var path = VDFPath([])
         public let actionID: String
         /// Conditions on the enclosing `gameactions` block, then on this entry.
         public let conditions: [Condition]
@@ -382,6 +390,7 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
 
     public struct Group: Equatable, Sendable {
         public let id: String
+        public var path = VDFPath([])
         public let mode: String
         public let inputs: [Input]
         /// Conditions on the `group` block itself.
@@ -417,6 +426,7 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
 
     public struct SourceBinding: Equatable, Sendable {
         public let groupID: String
+        public var path = VDFPath([])
         public let source: String
         public let flags: Set<String>
         /// Conditions on the enclosing `group_source_bindings` block, then on this entry.
@@ -428,6 +438,7 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
 
     public struct Preset: Equatable, Sendable {
         public let id: String
+        public var path = VDFPath([])
         public let name: String
         public let bindings: [SourceBinding]
         /// Conditions on the `preset` block itself.
@@ -448,6 +459,8 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
 
     public struct ActionSet: Equatable, Identifiable, Sendable {
         public let id: String
+        /// Nil for a set synthesized from a preset: it has no block of its own.
+        public var path: VDFPath? = nil
         public let title: String
         public let isNative: Bool
         /// Conditions on the enclosing `actions` block, then on this set.
@@ -465,6 +478,7 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
 
     public struct ActionLayer: Equatable, Identifiable, Sendable {
         public let id: String
+        public var path = VDFPath([])
         public let title: String
         public let parentSetID: String
         /// Conditions on the enclosing `action_layers` block, then on this layer.
@@ -504,6 +518,8 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
     /// Every condition in the interpreted layout, once each, in source order.
     public let conditionSites: [ConditionSite]
     public let unrecognizedEntries: [UnrecognizedEntry]
+    /// The `controller_mappings` block every edit is made under.
+    public let rootPath: VDFPath
 
     private static func buildUnrecognized(node: VDFNode, parentPath: String, document: VDFDocument) -> UnrecognizedEntry {
         let span = node.fullSpan
@@ -544,6 +560,23 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
         var unrecognized: [UnrecognizedEntry] = []
 
         func text(_ token: VDFToken) -> String { document.stringValue(for: token) }
+
+        /// The path of each child as `VDFDocument.findNode` resolves it: the
+        /// key, case-insensitively, and its occurrence among its siblings.
+        func paths(_ parent: VDFPath?, _ children: [VDFNode]) -> [VDFPath?] {
+            var seen: [String: Int] = [:]
+            return children.map { child in
+                switch child {
+                case .leaf(let k, _, _), .block(let k, _, _, _, _):
+                    let name = text(k), folded = name.lowercased()
+                    let index = seen[folded, default: 0]
+                    seen[folded] = index + 1
+                    return VDFPath((parent?.steps ?? []) + [.init(name, index: index)])
+                case .standaloneComment, .directive:
+                    return nil
+                }
+            }
+        }
         func key(_ token: VDFToken) -> String { text(token).lowercased() }
 
         /// The value of the last leaf named `name`, matching how repeated `id`/`name` leaves resolve.
@@ -569,9 +602,11 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
             }
         }
 
-        mutating func uninterpreted(_ node: VDFNode, under path: String) {
+        mutating func uninterpreted(_ node: VDFNode, under path: String, at nodePath: VDFPath? = nil) {
             if case .standaloneComment = node { return }
-            unrecognized.append(SteamInputLayoutModel.buildUnrecognized(node: node, parentPath: path, document: document))
+            var entry = SteamInputLayoutModel.buildUnrecognized(node: node, parentPath: path, document: document)
+            entry.nodePath = nodePath
+            unrecognized.append(entry)
         }
 
         /// `StickPadGyro`, `AnalogTrigger` and `Button` blocks of a set or layer.
@@ -604,9 +639,9 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
             return found
         }
 
-        mutating func actionSets(_ children: [VDFNode], container: [Condition]) -> [ActionSet] {
+        mutating func actionSets(_ children: [VDFNode], container: [Condition], at parent: VDFPath) -> [ActionSet] {
             var sets: [ActionSet] = []
-            for child in children {
+            for (child, childPath) in zip(children, paths(parent, children)) {
                 guard case .block(let setKey, _, let props, _, let tokens) = child else {
                     uninterpreted(child, under: "controller_mappings/actions")
                     continue
@@ -636,14 +671,16 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
                     }
                     note(prop, as: "Property", in: scope)
                 }
-                sets.append(ActionSet(id: id, title: title, isNative: isNative, conditions: container + own, declaredActions: declared))
+                var set = ActionSet(id: id, title: title, isNative: isNative, conditions: container + own, declaredActions: declared)
+                set.path = childPath
+                sets.append(set)
             }
             return sets
         }
 
-        mutating func actionLayers(_ children: [VDFNode], container: [Condition]) -> [ActionLayer] {
+        mutating func actionLayers(_ children: [VDFNode], container: [Condition], at parent: VDFPath) -> [ActionLayer] {
             var layers: [ActionLayer] = []
-            for child in children {
+            for (child, childPath) in zip(children, paths(parent, children)) {
                 guard case .block(let layerKey, _, let props, _, let tokens) = child else {
                     uninterpreted(child, under: "controller_mappings/action_layers")
                     continue
@@ -675,13 +712,15 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
                     }
                     note(prop, as: "Property", in: scope)
                 }
-                layers.append(ActionLayer(id: id, title: title, parentSetID: parentSet, conditions: container + own, declaredActions: declared))
+                var layer = ActionLayer(id: id, title: title, parentSetID: parentSet, conditions: container + own, declaredActions: declared)
+                if let childPath { layer.path = childPath }
+                layers.append(layer)
             }
             return layers
         }
 
         /// Nil for a group without an `id`: no preset can refer to it.
-        mutating func group(_ children: [VDFNode], tokens: [VDFToken]) -> Group? {
+        mutating func group(_ children: [VDFNode], tokens: [VDFToken], at groupPath: VDFPath) -> Group? {
             let id = lastLeaf("id", in: children) ?? ""
             let name = id.isEmpty ? "unnamed" : id
             let scope = "Group \(name)"
@@ -693,7 +732,7 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
             var gameActions: [GameActionReference] = []
             var groupName = ""
             var groupDescription = ""
-            for child in children {
+            for (child, childPath) in zip(children, paths(groupPath, children)) {
                 switch child {
                 case .leaf(let leafKey, let leafValue, _):
                     switch key(leafKey) {
@@ -702,7 +741,7 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
                     case "name": groupName = text(leafValue)
                     case "description": groupDescription = text(leafValue)
                     default:
-                        uninterpreted(child, under: path)
+                        uninterpreted(child, under: path, at: childPath)
                         continue
                     }
                     note(child, as: "Property", in: scope)
@@ -710,13 +749,15 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
                     switch key(blockKey) {
                     case "inputs":
                         let container = conditions(blockTokens, scope: "Inputs Container", slug: "inputs-\(name)", in: scope)
-                        for entry in entries {
-                            guard case .block(let inputKey, _, let body, _, let inputTokens) = entry else {
-                                uninterpreted(entry, under: "\(path)/inputs")
+                        for (entry, entryPath) in zip(entries, paths(childPath, entries)) {
+                            guard case .block(let inputKey, _, let body, _, let inputTokens) = entry, let entryPath else {
+                                uninterpreted(entry, under: "\(path)/inputs", at: paths(childPath, entries).compactMap { $0 }.first)
                                 continue
                             }
-                            inputs.append(input(text(inputKey), body, tokens: inputTokens, container: container,
-                                                groupScope: scope, groupPath: path, groupSlug: name))
+                            var parsed = input(text(inputKey), body, tokens: inputTokens, container: container,
+                                               groupScope: scope, groupPath: path, groupSlug: name, at: entryPath)
+                            parsed.path = entryPath
+                            inputs.append(parsed)
                         }
                     case "settings":
                         note(child, as: "Block", in: scope)
@@ -730,28 +771,30 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
                         }
                     case "gameactions":
                         let container = conditions(blockTokens, scope: "Game Actions Container", slug: "gameactions-\(name)", in: scope)
-                        for entry in entries {
+                        for (entry, entryPath) in zip(entries, paths(childPath, entries)) {
                             guard case .leaf(let setKey, let actionValue, let entryTokens) = entry else {
-                                uninterpreted(entry, under: "\(path)/gameactions")
+                                uninterpreted(entry, under: "\(path)/gameactions", at: entryPath)
                                 continue
                             }
                             let leaf = conditions(entryTokens, scope: "Game Action '\(text(actionValue))'", slug: "gameaction-\(name)", in: scope)
-                            gameActions.append(GameActionReference(setID: text(setKey), actionID: text(actionValue), conditions: container + leaf))
+                            var reference = GameActionReference(setID: text(setKey), actionID: text(actionValue), conditions: container + leaf)
+                            if let entryPath { reference.path = entryPath }
+                            gameActions.append(reference)
                         }
                     default:
-                        uninterpreted(child, under: path)
+                        uninterpreted(child, under: path, at: childPath)
                     }
                 case .standaloneComment, .directive:
                     break
                 }
             }
             guard !id.isEmpty else { return nil }
-            return Group(id: id, mode: mode, inputs: inputs, conditions: own, settings: settings, gameActions: gameActions,
+            return Group(id: id, path: groupPath, mode: mode, inputs: inputs, conditions: own, settings: settings, gameActions: gameActions,
                          name: groupName, description: groupDescription)
         }
 
         mutating func input(_ name: String, _ body: [VDFNode], tokens: [VDFToken], container: [Condition],
-                            groupScope: String, groupPath: String, groupSlug: String) -> Input {
+                            groupScope: String, groupPath: String, groupSlug: String, at inputPath: VDFPath) -> Input {
             let scope = "Input '\(name)'"
             let location = "\(groupScope) › \(scope)"
             let path = "\(groupPath)/inputs[\(name)]"
@@ -759,23 +802,24 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
             let own = conditions(tokens, scope: scope, slug: "input-\(slug)", in: groupScope)
             var activators: [Activator] = []
             var disabled: [Activator] = []
-            for child in body {
+            for (child, childPath) in zip(body, paths(inputPath, body)) {
                 guard case .block(let blockKey, _, let entries, _, let blockTokens) = child,
-                      ["activators", "disabled_activators"].contains(key(blockKey)) else {
-                    uninterpreted(child, under: path)
+                      ["activators", "disabled_activators"].contains(key(blockKey)), let childPath else {
+                    uninterpreted(child, under: path, at: paths(inputPath, body).compactMap { $0 }.first)
                     continue
                 }
                 let isDisabled = key(blockKey) == "disabled_activators"
                 let activatorContainer = conditions(blockTokens, scope: isDisabled ? "Disabled Activators Container" : "Activators Container",
                                                     slug: "\(isDisabled ? "disabled-" : "")activators-\(slug)", in: location)
-                for entry in entries {
-                    guard case .block(let kindKey, _, let props, _, let kindTokens) = entry else {
+                for (entry, entryPath) in zip(entries, paths(childPath, entries)) {
+                    guard case .block(let kindKey, _, let props, _, let kindTokens) = entry, let entryPath else {
                         uninterpreted(entry, under: "\(path)/\(key(blockKey))")
                         continue
                     }
-                    let parsed = activator(text(kindKey), props, tokens: kindTokens, container: activatorContainer,
+                    var parsed = activator(text(kindKey), props, tokens: kindTokens, container: activatorContainer,
                                            inputLocation: location, inputPath: isDisabled ? "\(path)/disabled_activators" : path,
-                                           inputSlug: isDisabled ? "\(slug)-disabled" : slug)
+                                           inputSlug: isDisabled ? "\(slug)-disabled" : slug, at: entryPath)
+                    parsed.path = entryPath
                     if isDisabled { disabled.append(parsed) } else { activators.append(parsed) }
                 }
             }
@@ -783,7 +827,7 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
         }
 
         mutating func activator(_ kind: String, _ props: [VDFNode], tokens: [VDFToken], container: [Condition],
-                                inputLocation: String, inputPath: String, inputSlug: String) -> Activator {
+                                inputLocation: String, inputPath: String, inputSlug: String, at activatorPath: VDFPath) -> Activator {
             let scope = "Activator '\(kind)'"
             let location = "\(inputLocation) › \(scope)"
             let path = "\(inputPath)/\(kind)"
@@ -791,21 +835,23 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
             let own = conditions(tokens, scope: scope, slug: "activator-\(slug)", in: inputLocation)
             var bindings: [ParsedBinding] = []
             var settings: [String: String] = [:]
-            for prop in props {
+            for (prop, propPath) in zip(props, paths(activatorPath, props)) {
                 guard case .block(let propKey, _, let entries, _, let propTokens) = prop else {
-                    uninterpreted(prop, under: path)
+                    uninterpreted(prop, under: path, at: propPath)
                     continue
                 }
                 switch key(propKey) {
                 case "bindings":
                     let bindingContainer = conditions(propTokens, scope: "Bindings Container", slug: "bindings-\(slug)", in: location)
-                    for entry in entries {
+                    for (entry, entryPath) in zip(entries, paths(propPath, entries)) {
                         guard case .leaf(let bindingKey, let bindingValue, let bindingTokens) = entry, key(bindingKey) == "binding" else {
-                            uninterpreted(entry, under: "\(path)/bindings")
+                            uninterpreted(entry, under: "\(path)/bindings", at: entryPath)
                             continue
                         }
                         let leaf = conditions(bindingTokens, scope: "Binding", slug: "binding-\(slug)", in: location)
-                        bindings.append(ParsedBinding(raw: text(bindingValue), conditions: bindingContainer + leaf))
+                        var binding = ParsedBinding(raw: text(bindingValue), conditions: bindingContainer + leaf)
+                        if let entryPath { binding.path = entryPath }
+                        bindings.append(binding)
                     }
                 case "settings":
                     note(prop, as: "Block", in: location)
@@ -818,14 +864,15 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
                         note(entry, as: "Setting", in: location)
                     }
                 default:
-                    uninterpreted(prop, under: path)
+                    uninterpreted(prop, under: path, at: propPath)
                 }
             }
-            return Activator(kind: kind, bindings: bindings, toggle: settings["toggle"] == "1", turbo: settings["turbo"] == "1",
+            // Steam writes turbo as `hold_repeats` (with `repeat_rate`).
+            return Activator(kind: kind, bindings: bindings, toggle: settings["toggle"] == "1", turbo: settings["hold_repeats"] == "1",
                              conditions: container + own, settings: settings)
         }
 
-        mutating func preset(_ children: [VDFNode], tokens: [VDFToken]) -> Preset {
+        mutating func preset(_ children: [VDFNode], tokens: [VDFToken], at presetPath: VDFPath) -> Preset {
             let id = lastLeaf("id", in: children) ?? ""
             let name = lastLeaf("name", in: children) ?? ""
             let scope = "Preset '\(name.isEmpty ? id : name)'"
@@ -833,7 +880,7 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
             let own = conditions(tokens, scope: scope, slug: "preset-\(id)", in: "")
             var bindings: [SourceBinding] = []
             var settings: [String: String] = [:]
-            for child in children {
+            for (child, childPath) in zip(children, paths(presetPath, children)) {
                 switch child {
                 case .leaf(let leafKey, let leafValue, _):
                     let property = key(leafKey)
@@ -857,7 +904,7 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
                         continue
                     }
                     let container = conditions(blockTokens, scope: "Source Bindings Container", slug: "srcbinds-\(id)", in: scope)
-                    for entry in entries {
+                    for (entry, entryPath) in zip(entries, paths(childPath, entries)) {
                         guard case .leaf(let groupKey, let sourceValue, let sourceTokens) = entry else {
                             uninterpreted(entry, under: "\(path)/group_source_bindings")
                             continue
@@ -868,14 +915,16 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
                             continue
                         }
                         let leaf = conditions(sourceTokens, scope: "Source Binding '\(source)'", slug: "srcbind-\(id)-\(source)", in: scope)
-                        bindings.append(SourceBinding(groupID: text(groupKey), source: source, flags: Set(words.dropFirst()),
-                                                      conditions: container + leaf))
+                        var binding = SourceBinding(groupID: text(groupKey), source: source, flags: Set(words.dropFirst()),
+                                                    conditions: container + leaf)
+                        if let entryPath { binding.path = entryPath }
+                        bindings.append(binding)
                     }
                 case .standaloneComment, .directive:
                     break
                 }
             }
-            return Preset(id: id, name: name, bindings: bindings, conditions: own, settings: settings)
+            return Preset(id: id, path: presetPath, name: name, bindings: bindings, conditions: own, settings: settings)
         }
     }
 
@@ -890,6 +939,8 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
         }
 
         var builder = Builder(document: document)
+        let rootPath = builder.paths(nil, document.rootNodes)[rootIndex]!
+        self.rootPath = rootPath
         self.conditions = builder.conditions(rootTokens, scope: "Root", slug: "root", in: "")
 
         var parsedTitle = ""
@@ -908,7 +959,7 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
         let metadataKeys: Set<String> = ["creator", "progenitor", "url", "export_type", "controller_caps",
                                          "major_revision", "minor_revision", "timestamp", "game"]
 
-        for child in mappingChildren {
+        for (child, childPath) in zip(mappingChildren, builder.paths(rootPath, mappingChildren)) {
             switch child {
             case .leaf(let key, let val, _):
                 let v = builder.text(val)
@@ -920,7 +971,7 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
                 case "controller_type": parsedControllerType = v
                 case let name where metadataKeys.contains(name): parsedMetadata[name] = v
                 default:
-                    builder.uninterpreted(child, under: "controller_mappings")
+                    builder.uninterpreted(child, under: "controller_mappings", at: childPath)
                     continue
                 }
                 builder.note(child, as: "Property", in: "")
@@ -929,14 +980,14 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
                 case "actions":
                     declaresSets = true
                     let container = builder.conditions(blockTokens, scope: "Action Sets Container", slug: "sets", in: "")
-                    parsedSets += builder.actionSets(blockChildren, container: container)
+                    parsedSets += builder.actionSets(blockChildren, container: container, at: childPath!)
                 case "action_layers":
                     let container = builder.conditions(blockTokens, scope: "Action Layers Container", slug: "layers", in: "")
-                    parsedLayers += builder.actionLayers(blockChildren, container: container)
+                    parsedLayers += builder.actionLayers(blockChildren, container: container, at: childPath!)
                 case "group":
-                    if let group = builder.group(blockChildren, tokens: blockTokens) { parsedGroups.append(group) }
+                    if let group = builder.group(blockChildren, tokens: blockTokens, at: childPath!) { parsedGroups.append(group) }
                 case "preset":
-                    parsedPresets.append(builder.preset(blockChildren, tokens: blockTokens))
+                    parsedPresets.append(builder.preset(blockChildren, tokens: blockTokens, at: childPath!))
                 case "settings":
                     builder.note(child, as: "Block", in: "")
                     for entry in blockChildren {
@@ -967,7 +1018,7 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
                         parsedLocalization[builder.key(languageKey)] = table
                     }
                 default:
-                    builder.uninterpreted(child, under: "controller_mappings")
+                    builder.uninterpreted(child, under: "controller_mappings", at: childPath)
                 }
             case .standaloneComment, .directive: break
             }
