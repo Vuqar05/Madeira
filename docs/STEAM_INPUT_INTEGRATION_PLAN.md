@@ -645,8 +645,8 @@ accepted, and nothing here has run on a device):
   uses, covered through that helper and through the real session.
 
 Still outstanding in this milestone: interactive editing UI, personal-layout
-identities and revision lifecycle, apply integration for personal layouts, and
-physical validation of everything in this milestone.
+revision history and the rest of items 1, 3, 4, 6, 7 and 8, and physical
+validation of everything in this milestone.
 
 Host checks: `tests/host/check-steam-input-vdf.py` and
 `tests/host/check-steam-input-preview.py`.
@@ -752,6 +752,50 @@ supersedes the initial slice's description of what the preview shows:
   expands all 29 mode shifts, and yields distinct row identifiers throughout.
 - Host check: `tests/host/check-steam-input-preview.py`. The SwiftUI sheet is
   pinned by source checks and has not been exercised on a device.
+
+Item 9, storing and selecting personal layouts (2026-11-14; implemented and
+host-tested, not run on a device, checkbox left open until device acceptance):
+
+- The contract, from the pinned client and the accepted milestones. A layout is
+  registered with Valve's engine by handing its bytes to the pinned loader
+  (serialized slot 38 `LoadConfigFromVDFString`, then slot 40 `ActivateConfig`)
+  inside a journalled `MSITXN02` transaction, and it is selected by Madeira's
+  own `DockSteamInputSelection` record, not by Steam's. That path was accepted
+  on the iPad for a local fixture in milestone 1 (apply, receipt, relaunch
+  reapplication, restore) and for community layouts in milestone 3. The
+  selection model has carried a `personal` source keyed by a local UUID since
+  milestone 1, and `DockSteamInputService.prepareLocal` already accepted it.
+  A personal layout uses exactly this: the service is byte-level and does not
+  treat sources differently.
+- What is deliberately not done. Steam's own key for a personal layout is
+  `AC-<app>-<device>`, which SteamUI resolves to an account-local autosave file;
+  Dock only reads it. Slot 114 `SetSelectedConfigForApp` is address-checked but
+  has not been called since milestone 2, and it was only ever called with a
+  template name. Nothing establishes that writing an autosave file and
+  selecting an `AC-` key for it is accepted by the pinned client, so no file is
+  placed in Steam's folders and no Steam selection key is written or made up.
+  Steam's saved selection is observed and left as it was.
+- Implementation. `SteamInputPersonalCopy` layouts are stored per account and
+  game under their own UUID (as before). `applyRequest` re-reads the stored
+  bytes on every apply, without following links, and requires the recorded
+  hash and a pass of the same `SteamInputCompatibility` check as a community
+  layout (conditional layouts rejected, references resolved, the native
+  metadata reader, forwarded inputs only); each refusal has a readable reason
+  and nothing is written. The journal reads the revision again when it prepares
+  the change. `DockSteamInputService.requestPersonal` then takes the
+  bytes, UUID and attribution through the common journal, receipt, rollback and
+  restart path, refusing another game's or account's layout. A confirmed
+  personal layout is the persisted choice and is reapplied on the next launch
+  from the journal's own copy of the bytes. The community original is never
+  opened by an apply and stays byte-identical. Each personal layout has its own
+  page with Apply, the confirmed state and Export.
+- Host checks: `tests/host/check-steam-input-personal.py` (store side) and the
+  personal section of `tests/host/check-steam-input-service.py` (real journal
+  and C receipt: scope refusals, confirmation, persistence, restart).
+- Not covered: deleting a personal layout, editing one and revision history
+  belong to items 3, 7 and 8. A layout that is active stays active from the
+  journal's copy even if its stored file is later damaged; applying it again is
+  then refused.
 
 Done when: a player creates a layout, changes a recognizable binding, uses it in
 the running game, restarts and gets the same result. Export/import preserves

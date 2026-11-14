@@ -422,8 +422,9 @@ private extension Optional {
     }
 }
 
-/// A personal starting point is a byte-for-byte copy, never an edit of its
-/// community original. Editing/revision UI is milestone 4.
+/// A personal layout is a byte-for-byte copy, never an edit of its community
+/// original. It is stored under its own UUID and can be applied as the
+/// player's choice. Editing and revision history are later milestone 4 items.
 struct SteamInputPersonalCopy: Codable, Identifiable {
     var version = 1
     let id: UUID
@@ -454,6 +455,55 @@ struct SteamInputPersonalCopy: Codable, Identifiable {
         let bytes = try SteamInputCommunitySources.read(url, limit: SteamInputCommunitySources.limit)
         guard DockSteamInputNative.contentHash(bytes) == hash else { throw SteamInputCommunitySources.Failure.invalid }
         return url
+    }
+    /// The stored layout, read without following links and checked against the recorded hash.
+    @MainActor func bytes(root: URL) throws -> Data {
+        try SteamInputCommunitySources.read(source(root: root), limit: SteamInputCommunitySources.limit)
+    }
+    /// Shown with the active choice. At most 512 UTF-8 bytes, as the selection store requires.
+    var detail: String {
+        var text = title + " · personal copy of " + origin.attribution
+        while text.utf8.count > 512 { text.removeLast() }
+        return text
+    }
+    /// Everything the layout service needs to apply this layout.
+    struct ApplyRequest: Equatable {
+        let appID: UInt32
+        let accountID: UInt32
+        let id: UUID
+        let source: Data
+        let detail: String
+        let compatibility: SteamInputCompatibility
+    }
+    enum ApplyFailure: LocalizedError, Equatable {
+        case incompatible(String)
+        /// The stored file is missing, is not a plain file or no longer matches its record.
+        case damaged
+        /// The bytes are not a layout Steam Input's loader accepts.
+        case notALayout
+        var errorDescription: String? {
+            switch self {
+            case .incompatible(let reason): return "This layout cannot be applied. " + reason
+            case .damaged: return "This layout cannot be applied. Its stored file is missing or was changed outside Madeira."
+            case .notALayout: return "This layout cannot be applied. It is not a valid Steam Input layout."
+            }
+        }
+    }
+    /// Reads the stored bytes afresh and puts them through the same checks as
+    /// a community layout before anything is handed to the layout service: the
+    /// recorded hash, the rejection of conditional layouts, the reference
+    /// check, the native metadata reader and the inputs Madeira can forward.
+    /// The journal reads the revision again when it prepares the change.
+    /// Nothing is written, and the community original is not opened.
+    @MainActor func applyRequest(root: URL) throws -> ApplyRequest {
+        let source: Data
+        do { source = try bytes(root: root) } catch { throw ApplyFailure.damaged }
+        let compatibility: SteamInputCompatibility
+        // A conditional layout and a broken reference keep their own wording.
+        do { compatibility = try SteamInputCompatibility(source, tags: origin.item.tags ?? []) }
+        catch is SteamInputCommunitySources.Failure { throw ApplyFailure.notALayout }
+        guard compatibility.canApply else { throw ApplyFailure.incompatible(compatibility.description) }
+        return ApplyRequest(appID: appID, accountID: accountID, id: id, source: source, detail: detail, compatibility: compatibility)
     }
     @MainActor static func create(_ layout: SteamInputCommunitySources.Layout, title: String, accountID: UInt32, root: URL) throws -> Self {
         let title = String(title.trimmingCharacters(in: .whitespacesAndNewlines).prefix(160))

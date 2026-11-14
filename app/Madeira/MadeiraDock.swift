@@ -930,6 +930,25 @@ enum DockSteamInputWire {
         try submitPrepared()
     }
 
+    /// A personal layout is the player's own stored bytes, named by its local
+    /// UUID. The caller read and validated them. It shares the journal
+    /// reservations, receipts, rollback and restart of every other choice;
+    /// Steam's own saved selection is never written, and no Steam selection key
+    /// is made up for it.
+    static func requestPersonal(appID: UInt32, accountID: UInt32, source: Data, id: UUID, detail: String) throws {
+        guard appID == self.appID, accountID == self.accountID, accountID > 0,
+              id.uuidString != baselineRestoreIdentity else { throw DockSteamInputJournal.Failure.invalid }
+        let choice = DockSteamInputSelection.Revision(source: .personal, identity: id.uuidString,
+            contentHash: DockSteamInputNative.contentHash(source), detail: detail)
+        if !canChange, canBootstrap {
+            try startBootstrap(source: source, choice: choice)
+            return
+        }
+        guard canChange, let baseline = workingBaseline() else { throw DockSteamInputJournal.Failure.busy }
+        _ = try prepareChoice(source: source, baseline: baseline, choice: choice)
+        try submitPrepared()
+    }
+
     /// An explicit, clearly generic choice; never labelled as the game's own.
     static func requestGenericTemplate(clientRoot: URL) throws {
         if !canChange, canBootstrap {

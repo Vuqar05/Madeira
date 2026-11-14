@@ -47,12 +47,15 @@ struct SteamInputCommunityView: View {
                 }
             }
             if !copies.isEmpty {
-                Section("Personal copies") {
+                Section("Personal layouts") {
                     ForEach(copies) { copy in
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(copy.title)
-                            Text(copy.origin.attribution).font(.caption).foregroundStyle(.secondary)
-                            if let url = try? copy.source(root: support) { ShareLink("Export original VDF", item: url) }
+                        NavigationLink {
+                            SteamInputPersonalDetail(appID: appID, copy: copy)
+                        } label: {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(copy.title)
+                                Text(copy.origin.attribution).font(.caption).foregroundStyle(.secondary)
+                            }
                         }
                     }
                 }
@@ -225,7 +228,7 @@ private struct SteamInputCommunityDetail: View {
                         do {
                             let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
                             _ = try SteamInputPersonalCopy.create(layout, title: copyTitle, accountID: accountID, root: support)
-                            message = "Saved a local personal VDF copy with its community attribution. Find it under Personal copies."
+                            message = "Saved a personal copy with its community attribution. Find it under Personal layouts, where it can be applied or exported."
                             failure = nil
                         } catch { failure = error.localizedDescription }
                     }.disabled(working || accountID == 0 || copyTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)

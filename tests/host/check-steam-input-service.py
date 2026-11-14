@@ -75,6 +75,7 @@ enum MadeiraDock {
 }
 enum SteamLog { static func event(_ text: String) {} }
 func require(_ test: @autoclosure () throws -> Bool, file: StaticString = #file, line: UInt = #line) { precondition(try! test(), file: file, line: line) }
+func require(_ test: @autoclosure () throws -> Bool, _ message: String, file: StaticString = #file, line: UInt = #line) { precondition(try! test(), message, file: file, line: line) }
 func put32(_ data: inout Data, _ at: Int, _ value: UInt32) {
     for i in 0..<4 { data[at+i] = UInt8(truncatingIfNeeded: value >> (8*i)) }
 }
@@ -809,7 +810,88 @@ func put32(_ data: inout Data, _ at: Int, _ value: UInt32) {
     require(DockSteamInputService.selection?.requested == nil && DockSteamInputService.activeChoice == nil)
     DockSteamInputService.end()
     DockSteamInputService.resolveSelectedWorkshop = nil
+    // A personal layout is applied by its local UUID through the same journal
+    // and C receipt, in a scope with no earlier choice, and Steam's selection is
+    // only observed.
+    let personalID = UUID(uuidString: "5B1C3B0E-9B7D-4C55-8C1A-0D6E2A7F4E11")!
+    let personalDetail = "My layout · personal copy of Fixture · Workshop 123"
+    DockSteamInputService.begin(accountID: 25, appID: 480)
+    let personalHex = String(cString: getenv("MADEIRA_DOCK_INPUT_SESSION"))
+    var personalFeed = fixture
+    for i in 0..<16 {
+        let start = personalHex.index(personalHex.startIndex, offsetBy: i*2)
+        personalFeed[8+i] = UInt8(personalHex[start..<personalHex.index(start, offsetBy: 2)], radix: 16)!
+    }
+    put32(&personalFeed, 36, 0); put32(&personalFeed, 40, 0); put32(&personalFeed, 52, 179)
+    try personalFeed.write(to: feedFile); DockSteamInputService.refresh()
+    try fm.removeItem(at: commandFile)
+    put32(&personalFeed, 36, 1); put32(&personalFeed, 40, 1)
+    try baselineFrame(personalFeed).write(to: baselineFile)
+    try personalFeed.write(to: feedFile); DockSteamInputService.refresh()
+    let beforePersonal = DockSteamInputService.selection
+    require(beforePersonal?.requested == nil && beforePersonal?.lastActivated == nil && DockSteamInputService.canChange)
+    let observedSteamSelection = beforePersonal?.observedSteamSelection
+    require(observedSteamSelection != nil)
+    for (app, account, id) in [(UInt32(481), UInt32(25), personalID), (480, 24, personalID), (480, 0, personalID),
+                               (480, 25, UUID(uuidString: DockSteamInputService.baselineRestoreIdentity)!)] {
+        do {
+            try DockSteamInputService.requestPersonal(appID: app, accountID: account, source: initialSource, id: id, detail: personalDetail)
+            fatalError("personal layout crossed its game, account or identity scope")
+        } catch DockSteamInputJournal.Failure.invalid {}
+        require(DockSteamInputService.selection == beforePersonal && DockSteamInputService.prepared == nil && !fm.fileExists(atPath: commandFile.path))
+    }
+    try DockSteamInputService.requestPersonal(appID: 480, accountID: 25, source: initialSource, id: personalID, detail: personalDetail)
+    require(DockSteamInputService.selection?.requested?.source == .personal && DockSteamInputService.activeChoice == nil)
+    require(DockSteamInputService.selection?.lastActivated == nil, "a request alone is not an activation")
+    let personalHost = Process(); personalHost.executableURL = testRoot.appendingPathComponent("fixture")
+    personalHost.arguments = ["receipt", payloadFile.path, receiptFile.path]
+    try personalHost.run(); personalHost.waitUntilExit(); require(personalHost.terminationStatus == 0)
+    try fm.removeItem(at: commandFile)
+    put32(&personalFeed, 36, 2); put32(&personalFeed, 44, 6)
+    try personalFeed.write(to: feedFile); DockSteamInputService.refresh()
+    let personalChoice = DockSteamInputSelection.Revision(source: .personal, identity: personalID.uuidString,
+        contentHash: DockSteamInputNative.contentHash(initialSource), detail: personalDetail)
+    require(DockSteamInputService.activeChoice == personalChoice, "the receipt confirms the personal layout by UUID and content hash")
+    require(DockSteamInputService.selection?.lastActivated == personalChoice && DockSteamInputService.selection?.requested == personalChoice)
+    require(DockSteamInputService.selection?.observedSteamSelection == observedSteamSelection, "Steam's own selection is observed, never rewritten")
+    let personalLines = DockSteamInputPresentation.lines(appID: 480, snapshot: DockSteamInputService.snapshot,
+        active: DockSteamInputService.activeChoice, selection: DockSteamInputService.selection)
+    require(personalLines.contains("Active: Personal layout.") && personalLines.contains("Source: \(personalDetail).")
+        && personalLines.contains("Default override: Personal layout."), "\(personalLines)")
+    let personalSelection = DockSteamInputService.selection!
+    DockSteamInputService.end()
+    require(try DockSteamInputSelection.load(in: storage, accountID: 25, appID: 480,
+        controllerID: DockSteamInputService.controllerID) == personalSelection, "the personal choice is persisted")
+    require(try DockSteamInputSelection.load(in: storage, accountID: 24, appID: 480,
+        controllerID: DockSteamInputService.controllerID).requested?.source != .personal, "another account's choice is untouched")
+    // A fresh launch reapplies the confirmed personal bytes from the journal,
+    // with a new revision and the new launch's rollback baseline.
+    DockSteamInputService.begin(accountID: 25, appID: 480)
+    let personalRestartHex = String(cString: getenv("MADEIRA_DOCK_INPUT_SESSION"))
+    require(personalRestartHex != personalHex)
+    for i in 0..<16 {
+        let start = personalRestartHex.index(personalRestartHex.startIndex, offsetBy: i*2)
+        personalFeed[8+i] = UInt8(personalRestartHex[start..<personalRestartHex.index(start, offsetBy: 2)], radix: 16)!
+    }
+    put32(&personalFeed, 36, 0); put32(&personalFeed, 40, 0)
+    try personalFeed.write(to: feedFile); DockSteamInputService.refresh()
+    require(DockSteamInputService.activeChoice == nil, "a new launch confirms nothing until its own receipt")
+    try fm.removeItem(at: commandFile)
+    put32(&personalFeed, 36, 1); put32(&personalFeed, 40, 1)
+    try baselineFrame(personalFeed).write(to: baselineFile)
+    try personalFeed.write(to: feedFile); DockSteamInputService.refresh()
+    require(DockSteamInputService.prepared != nil && DockSteamInputService.selection == personalSelection)
+    let restartPersonalHost = Process(); restartPersonalHost.executableURL = testRoot.appendingPathComponent("fixture")
+    restartPersonalHost.arguments = ["receipt", payloadFile.path, receiptFile.path]
+    try restartPersonalHost.run(); restartPersonalHost.waitUntilExit(); require(restartPersonalHost.terminationStatus == 0)
+    try fm.removeItem(at: commandFile)
+    put32(&personalFeed, 36, 2)
+    try personalFeed.write(to: feedFile); DockSteamInputService.refresh()
+    require(DockSteamInputService.activeChoice == personalChoice, "the personal layout is active again after a restart")
+    require(DockSteamInputService.selection == personalSelection)
+    DockSteamInputService.end()
     print("PASS: selected-Workshop resolver, scoped hash-bound recovery command and no manufactured explicit choice")
+    print("PASS: personal layout by UUID through journal and receipt, scope refusals, persistence and restart reapplication")
     print("PASS: community scope, raw source, persisted attribution, acceptance versus exact receipt acknowledgement")
     print("PASS: first-use bootstrap after interrupted earlier-launch work, and for an empty successful selection only")
     print("PASS: confirmed-choice restart, same-session reconnect recovery, held-input quiesce, fault/interruption recovery, fresh baseline/nonce validation, preservation of newer intent and C/Swift wire interoperability")
