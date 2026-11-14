@@ -146,7 +146,8 @@ private struct SteamInputCommunityDetail: View {
             Section("Inspection & Download") {
                 Button("Preview layout mappings") {
                     failure = nil; message = nil
-                    preview.requestPreview(appID: appID, item: item, sources: .shared)
+                    preview.requestPreview(appID: appID, item: item, sources: .shared,
+                                           actions: { await SteamOwnedLibrary.shared.steamInputActionNames(appID: $0) })
                 }.disabled(working)
                 Button(history.isEmpty ? "Download layout" : "Download listed revision") {
                     run {

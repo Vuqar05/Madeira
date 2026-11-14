@@ -166,14 +166,24 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
             }
         }
 
+        /// The `controller_action` commands Steam writes where nothing is bound.
+        static let emptyCommands: Set<String> = ["empty_binding", "empty_sub_command"]
+
         private static func presetNumber(_ text: String?) -> Int? {
             guard let text, let number = Int(text), number >= 1, String(number) == text else { return nil }
             return number
         }
 
-        /// What the binding does, without resolving the names of anything it refers to.
+        /// What the binding does followed by its label, without resolving the
+        /// names of anything it refers to.
         public var displayText: String {
-            var text: String
+            guard let label, !label.isEmpty else { return baseText }
+            return baseText + " (\(label))"
+        }
+
+        /// What the binding does, without its label.
+        public var baseText: String {
+            let text: String
             switch verb {
             case .xinputButton(let btn):
                 text = Self.formatPadButton(btn)
@@ -192,13 +202,11 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
             case .layerChange(let operation, let preset):
                 text = "\(Self.formatLayerOperation(operation)) (preset \(preset))"
             case .steamAction(let command, let args):
-                text = "Steam: " + ([command] + args).joined(separator: " ").replacingOccurrences(of: "_", with: " ").capitalized
+                text = Self.emptyCommands.contains(command.lowercased()) ? "Nothing bound"
+                    : "Steam: " + ([command] + args).joined(separator: " ").replacingOccurrences(of: "_", with: " ").capitalized
             case .unverified(let verb, let args):
                 let argStr = args.joined(separator: " ")
                 text = "Unverified: \(verb)\(argStr.isEmpty ? "" : " " + argStr) (\(rawString))"
-            }
-            if let label, !label.isEmpty {
-                text += " (\(label))"
             }
             return text
         }
@@ -323,6 +331,8 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
     public struct Input: Equatable, Sendable {
         public let name: String
         public let activators: [Activator]
+        /// Activators kept in the layout's `disabled_activators` block: written, but switched off.
+        public let disabledActivators: [Activator]
         /// Conditions on the enclosing `inputs` block, then on this input.
         public let conditions: [Condition]
 
@@ -348,7 +358,7 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
             case "button_back_left_upper": return "Rear Left Upper"
             case "button_back_right_upper": return "Rear Right Upper"
             case "button_capture": return "Capture"
-            case "edge": return "Outer Ring"
+            case "edge": return "Edge"
             case "dpad_north", "dpad_up": return "D-Pad Up"
             case "dpad_south", "dpad_down": return "D-Pad Down"
             case "dpad_west", "dpad_left": return "D-Pad Left"
@@ -378,6 +388,9 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
         public let conditions: [Condition]
         public let settings: [String: String]
         public let gameActions: [GameActionReference]
+        /// The author's own name and note for the group, when written.
+        public let name: String
+        public let description: String
 
         public func input(_ name: String) -> Input? {
             inputs.first { $0.name.caseInsensitiveCompare(name) == .orderedSame }
@@ -422,18 +435,31 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
         public let settings: [String: String]
     }
 
+    /// A game action a layout declares inside one of its action sets or
+    /// layers. Steam copies these from the game when it saves a layout; they
+    /// say which actions the layout was written for, not what the game has now.
+    public struct DeclaredAction: Equatable, Sendable {
+        public let id: String
+        /// The block it sits in: `StickPadGyro`, `AnalogTrigger` or `Button`.
+        public let kind: String
+        /// As written: a `#Token` or literal text.
+        public let title: String
+    }
+
     public struct ActionSet: Equatable, Identifiable, Sendable {
         public let id: String
         public let title: String
         public let isNative: Bool
         /// Conditions on the enclosing `actions` block, then on this set.
         public let conditions: [Condition]
+        public let declaredActions: [DeclaredAction]
 
-        public init(id: String, title: String, isNative: Bool, conditions: [Condition] = []) {
+        public init(id: String, title: String, isNative: Bool, conditions: [Condition] = [], declaredActions: [DeclaredAction] = []) {
             self.id = id
             self.title = title
             self.isNative = isNative
             self.conditions = conditions
+            self.declaredActions = declaredActions
         }
     }
 
@@ -443,12 +469,14 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
         public let parentSetID: String
         /// Conditions on the enclosing `action_layers` block, then on this layer.
         public let conditions: [Condition]
+        public let declaredActions: [DeclaredAction]
 
-        public init(id: String, title: String, parentSetID: String, conditions: [Condition] = []) {
+        public init(id: String, title: String, parentSetID: String, conditions: [Condition] = [], declaredActions: [DeclaredAction] = []) {
             self.id = id
             self.title = title
             self.parentSetID = parentSetID
             self.conditions = conditions
+            self.declaredActions = declaredActions
         }
     }
 
@@ -465,6 +493,12 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
     public let groupDefinitions: [Group]
     /// False when the layout has no `actions` block and `actionSets` was derived from its presets.
     public let declaresActionSets: Bool
+    /// The layout-wide `settings` block, as written. The values are not interpreted.
+    public let settings: [String: String]
+    /// The layout's own `localization` block: language → token without "#", lowercased → text.
+    public let localization: [String: [String: String]]
+    /// Descriptive properties Steam writes beside the title, such as `creator` and `Timestamp`.
+    public let metadata: [String: String]
     /// Conditions on the `controller_mappings` block itself.
     public let conditions: [Condition]
     /// Every condition in the interpreted layout, once each, in source order.
@@ -540,6 +574,36 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
             unrecognized.append(SteamInputLayoutModel.buildUnrecognized(node: node, parentPath: path, document: document))
         }
 
+        /// `StickPadGyro`, `AnalogTrigger` and `Button` blocks of a set or layer.
+        /// An action is a leaf (`"Jump" "#Title"`) or a block with a `title`.
+        mutating func declarations(_ entries: [VDFNode], kind: String, scope: String, path: String) -> [DeclaredAction] {
+            var found: [DeclaredAction] = []
+            for entry in entries {
+                switch entry {
+                case .leaf(let name, let value, _):
+                    let written = text(value)
+                    let title = written.split(separator: ",", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? written
+                    found.append(DeclaredAction(id: text(name), kind: kind, title: title.trimmingCharacters(in: .whitespaces)))
+                    note(entry, as: "Declared Action", in: scope)
+                case .block(let name, _, let properties, _, _):
+                    var title = ""
+                    for property in properties {
+                        guard case .leaf(let propertyKey, let propertyValue, _) = property else {
+                            uninterpreted(property, under: "\(path)/\(text(name))")
+                            continue
+                        }
+                        if key(propertyKey) == "title" { title = text(propertyValue) }
+                        note(property, as: "Property", in: "\(scope) › Declared Action '\(text(name))'")
+                    }
+                    found.append(DeclaredAction(id: text(name), kind: kind, title: title))
+                    note(entry, as: "Declared Action", in: scope)
+                case .standaloneComment, .directive:
+                    break
+                }
+            }
+            return found
+        }
+
         mutating func actionSets(_ children: [VDFNode], container: [Condition]) -> [ActionSet] {
             var sets: [ActionSet] = []
             for child in children {
@@ -552,7 +616,13 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
                 let own = conditions(tokens, scope: scope, slug: "set-\(id)", in: "")
                 var title = id
                 var isNative = false
+                var declared: [DeclaredAction] = []
                 for prop in props {
+                    if case .block(let blockKey, _, let entries, _, _) = prop, ["stickpadgyro", "analogtrigger", "button"].contains(key(blockKey)) {
+                        note(prop, as: "Block", in: scope)
+                        declared += declarations(entries, kind: text(blockKey), scope: scope, path: "controller_mappings/actions/\(id)/\(text(blockKey))")
+                        continue
+                    }
                     guard case .leaf(let propKey, let propValue, _) = prop else {
                         uninterpreted(prop, under: "controller_mappings/actions/\(id)")
                         continue
@@ -566,7 +636,7 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
                     }
                     note(prop, as: "Property", in: scope)
                 }
-                sets.append(ActionSet(id: id, title: title, isNative: isNative, conditions: container + own))
+                sets.append(ActionSet(id: id, title: title, isNative: isNative, conditions: container + own, declaredActions: declared))
             }
             return sets
         }
@@ -583,7 +653,13 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
                 let own = conditions(tokens, scope: scope, slug: "layer-\(id)", in: "")
                 var title = id
                 var parentSet = ""
+                var declared: [DeclaredAction] = []
                 for prop in props {
+                    if case .block(let blockKey, _, let entries, _, _) = prop, ["stickpadgyro", "analogtrigger", "button"].contains(key(blockKey)) {
+                        note(prop, as: "Block", in: scope)
+                        declared += declarations(entries, kind: text(blockKey), scope: scope, path: "controller_mappings/action_layers/\(id)/\(text(blockKey))")
+                        continue
+                    }
                     guard case .leaf(let propKey, let propValue, _) = prop else {
                         uninterpreted(prop, under: "controller_mappings/action_layers/\(id)")
                         continue
@@ -591,13 +667,15 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
                     switch key(propKey) {
                     case "title": title = text(propValue)
                     case "parent_set_name": parentSet = text(propValue)
+                    // Steam marks every layer with these two; they add nothing to what is shown.
+                    case "legacy_set", "set_layer": break
                     default:
                         uninterpreted(prop, under: "controller_mappings/action_layers/\(id)")
                         continue
                     }
                     note(prop, as: "Property", in: scope)
                 }
-                layers.append(ActionLayer(id: id, title: title, parentSetID: parentSet, conditions: container + own))
+                layers.append(ActionLayer(id: id, title: title, parentSetID: parentSet, conditions: container + own, declaredActions: declared))
             }
             return layers
         }
@@ -613,12 +691,16 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
             var inputs: [Input] = []
             var settings: [String: String] = [:]
             var gameActions: [GameActionReference] = []
+            var groupName = ""
+            var groupDescription = ""
             for child in children {
                 switch child {
                 case .leaf(let leafKey, let leafValue, _):
                     switch key(leafKey) {
                     case "id": break
                     case "mode": mode = text(leafValue)
+                    case "name": groupName = text(leafValue)
+                    case "description": groupDescription = text(leafValue)
                     default:
                         uninterpreted(child, under: path)
                         continue
@@ -664,7 +746,8 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
                 }
             }
             guard !id.isEmpty else { return nil }
-            return Group(id: id, mode: mode, inputs: inputs, conditions: own, settings: settings, gameActions: gameActions)
+            return Group(id: id, mode: mode, inputs: inputs, conditions: own, settings: settings, gameActions: gameActions,
+                         name: groupName, description: groupDescription)
         }
 
         mutating func input(_ name: String, _ body: [VDFNode], tokens: [VDFToken], container: [Condition],
@@ -675,22 +758,28 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
             let slug = "\(groupSlug)-\(name)"
             let own = conditions(tokens, scope: scope, slug: "input-\(slug)", in: groupScope)
             var activators: [Activator] = []
+            var disabled: [Activator] = []
             for child in body {
-                guard case .block(let blockKey, _, let entries, _, let blockTokens) = child, key(blockKey) == "activators" else {
+                guard case .block(let blockKey, _, let entries, _, let blockTokens) = child,
+                      ["activators", "disabled_activators"].contains(key(blockKey)) else {
                     uninterpreted(child, under: path)
                     continue
                 }
-                let activatorContainer = conditions(blockTokens, scope: "Activators Container", slug: "activators-\(slug)", in: location)
+                let isDisabled = key(blockKey) == "disabled_activators"
+                let activatorContainer = conditions(blockTokens, scope: isDisabled ? "Disabled Activators Container" : "Activators Container",
+                                                    slug: "\(isDisabled ? "disabled-" : "")activators-\(slug)", in: location)
                 for entry in entries {
                     guard case .block(let kindKey, _, let props, _, let kindTokens) = entry else {
-                        uninterpreted(entry, under: "\(path)/activators")
+                        uninterpreted(entry, under: "\(path)/\(key(blockKey))")
                         continue
                     }
-                    activators.append(activator(text(kindKey), props, tokens: kindTokens, container: activatorContainer,
-                                                inputLocation: location, inputPath: path, inputSlug: slug))
+                    let parsed = activator(text(kindKey), props, tokens: kindTokens, container: activatorContainer,
+                                           inputLocation: location, inputPath: isDisabled ? "\(path)/disabled_activators" : path,
+                                           inputSlug: isDisabled ? "\(slug)-disabled" : slug)
+                    if isDisabled { disabled.append(parsed) } else { activators.append(parsed) }
                 }
             }
-            return Input(name: name, activators: activators, conditions: container + own)
+            return Input(name: name, activators: activators, disabledActivators: disabled, conditions: container + own)
         }
 
         mutating func activator(_ kind: String, _ props: [VDFNode], tokens: [VDFToken], container: [Condition],
@@ -751,6 +840,18 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
                     if property != "id", property != "name" { settings[property] = text(leafValue) }
                     note(child, as: "Property", in: scope)
                 case .block(let blockKey, _, let entries, _, let blockTokens):
+                    if key(blockKey) == "settings" {
+                        note(child, as: "Block", in: scope)
+                        for entry in entries {
+                            guard case .leaf(let settingKey, let settingValue, _) = entry else {
+                                uninterpreted(entry, under: "\(path)/settings")
+                                continue
+                            }
+                            settings[key(settingKey)] = text(settingValue)
+                            note(entry, as: "Setting", in: scope)
+                        }
+                        continue
+                    }
                     guard key(blockKey) == "group_source_bindings" else {
                         uninterpreted(child, under: path)
                         continue
@@ -801,6 +902,11 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
         var parsedPresets: [Preset] = []
         var parsedGroups: [Group] = []
         var declaresSets = false
+        var parsedSettings: [String: String] = [:]
+        var parsedLocalization: [String: [String: String]] = [:]
+        var parsedMetadata: [String: String] = [:]
+        let metadataKeys: Set<String> = ["creator", "progenitor", "url", "export_type", "controller_caps",
+                                         "major_revision", "minor_revision", "timestamp", "game"]
 
         for child in mappingChildren {
             switch child {
@@ -812,6 +918,7 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
                 case "version": parsedVersion = Int(v) ?? 3
                 case "revision": parsedRevision = UInt32(v) ?? 0
                 case "controller_type": parsedControllerType = v
+                case let name where metadataKeys.contains(name): parsedMetadata[name] = v
                 default:
                     builder.uninterpreted(child, under: "controller_mappings")
                     continue
@@ -830,6 +937,35 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
                     if let group = builder.group(blockChildren, tokens: blockTokens) { parsedGroups.append(group) }
                 case "preset":
                     parsedPresets.append(builder.preset(blockChildren, tokens: blockTokens))
+                case "settings":
+                    builder.note(child, as: "Block", in: "")
+                    for entry in blockChildren {
+                        guard case .leaf(let settingKey, let settingValue, _) = entry else {
+                            builder.uninterpreted(entry, under: "controller_mappings/settings")
+                            continue
+                        }
+                        parsedSettings[builder.key(settingKey)] = builder.text(settingValue)
+                        builder.note(entry, as: "Setting", in: "Layout Settings")
+                    }
+                case "localization":
+                    builder.note(child, as: "Block", in: "")
+                    for language in blockChildren {
+                        guard case .block(let languageKey, _, let entries, _, _) = language else {
+                            builder.uninterpreted(language, under: "controller_mappings/localization")
+                            continue
+                        }
+                        builder.note(language, as: "Language", in: "Localization")
+                        var table = parsedLocalization[builder.key(languageKey)] ?? [:]
+                        for entry in entries {
+                            guard case .leaf(let token, let value, _) = entry else {
+                                builder.uninterpreted(entry, under: "controller_mappings/localization/\(builder.text(languageKey))")
+                                continue
+                            }
+                            if table[builder.key(token)] == nil { table[builder.key(token)] = builder.text(value) }
+                            builder.note(entry, as: "Text", in: "Localization › \(builder.text(languageKey))")
+                        }
+                        parsedLocalization[builder.key(languageKey)] = table
+                    }
                 default:
                     builder.uninterpreted(child, under: "controller_mappings")
                 }
@@ -864,8 +1000,24 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
         self.presets = parsedPresets
         self.groupDefinitions = parsedGroups
         self.declaresActionSets = declaresSets
+        self.settings = parsedSettings
+        self.localization = parsedLocalization
+        self.metadata = parsedMetadata
         self.conditionSites = builder.sites
         self.unrecognizedEntries = builder.unrecognized
+    }
+
+    /// Text the layout itself supplies for one of its own `#Token`s: English,
+    /// then the first other language (by name) that has it. Text that is not
+    /// a token is returned as written; nil when the layout names nothing.
+    public func localized(_ text: String) -> String? {
+        guard text.hasPrefix("#") else { return text.isEmpty ? nil : text }
+        let token = String(text.dropFirst()).lowercased()
+        if let found = localization["english"]?[token], !found.isEmpty { return found }
+        for language in localization.keys.sorted() {
+            if let found = localization[language]?[token], !found.isEmpty { return found }
+        }
+        return nil
     }
 
     /// What an id resolves to. A reference is usable only when exactly one

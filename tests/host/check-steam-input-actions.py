@@ -424,7 +424,7 @@ func snapshot(_ url: URL) throws -> [String: String] {
         catch let error as SteamInputReferenceError { require(!(error.errorDescription ?? "").isEmpty) }
         // A read-only preview of the same broken layout still opens and names every problem.
         payload = several; current = item(3, several)
-        let preview = try await sources.preview(appID: 480, item: current)
+        let preview = try await sources.preview(appID: 480, item: current, actions: .notInstalled)
         let shown = preview.diagnoses.filter { $0.id.hasPrefix("diag-reference-") }
         require(shown.allSatisfy { $0.category == .unresolvedReference })
         require(shown.map(\.detail) == severalFound.map(\.reason) && Set(shown.map(\.id)).count == 3, "the preview lists the same problems apply validation refuses")

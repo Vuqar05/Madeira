@@ -645,8 +645,7 @@ accepted, and nothing here has run on a device):
   uses, covered through that helper and through the real session.
 
 Still outstanding in this milestone: interactive editing UI, personal-layout
-identities and revision lifecycle, showing the resolved action names and
-mode-shift contents in the preview, apply integration for personal layouts, and
+identities and revision lifecycle, apply integration for personal layouts, and
 physical validation of everything in this milestone.
 
 Host checks: `tests/host/check-steam-input-vdf.py` and
@@ -705,6 +704,54 @@ host-tested, not run on a device, checkbox left open until device acceptance):
   check. Rejection of conditional layouts and the unsupported-input report are
   unchanged.
 - Host check: `tests/host/check-steam-input-actions.py`.
+
+Item 2, read-only community preview (2026-11-14; implemented and host-tested,
+not run on a device, checkbox left open until device acceptance). This
+supersedes the initial slice's description of what the preview shows:
+
+- Named actions. A `game_action` binding and a group's analog `gameactions`
+  entry show the game's own name when the installed game's action manifest
+  declares the action. An action the manifest does not declare stays a visible
+  `set › action` reference marked unresolved, and one diagnosis lists those
+  actions. Without a manifest (game not installed, app data not cached, no
+  bundled manifest, or an unreadable one) every game action stays an unresolved
+  reference, one diagnosis gives the reason, and the compatibility badge is
+  withheld. The binding's own label is still shown. Set and layer titles come
+  from the manifest when it declares them, otherwise from the layout's own
+  `localization` block, otherwise as written.
+- Mode shifts. A `mode_shift` binding names its source and the shifted group's
+  mode and lists that group's own mappings beneath it, built by the same code
+  as any other group. A group a preset marks `modeshift` is no longer shown as
+  a base mapping of its source. One that no shown binding switches to (a
+  layer's replacement for its parent's mode shift) is listed in its own
+  “(Mode Shift)” section rather than hidden. A mode shift back into a group
+  already being shown is named and not expanded again.
+- Action sets and layers. `CHANGE_PRESET` and the layer bindings show the
+  title of the set or layer they switch to. A missing or duplicated target is
+  shown as such and marked unresolved, in step with the reference check.
+- Rest of the format. Layout metadata, the layout's `localization`, the action
+  declarations Steam copies into `actions` and `action_layers`, group names and
+  descriptions and `disabled_activators` are read instead of being listed as
+  uninterpreted; disabled activators are shown as switched off. Layout-wide and
+  preset `settings` are listed as written and labelled as not interpreted.
+  Other `controller_action` bindings are shown as Steam actions with one
+  diagnosis saying Madeira has not verified them. Rear-button detection uses
+  the same names as apply validation. Each row names its physical source.
+- What is still only identified, not interpreted: version 2 layouts (16 of the
+  139 sampled; a diagnosis names the format and their group-level `bindings`,
+  `switch_bindings` and root `group_source_bindings` are listed as written),
+  `touch_layout`, a `Layers` block inside an action set, and the meaning of
+  setting values. Action names are shown in English when the manifest has
+  English text, otherwise in the first other language that has the text.
+- Guarantees kept. The preview fetches the layout into memory, reads the game's
+  manifest read-only and writes nothing; saved downloads, personal copies, the
+  selection journal and the active layout are untouched on success, failure,
+  cancellation and dismissal. The action names are read inside the same
+  superseded-request guard as the layout, so a late answer publishes nothing.
+- Against the 139 sampled layouts the preview produces no unverified binding,
+  expands all 29 mode shifts, and yields distinct row identifiers throughout.
+- Host check: `tests/host/check-steam-input-preview.py`. The SwiftUI sheet is
+  pinned by source checks and has not been exercised on a device.
 
 Done when: a player creates a layout, changes a recognizable binding, uses it in
 the running game, restarts and gets the same result. Export/import preserves

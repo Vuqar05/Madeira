@@ -40,6 +40,12 @@ public struct SteamInputPreviewView: View {
                     .padding(.vertical, 4)
                 }
 
+                if let note = preview.actionNameNote {
+                    Section("Game Actions") {
+                        Text(note).font(.callout).foregroundStyle(.secondary)
+                    }
+                }
+
                 if !preview.diagnoses.isEmpty {
                     diagnosticsSection
                 }
@@ -71,6 +77,22 @@ public struct SteamInputPreviewView: View {
                         }
                     }
                 }
+
+                if !preview.layoutSettings.isEmpty {
+                    Section {
+                        ForEach(preview.layoutSettings) { setting in
+                            HStack {
+                                Text(setting.key).font(.caption.monospaced())
+                                Spacer()
+                                Text(setting.value).font(.caption.monospaced()).foregroundStyle(.secondary)
+                            }
+                        }
+                    } header: {
+                        Text("Layout Settings")
+                    } footer: {
+                        Text("Shown as the layout writes them. This preview does not interpret their values; Steam Input does.")
+                    }
+                }
             }
             .navigationTitle("Layout Preview")
             .navigationBarTitleDisplayMode(.inline)
@@ -98,14 +120,20 @@ public struct SteamInputPreviewView: View {
         }
     }
 
-    @ViewBuilder
-    private func inputRow(_ input: SteamInputPreviewData.InputMappingView) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
+    /// A mode shift nests the shifted group's own rows, which may hold another
+    /// mode shift, so the row is type-erased to let the view recurse.
+    private func inputRow(_ input: SteamInputPreviewData.InputMappingView) -> AnyView {
+        AnyView(VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text(input.inputName).font(.body.weight(.medium))
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(input.inputName).font(.body.weight(.medium))
+                    if let source = input.sourceName {
+                        Text(source).font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
                 Spacer()
                 if input.isMissingReference {
-                    BadgeView(text: "Missing Group", color: .red)
+                    BadgeView(text: "Unresolved Group", color: .red)
                 }
                 if input.isLayerOverride {
                     BadgeView(text: "Layer Override", color: .purple)
@@ -135,15 +163,21 @@ public struct SteamInputPreviewView: View {
                     conditionBadges(act.conditions.dropFirst(input.conditions.count))
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
                         Text(act.kind).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                        if act.isDisabled { BadgeView(text: "Disabled", color: .gray) }
                         if act.toggle { BadgeView(text: "Toggle", color: .secondary) }
                         if act.turbo { BadgeView(text: "Turbo", color: .secondary) }
                         VStack(alignment: .leading, spacing: 2) {
                             ForEach(act.bindings) { b in
                                 HStack(spacing: 4) {
                                     Text(b.displayText).font(.callout)
+                                        .foregroundStyle(act.isDisabled ? Color.secondary : Color.primary)
                                     outputCategoryBadge(b.category)
+                                    if b.isUnresolved { BadgeView(text: "Unresolved", color: .red) }
                                 }
                                 conditionBadges(b.conditions.dropFirst(act.conditions.count))
+                                if let shift = b.modeShift {
+                                    modeShiftRows(shift)
+                                }
                             }
                         }
                     }
@@ -157,7 +191,20 @@ public struct SteamInputPreviewView: View {
                 }
             }
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, 2))
+    }
+
+    /// What the source does while the mode shift is held: the shifted group's rows.
+    private func modeShiftRows(_ shift: SteamInputPreviewData.ModeShiftView) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("While held, \(shift.source.lowercased()) uses group \(shift.groupID) (\(shift.groupTitle)):")
+                .font(.caption).foregroundStyle(.secondary)
+            ForEach(shift.inputs) { input in
+                inputRow(input)
+            }
+        }
+        .padding(.leading, 10)
+        .overlay(alignment: .leading) { Rectangle().fill(Color.teal.opacity(0.5)).frame(width: 2) }
     }
 
     /// One badge per condition, scope first, in nesting order. Conditions are

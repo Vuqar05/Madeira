@@ -668,7 +668,7 @@ final class StubTransport: URLProtocol, @unchecked Sendable {
         payloadToDownload = multiSetVDF
         let itemMulti = makeItem(id: 2001, size: multiSetVDF.count)
         itemLookup[itemMulti.id] = itemMulti
-        let previewMulti = try await sources.preview(appID: 480, item: itemMulti)
+        let previewMulti = try await sources.preview(appID: 480, item: itemMulti, actions: .notInstalled)
 
         require(previewMulti.actionSets.count == 2, "must resolve 2 action sets")
         let gameSet = previewMulti.actionSets.first { $0.id == "Game" }!
@@ -688,7 +688,7 @@ final class StubTransport: URLProtocol, @unchecked Sendable {
         payloadToDownload = layerVDF
         let itemLayer = makeItem(id: 2002, size: layerVDF.count)
         itemLookup[itemLayer.id] = itemLayer
-        let previewLayer = try await sources.preview(appID: 480, item: itemLayer)
+        let previewLayer = try await sources.preview(appID: 480, item: itemLayer, actions: .notInstalled)
 
         require(previewLayer.actionSets.count == 2, "has base set and layer")
         let sniperLayer = previewLayer.actionSets.first { $0.id == "Sniper" }!
@@ -716,7 +716,7 @@ final class StubTransport: URLProtocol, @unchecked Sendable {
         payloadToDownload = inactiveGyroVDF
         let itemInactiveGyro = makeItem(id: 2003, size: inactiveGyroVDF.count)
         itemLookup[itemInactiveGyro.id] = itemInactiveGyro
-        let previewInactiveGyro = try await sources.preview(appID: 480, item: itemInactiveGyro)
+        let previewInactiveGyro = try await sources.preview(appID: 480, item: itemInactiveGyro, actions: .notInstalled)
         require(!previewInactiveGyro.diagnoses.contains { $0.id == "diag-gyro" }, "inactive gyro binding must NOT trigger gyro hardware warning")
         let hwDiags = previewInactiveGyro.diagnoses.filter { $0.category == .unavailableHardware }
         require(hwDiags.isEmpty, "no unavailable hardware diagnoses when gyro is inactive")
@@ -725,7 +725,7 @@ final class StubTransport: URLProtocol, @unchecked Sendable {
         payloadToDownload = activeGyroVDF
         let itemActiveGyro = makeItem(id: 2004, size: activeGyroVDF.count)
         itemLookup[itemActiveGyro.id] = itemActiveGyro
-        let previewActiveGyro = try await sources.preview(appID: 480, item: itemActiveGyro)
+        let previewActiveGyro = try await sources.preview(appID: 480, item: itemActiveGyro, actions: .notInstalled)
         require(previewActiveGyro.diagnoses.contains { $0.id == "diag-gyro" }, "active gyro binding MUST trigger gyro hardware diagnosis")
 
         // =============================================================
@@ -734,7 +734,7 @@ final class StubTransport: URLProtocol, @unchecked Sendable {
         payloadToDownload = unknownContentVDF
         let itemUnknown = makeItem(id: 2005, size: unknownContentVDF.count)
         itemLookup[itemUnknown.id] = itemUnknown
-        let previewUnknown = try await sources.preview(appID: 480, item: itemUnknown)
+        let previewUnknown = try await sources.preview(appID: 480, item: itemUnknown, actions: .notInstalled)
 
         require(previewUnknown.uninterpretedEntries.count >= 4, "captures custom block, settings, and repeated unknown keys")
         let vendorBlock = previewUnknown.uninterpretedEntries.first { $0.key == "custom_vendor_block" }
@@ -758,7 +758,7 @@ final class StubTransport: URLProtocol, @unchecked Sendable {
         payloadToDownload = missingGroupVDF
         let itemMissing = makeItem(id: 2006, size: missingGroupVDF.count)
         itemLookup[itemMissing.id] = itemMissing
-        let previewMissing = try await sources.preview(appID: 480, item: itemMissing)
+        let previewMissing = try await sources.preview(appID: 480, item: itemMissing, actions: .notInstalled)
 
         require(!previewMissing.isFullyCompatible, "missing group reference makes layout incompatible")
         let missingDiags = previewMissing.diagnoses.filter { $0.category == .unresolvedReference && $0.title == "Missing Group 999" }
@@ -773,7 +773,7 @@ final class StubTransport: URLProtocol, @unchecked Sendable {
         payloadToDownload = strictResolutionVDF
         let itemStrict = makeItem(id: 2007, size: strictResolutionVDF.count)
         itemLookup[itemStrict.id] = itemStrict
-        let previewStrict = try await sources.preview(appID: 480, item: itemStrict)
+        let previewStrict = try await sources.preview(appID: 480, item: itemStrict, actions: .notInstalled)
 
         require(!previewStrict.isFullyCompatible, "unresolved preset makes layout incompatible")
         let unresPresetDiags = previewStrict.diagnoses.filter { $0.id == "diag-unres-set-preset-Other" }
@@ -791,7 +791,7 @@ final class StubTransport: URLProtocol, @unchecked Sendable {
         payloadToDownload = setOnlyCondVDF
         let itemSetCond = makeItem(id: 2008, size: setOnlyCondVDF.count)
         itemLookup[itemSetCond.id] = itemSetCond
-        let previewSetCond = try await sources.preview(appID: 480, item: itemSetCond)
+        let previewSetCond = try await sources.preview(appID: 480, item: itemSetCond, actions: .notInstalled)
 
         require(!previewSetCond.isFullyCompatible, "conditional action set makes layout incompatible")
         let setDiags = previewSetCond.diagnoses.filter { $0.id.contains("diag-cond-set-Game") }
@@ -804,7 +804,7 @@ final class StubTransport: URLProtocol, @unchecked Sendable {
         payloadToDownload = layerOnlyCondVDF
         let itemLayerCond = makeItem(id: 2009, size: layerOnlyCondVDF.count)
         itemLookup[itemLayerCond.id] = itemLayerCond
-        let previewLayerCond = try await sources.preview(appID: 480, item: itemLayerCond)
+        let previewLayerCond = try await sources.preview(appID: 480, item: itemLayerCond, actions: .notInstalled)
 
         require(!previewLayerCond.isFullyCompatible, "conditional action layer makes layout incompatible")
         let layerDiags = previewLayerCond.diagnoses.filter { $0.id.contains("diag-cond-layer-Sniper") }
@@ -817,7 +817,7 @@ final class StubTransport: URLProtocol, @unchecked Sendable {
         payloadToDownload = multiLevelCondVDF
         let itemNestedCond = makeItem(id: 2010, size: multiLevelCondVDF.count)
         itemLookup[itemNestedCond.id] = itemNestedCond
-        let previewNestedCond = try await sources.preview(appID: 480, item: itemNestedCond)
+        let previewNestedCond = try await sources.preview(appID: 480, item: itemNestedCond, actions: .notInstalled)
 
         require(!previewNestedCond.isFullyCompatible, "multi-level conditional layout is incompatible")
         let nestedDiags = previewNestedCond.diagnoses.filter { $0.title.contains("Condition") }
@@ -842,7 +842,7 @@ final class StubTransport: URLProtocol, @unchecked Sendable {
 
         // 7d. Container AND child conditions at every attachment point
         func buildPreview(_ text: String) throws -> SteamInputPreviewData {
-            SteamInputPreviewData(model: try SteamInputLayoutModel(document: try VDFDocument.parse(Data(text.utf8))))
+            SteamInputPreviewData(model: try SteamInputLayoutModel(document: try VDFDocument.parse(Data(text.utf8))), actions: .notInstalled)
         }
         func pairs(_ conditions: [SteamInputPreviewData.SourceCondition]) -> [String] {
             conditions.map { "\($0.scope)=\($0.expression)" }
@@ -869,7 +869,7 @@ final class StubTransport: URLProtocol, @unchecked Sendable {
             "[$INPUTS_BOX]", "[$INPUT]", "[$ACTIVATORS_BOX]", "[$ACTIVATOR]", "[$BINDINGS_BOX]", "[$BINDING_LEAF]", "[$SOURCES_BOX]", "[$SOURCE_LEAF]",
         ], "each condition is recorded once, in source order")
 
-        let pairedPreview = SteamInputPreviewData(model: pairedModel)
+        let pairedPreview = SteamInputPreviewData(model: pairedModel, actions: .notInstalled)
         let pairedInput = firstInput(pairedPreview)
         require(pairs(pairedInput.conditions) == Array(pairedChain[0..<4]), "input row carries every enclosing condition with its scope")
         require(pairs(pairedInput.activators[0].conditions) == Array(pairedChain[0..<6]), "activator row carries every enclosing condition with its scope")
@@ -926,6 +926,278 @@ final class StubTransport: URLProtocol, @unchecked Sendable {
         for expression in pairedExpressions {
             require(applyValidation(keeping(expression)) == nil, "apply validation still rejects a layout whose only condition is \(expression)")
         }
+
+        // =============================================================
+        // TEST 13: Named Actions, Mode Shifts, Set and Layer Changes (the grammar Steam writes)
+        // =============================================================
+        func nativeLayout(bumper: String = "mode_shift right_joystick 5, Weapon wheel, ",
+                          escape: String = "controller_action CHANGE_PRESET 2 1 1, , ", extra: String = "") -> String {
+            """
+            "controller_mappings"
+            {
+                "version" "3"
+                "revision" "12"
+                "title" "#Title"
+                "description" "#Description"
+                "creator" "0"
+                "controller_type" "controller_ps5"
+                "Timestamp" "1700000000"
+                "major_revision" "0"
+                "minor_revision" "0"
+                "actions"
+                {
+                    "InGame"
+                    {
+                        "title" "#Set_Ingame"
+                        "legacy_set" "0"
+                        "StickPadGyro" { "Move" { "title" "#Action_Move" "input_mode" "joystick_move" } }
+                        "Button" { "Jump" "#Action_Jump" "Removed" "#Action_Removed" }
+                    }
+                    "Menu" { "title" "Menu" "legacy_set" "0" }
+                }
+                "action_layers"
+                {
+                    "Driving" { "title" "#Layer_Driving" "legacy_set" "0" "set_layer" "1" "parent_set_name" "InGame" }
+                }
+                "localization"
+                {
+                    "english"
+                    {
+                        "Title" "Named Layout"
+                        "Description" "From the layout's own localization"
+                        "Set_Ingame" "In Game (layout)"
+                        "Layer_Driving" "Driving (layout)"
+                        "Action_Jump" "Jump"
+                    }
+                }
+                "group"
+                {
+                    "id" "0"
+                    "mode" "four_buttons"
+                    "name" "Face"
+                    "description" "Face buttons"
+                    "inputs"
+                    {
+                        "button_a" { "activators" { "Full_Press" { "bindings" { "binding" "game_action InGame Jump, #Action_Jump, " } } } "disabled_activators" { } }
+                        "button_b" { "activators" { "Full_Press" { "bindings" { "binding" "game_action InGame Removed, Old action, " } } } }
+                        "button_x" { "activators" { "Full_Press" { "bindings" { "binding" "key_press E, Use, " } } } }
+                        "button_y" { "activators" { "Full_Press" { "bindings" { "binding" "controller_action SHOW_KEYBOARD, , " } } } }
+                    }
+                }
+                "group"
+                {
+                    "id" "1"
+                    "mode" "joystick_move"
+                    "gameactions" { "InGame" "Move" }
+                    "settings" { "deadzone_inner_radius" "7199" }
+                }
+                "group" { "id" "2" "mode" "joystick_mouse" }
+                "group"
+                {
+                    "id" "3"
+                    "mode" "switches"
+                    "inputs"
+                    {
+                        "left_bumper" { "activators" { "Full_Press" { "bindings" { "binding" "\(bumper)" } } } }
+                        "button_escape" { "activators" { "Full_Press" { "bindings" { "binding" "\(escape)" } } } }
+                        "button_menu" { "activators" { "Full_Press" { "bindings" { "binding" "controller_action add_layer 3 0 0, , " } } } }
+                        "right_bumper"
+                        {
+                            "activators" { "Full_Press" { "bindings" { "binding" "xinput_button A, , " } } }
+                            "disabled_activators" { "Long_Press" { "bindings" { "binding" "xinput_button B, , " } } }
+                        }
+                        "button_capture" { "activators" { "Full_Press" { "bindings" { "binding" "controller_action empty_binding" } } } }
+                    }
+                }
+                "group"
+                {
+                    "id" "5"
+                    "mode" "dpad"
+                    "inputs"
+                    {
+                        "dpad_north" { "activators" { "Full_Press" { "bindings" { "binding" "key_press 1, Weapon 1, " } } } }
+                        "dpad_south" { "activators" { "Full_Press" { "bindings" { "binding" "mode_shift right_joystick 5" } } } }
+                    }
+                }
+                "group" { "id" "6" "mode" "four_buttons" "inputs" { "button_a" { "activators" { "Full_Press" { "bindings" { "binding" "controller_action CHANGE_PRESET 1 1 1, Back, " } } } } } }
+                "group" { "id" "7" "mode" "four_buttons" "inputs" { "button_b" { "activators" { "Full_Press" { "bindings" { "binding" "controller_action remove_layer 3 0 0, Stop, " } } } } } }
+                "group" { "id" "8" "mode" "dpad" "inputs" { "dpad_north" { "activators" { "Full_Press" { "bindings" { "binding" "key_press H, Horn, " } } } } } }
+                "preset"
+                {
+                    "id" "0"
+                    "name" "InGame"
+                    "group_source_bindings"
+                    {
+                        "0" "button_diamond active"
+                        "1" "joystick active"
+                        "2" "right_joystick active"
+                        "3" "switch active"
+                        "5" "right_joystick active modeshift"
+                    }
+                }
+                "preset" { "id" "1" "name" "Menu" "group_source_bindings" { "6" "button_diamond active" } }
+                "preset" { "id" "2" "name" "Driving" "group_source_bindings" { "7" "button_diamond active" "8" "right_joystick active modeshift" } }
+                "settings" { "left_trackpad_mode" "0" "action_set_trigger_cursor_show" "1" }
+                \(extra)
+            }
+            """
+        }
+        let gameManifest = try SteamInputActionManifest(Data("""
+        "Action Manifest"
+        {
+            "actions"
+            {
+                "InGame"
+                {
+                    "title" "#Set_Ingame"
+                    "StickPadGyro" { "Move" { "title" "#Action_Move" "input_mode" "joystick_move" } }
+                    "Button" { "Jump" "#Action_Jump" }
+                }
+                "Menu" { "title" "#Set_Menu" }
+            }
+            "action_layers" { "Driving" { "title" "#Layer_Driving" "parent_set_name" "InGame" } }
+            "localization" { "english" { "Set_Ingame" "On Foot" "Set_Menu" "Menus" "Layer_Driving" "Driving" "Action_Move" "Move" "Action_Jump" "Jump" } }
+        }
+        """.utf8))
+        typealias Row = SteamInputPreviewData.InputMappingView
+        func previewNative(_ text: String, _ names: SteamInputActionNames) throws -> SteamInputPreviewData {
+            SteamInputPreviewData(model: try SteamInputLayoutModel(document: try VDFDocument.parse(Data(text.utf8))), actions: names)
+        }
+        func row(_ preview: SteamInputPreviewData, set: String, region: String, _ name: String) -> Row {
+            guard let found = preview.actionSets.first(where: { $0.id == set })?.regions.first(where: { $0.id == region })?.inputs.first(where: { $0.inputName == name }) else {
+                fatalError("no row \(name) in \(set)/\(region): \(preview.actionSets.first { $0.id == set }?.regions.map { "\($0.id): \($0.inputs.map(\.inputName))" } ?? [])")
+            }
+            return found
+        }
+        func only(_ row: Row) -> SteamInputPreviewData.BindingView {
+            require(row.activators.count == 1 && row.activators[0].bindings.count == 1, "\(row.inputName) has one binding")
+            return row.activators[0].bindings[0]
+        }
+        /// Every list the view iterates has distinct identifiers, at any depth.
+        func distinctIDs(_ preview: SteamInputPreviewData) -> Bool {
+            func rows(_ inputs: [Row]) -> Bool {
+                Set(inputs.map(\.id)).count == inputs.count && inputs.allSatisfy { input in
+                    Set(input.activators.map(\.id)).count == input.activators.count && input.activators.allSatisfy { activator in
+                        Set(activator.bindings.map(\.id)).count == activator.bindings.count
+                            && activator.bindings.allSatisfy { $0.modeShift.map { rows($0.inputs) } ?? true }
+                    }
+                }
+            }
+            return Set(preview.diagnoses.map(\.id)).count == preview.diagnoses.count
+                && preview.actionSets.allSatisfy { set in Set(set.regions.map(\.id)).count == set.regions.count && set.regions.allSatisfy { rows($0.inputs) } }
+        }
+
+        // 13a. The installed game's manifest names the actions, sets and layers.
+        let named = try previewNative(nativeLayout(), .manifest(gameManifest))
+        require(named.title == "Named Layout" && named.description == "From the layout's own localization", "the layout's own title tokens use its own localization")
+        require(named.actionSets.map(\.title) == ["On Foot", "Menus", "Driving"], "set and layer titles come from the game's manifest: \(named.actionSets.map(\.title))")
+        require(named.actionSets.map(\.isLayer) == [false, false, true] && named.actionSets[0].isNative)
+        let jump = only(row(named, set: "InGame", region: "diamond", "Cross (A)"))
+        require(jump.displayText == "Jump" && jump.category == .action && !jump.isUnresolved, "a declared action shows the game's name once: \(jump.displayText)")
+        let removed = only(row(named, set: "InGame", region: "diamond", "Circle (B)"))
+        require(removed.displayText == "InGame › Removed (not in the game's action manifest) (Old action)" && removed.isUnresolved,
+                "an action the installed game does not declare stays a visible reference: \(removed.displayText)")
+        let move = row(named, set: "InGame", region: "sticks", "Analog Joystick (Analog)")
+        require(move.sourceName == "Left stick" && only(move).displayText == "Move" && only(move).category == .action && !only(move).isUnresolved,
+                "a stick's analog game action is named")
+        require(only(row(named, set: "InGame", region: "diamond", "Square (X)")).displayText == "E (Use)", "keyboard output with its label")
+        let keyboard = only(row(named, set: "InGame", region: "diamond", "Triangle (Y)"))
+        require(keyboard.displayText == "Steam: Show Keyboard" && keyboard.category == .steam && !keyboard.isUnresolved)
+        require(only(row(named, set: "InGame", region: "system", "Capture")).displayText == "Nothing bound")
+        require(named.actionNameNote == "Action names come from the game's action manifest.")
+        let undeclared = named.diagnoses.filter { $0.id == "diag-actions-undeclared" }
+        require(undeclared.count == 1 && undeclared[0].category == .unresolvedReference && undeclared[0].detail.contains("InGame › Removed")
+                && !undeclared[0].detail.contains("Jump"), "one diagnosis lists exactly the undeclared actions")
+        require(!named.diagnoses.contains { $0.id == "diag-actions-unresolved" })
+        let steamDiagnosis = named.diagnoses.filter { $0.id == "diag-steam-actions" }
+        require(steamDiagnosis.count == 1 && steamDiagnosis[0].detail.contains("Show Keyboard") && !steamDiagnosis[0].detail.contains("Empty"),
+                "Steam's own actions are identified once; an empty binding is not one")
+        require(named.uninterpretedEntries.isEmpty && !named.diagnoses.contains { $0.title.hasPrefix("Uninterpreted") },
+                "metadata, localization, declared actions, settings and disabled activators are read, not listed as uninterpreted")
+        require(named.layoutSettings.map { "\($0.key)=\($0.value)" } == ["action_set_trigger_cursor_show=1", "left_trackpad_mode=0"], "layout settings are shown as written, in key order")
+        require(distinctIDs(named), "row and diagnosis identifiers are distinct")
+
+        // 13b. A mode shift shows what its group maps; a group marked modeshift is not a base mapping.
+        let shiftBinding = only(row(named, set: "InGame", region: "system", "L1 (LB)"))
+        require(shiftBinding.displayText == "Mode shift: Right stick → Directional Pad (Weapon wheel)" && shiftBinding.category == .layout && !shiftBinding.isUnresolved,
+                "the mode shift names its source and the group's mode: \(shiftBinding.displayText)")
+        guard let shift = shiftBinding.modeShift else { fatalError("mode shift not expanded") }
+        require(shift.groupID == "5" && shift.source == "Right stick" && shift.groupTitle == "Directional Pad")
+        require(shift.inputs.map(\.inputName) == ["D-Pad Up", "D-Pad Down"] && shift.inputs.allSatisfy { $0.sourceName == "Right stick" })
+        require(only(shift.inputs[0]).displayText == "1 (Weapon 1)" && only(shift.inputs[0]).category == .keyboard, "the shifted group's own binding is shown")
+        let again = only(shift.inputs[1])
+        require(again.displayText == "Mode shift: Right stick → Directional Pad" && again.modeShift == nil && !again.isUnresolved,
+                "a mode shift back into a group already being shown is named, not expanded without end")
+        let inGameRegions = named.actionSets[0].regions
+        require(inGameRegions.map(\.id) == ["diamond", "sticks", "system"], "no separate mode-shift region when a binding switches to the group: \(inGameRegions.map(\.id))")
+        let stickRows = inGameRegions.first { $0.id == "sticks" }!.inputs
+        require(stickRows.map(\.inputName) == ["Analog Joystick (Analog)", "Joystick Mouse (Analog)"], "the right stick's base mapping is group 2, not the shifted group: \(stickRows.map(\.inputName))")
+        // The layer lists its own mode-shift group, which no shown binding switches to.
+        let driving = named.actionSets[2]
+        require(driving.regions.map(\.id) == ["diamond", "sticks", "system", "sticks-modeshift"], "layer regions: \(driving.regions.map(\.id))")
+        let layerShift = driving.regions.first { $0.id == "sticks-modeshift" }!
+        require(layerShift.title == "Analog Sticks (Mode Shift) (Layer Overrides)" && layerShift.inputs.map(\.inputName) == ["D-Pad Up"]
+                && only(layerShift.inputs[0]).displayText == "H (Horn)")
+        require(driving.regions.first { $0.id == "sticks" }!.title == "Analog Sticks (Inherited)" && driving.regions.first { $0.id == "sticks" }!.inputs.allSatisfy(\.isInherited))
+        require(only(row(named, set: "Driving", region: "diamond", "Circle (B)")).displayText == "Remove layer → Driving (Stop)")
+
+        // 13c. Action set and layer changes name their target.
+        let toMenu = only(row(named, set: "InGame", region: "system", "Options (Menu)"))
+        require(toMenu.displayText == "Change action set → Menus" && toMenu.category == .layout && !toMenu.isUnresolved, "\(toMenu.displayText)")
+        let addLayer = only(row(named, set: "InGame", region: "system", "Create / Share (View)"))
+        require(addLayer.displayText == "Add layer → Driving" && addLayer.category == .layout && !addLayer.isUnresolved, "\(addLayer.displayText)")
+        require(only(row(named, set: "Menu", region: "diamond", "Cross (A)")).displayText == "Change action set → On Foot (Back)")
+
+        // 13d. Disabled activators are shown as switched off, beside the active one.
+        let r1 = row(named, set: "InGame", region: "system", "R1 (RB)")
+        require(r1.activators.map(\.kind) == ["Regular Press", "Long Press"] && r1.activators.map(\.isDisabled) == [false, true])
+        require(r1.activators.map { $0.bindings[0].displayText } == ["A (Cross)", "B (Circle)"])
+        require(row(named, set: "InGame", region: "diamond", "Cross (A)").activators.allSatisfy { !$0.isDisabled }, "an empty disabled block adds nothing")
+
+        // 13e. Without a manifest every game action stays an unresolved reference, with the reason.
+        for (source, reason) in [(SteamInputActionNames.notInstalled, "The game is not installed"), (.notBundled, "does not name a bundled action manifest"),
+                                 (.dataUnavailable, "is not cached on this device"), (.unreadable, "could not be read")] {
+            let plain = try previewNative(nativeLayout(), source)
+            require(plain.actionSets.map(\.title) == ["In Game (layout)", "Menu", "Driving (layout)"], "titles fall back to the layout's own localization")
+            let reference = only(row(plain, set: "InGame", region: "diamond", "Cross (A)"))
+            require(reference.displayText == "InGame › Jump (Jump)" && reference.isUnresolved && reference.category == .action,
+                    "the reference is shown as written, with the layout's own label: \(reference.displayText)")
+            let stick = only(row(plain, set: "InGame", region: "sticks", "Analog Joystick (Analog)"))
+            require(stick.displayText == "InGame › Move" && stick.isUnresolved)
+            require(plain.actionNameNote?.hasPrefix("Action names are not resolved. ") == true && plain.actionNameNote!.contains(reason), "\(plain.actionNameNote ?? "")")
+            let unresolved = plain.diagnoses.filter { $0.id == "diag-actions-unresolved" }
+            require(unresolved.count == 1 && unresolved[0].category == .unresolvedReference && unresolved[0].detail.contains(reason), "one diagnosis, not one per action")
+            require(!plain.diagnoses.contains { $0.id == "diag-actions-undeclared" } && !plain.isFullyCompatible)
+            // Everything that is not a game action is unaffected by the missing names.
+            require(only(row(plain, set: "InGame", region: "system", "L1 (LB)")).modeShift?.inputs.count == 2)
+            require(only(row(plain, set: "InGame", region: "system", "Options (Menu)")).displayText == "Change action set → Menu")
+            require(distinctIDs(plain))
+        }
+        // A layout that binds no game action says nothing about action names, whatever the source.
+        let noActions = try buildPreview(String(decoding: multiSetVDF, as: UTF8.self))
+        require(noActions.actionNameNote == nil && !noActions.diagnoses.contains { $0.id.hasPrefix("diag-actions") })
+
+        // 13f. Broken targets are shown as such, never resolved by guessing.
+        let missingShift = try previewNative(nativeLayout(bumper: "mode_shift right_joystick 99, , "), .manifest(gameManifest))
+        let missingShiftBinding = only(row(missingShift, set: "InGame", region: "system", "L1 (LB)"))
+        require(missingShiftBinding.displayText == "Mode shift: Right stick → group 99 (not defined)" && missingShiftBinding.isUnresolved && missingShiftBinding.modeShift == nil)
+        require(missingShift.diagnoses.contains { $0.title == "Missing Group 99" })
+        // With the binding gone, the preset's own mode-shift entry for group 5 is listed rather than hidden.
+        require(missingShift.actionSets[0].regions.contains { $0.id == "sticks-modeshift" && $0.title == "Analog Sticks (Mode Shift)" })
+        let missingSet = try previewNative(nativeLayout(escape: "controller_action CHANGE_PRESET 9 1 1, , "), .manifest(gameManifest))
+        let missingSetBinding = only(row(missingSet, set: "InGame", region: "system", "Options (Menu)"))
+        require(missingSetBinding.displayText == "Change action set → preset 9 (not defined)" && missingSetBinding.isUnresolved)
+        let twice = try previewNative(nativeLayout(extra: #""group" { "id" "5" "mode" "four_buttons" }"#), .manifest(gameManifest))
+        let twiceBinding = only(row(twice, set: "InGame", region: "system", "L1 (LB)"))
+        require(twiceBinding.displayText == "Mode shift: Right stick → group 5 (defined more than once) (Weapon wheel)" && twiceBinding.isUnresolved && twiceBinding.modeShift == nil,
+                "\(twiceBinding.displayText)")
+        let ambiguousRow = twice.actionSets[0].regions.first { $0.id == "sticks-modeshift" }?.inputs.first
+        require(ambiguousRow?.inputName == "Ambiguous Group [5] (right_joystick)" && ambiguousRow?.isMissingReference == true && ambiguousRow?.activators.isEmpty == true,
+                "a group defined twice is a placeholder; neither definition is shown as the mapping")
+        require(twice.diagnoses.contains { $0.title == "Group 5 Defined 2 Times" } && distinctIDs(twice))
+        let oldFormat = try buildPreview(#""controller_mappings" { "version" "2" "title" "Old" "controller_type" "controller_ps5" "group" { "id" "0" "mode" "four_buttons" "bindings" { "button_A" "xinput_button A" } } "group_source_bindings" { "0" "button_diamond active" } }"#)
+        require(oldFormat.diagnoses.contains { $0.id == "diag-version" && $0.title == "Layout Format Version 2" }, "an older format is named")
+        require(oldFormat.uninterpretedEntries.map(\.key) == ["bindings", "group_source_bindings"], "and its own constructs are listed, not interpreted: \(oldFormat.uninterpretedEntries.map(\.key))")
 
         // =============================================================
         // TEST 8: Transport Validation Seam (Redirects & Streaming Overflow)
@@ -1047,10 +1319,10 @@ final class StubTransport: URLProtocol, @unchecked Sendable {
             let model = SteamInputPreviewPresentationModel()
             require(idle(model), "a new model shows nothing")
             suspended = [4001]
-            let requestA = model.requestPreview(appID: 480, item: slowItem, sources: presentationSources)
+            let requestA = model.requestPreview(appID: 480, item: slowItem, sources: presentationSources, actions: { _ in .notInstalled })
             require(model.isLoading && model.activeItemID == 4001 && !model.isPresented, "request A is loading")
             await until("A suspended in its download") { parked.count == 1 }
-            let requestB = model.requestPreview(appID: 480, item: fastItem, sources: presentationSources)
+            let requestB = model.requestPreview(appID: 480, item: fastItem, sources: presentationSources, actions: { _ in .notInstalled })
             require(model.isLoading && model.activeItemID == 4002, "request B supersedes A")
             await requestB.value
             require(model.isPresented && !model.isLoading && model.errorMessage == nil, "B is presented")
@@ -1071,7 +1343,7 @@ final class StubTransport: URLProtocol, @unchecked Sendable {
         for late in [Late.success, .failure] {
             let model = SteamInputPreviewPresentationModel()
             suspended = [4001]
-            let request = model.requestPreview(appID: 480, item: slowItem, sources: presentationSources)
+            let request = model.requestPreview(appID: 480, item: slowItem, sources: presentationSources, actions: { _ in .notInstalled })
             await until("request suspended in its download") { parked.count == 1 }
             model.dismiss()
             require(idle(model), "dismissal stops loading at once")
@@ -1084,13 +1356,13 @@ final class StubTransport: URLProtocol, @unchecked Sendable {
         for late in [Late.success, .failure] {
             let model = SteamInputPreviewPresentationModel()
             suspended = [4001]
-            let first = model.requestPreview(appID: 480, item: slowItem, sources: presentationSources)
+            let first = model.requestPreview(appID: 480, item: slowItem, sources: presentationSources, actions: { _ in .notInstalled })
             await until("first request suspended in its download") { parked.count == 1 }
             model.cancel()
             require(idle(model), "cancellation stops loading without presenting or reporting")
             // The cancelled fetch has not unwound yet; the retry must not wait for it or be refused.
             suspended = []
-            let retry = model.requestPreview(appID: 480, item: slowItem, sources: presentationSources)
+            let retry = model.requestPreview(appID: 480, item: slowItem, sources: presentationSources, actions: { _ in .notInstalled })
             require(model.isLoading && model.activeItemID == 4001, "retry is loading")
             await retry.value
             require(model.isPresented && model.previewData?.title == "Layer Test Layout" && model.errorMessage == nil, "retry after cancellation presents the preview")
@@ -1110,7 +1382,7 @@ final class StubTransport: URLProtocol, @unchecked Sendable {
         for late in [Late.success, .failure] {
             let model = SteamInputPreviewPresentationModel()
             suspended = [4001]
-            let request = model.requestPreview(appID: 480, item: slowItem, sources: presentationSources)
+            let request = model.requestPreview(appID: 480, item: slowItem, sources: presentationSources, actions: { _ in .notInstalled })
             await until("request suspended in its download") { parked.count == 1 }
             model.cancel()
             require(idle(model), "cancellation stops loading at once")
@@ -1123,7 +1395,7 @@ final class StubTransport: URLProtocol, @unchecked Sendable {
         do {
             let model = SteamInputPreviewPresentationModel()
             suspended = [4001]
-            let failing = model.requestPreview(appID: 480, item: slowItem, sources: presentationSources)
+            let failing = model.requestPreview(appID: 480, item: slowItem, sources: presentationSources, actions: { _ in .notInstalled })
             await until("failing request suspended in its download") { parked.count == 1 }
             finishParked(.failure)
             await failing.value
@@ -1132,12 +1404,60 @@ final class StubTransport: URLProtocol, @unchecked Sendable {
             model.cancel()
             require(model.errorMessage != nil, "cancel with nothing in flight keeps the reported error")
             suspended = []
-            let retry = model.requestPreview(appID: 480, item: slowItem, sources: presentationSources)
+            let retry = model.requestPreview(appID: 480, item: slowItem, sources: presentationSources, actions: { _ in .notInstalled })
             require(model.errorMessage == nil && model.isLoading, "a new request clears the earlier error")
             await retry.value
             require(model.isPresented && model.errorMessage == nil, "retry after failure presents the preview")
             model.clearError(); model.dismiss()
             require(idle(model), "dismissed")
+        }
+        // 9f. The game's action names are read for the request's game, shown in
+        // its preview, discarded with a superseded request, and read from the
+        // installed game without writing anything.
+        do {
+            let gameDirectory = tempRoot.deletingLastPathComponent().appendingPathComponent("installed-game", isDirectory: true)
+            try FileManager.default.createDirectory(at: gameDirectory, withIntermediateDirectories: true)
+            try Data(#""Action Manifest" { "actions" { "Game" { "title" "Playing" } } }"#.utf8).write(to: gameDirectory.appendingPathComponent("actions.vdf"))
+            let gameBefore = try snapshotTree(gameDirectory)
+            let model = SteamInputPreviewPresentationModel()
+            var asked: [UInt32] = []
+            suspended = []
+            let request = model.requestPreview(appID: 480, item: fastItem, sources: presentationSources, actions: { appID in
+                asked.append(appID)
+                return SteamInputActionNames.load(hintKnown: true, manifestPath: "actions.vdf", gameDirectory: gameDirectory)
+            })
+            require(model.isLoading, "loading while the names and the layout are read")
+            await request.value
+            require(asked == [480], "names are asked for once, for the game being previewed")
+            require(model.previewData?.actionSets.first { $0.id == "Game" }?.title == "Playing", "the manifest's set title reaches the presented preview")
+            require(try snapshotTree(gameDirectory) == gameBefore, "reading the game's manifest writes nothing beside it")
+            model.dismiss()
+
+            // A request superseded while its names are still being read publishes nothing.
+            var releaseNames: CheckedContinuation<Void, Never>?
+            let slowNames = model.requestPreview(appID: 480, item: slowItem, sources: presentationSources, actions: { _ in
+                await withCheckedContinuation { releaseNames = $0 }
+                return .notInstalled
+            })
+            await until("names lookup suspended") { releaseNames != nil }
+            let newer = model.requestPreview(appID: 480, item: fastItem, sources: presentationSources, actions: { _ in .notBundled })
+            await newer.value
+            require(model.activeItemID == fastItem.id && model.previewData?.title == "Multi-Set Game Layout")
+            releaseNames?.resume(); releaseNames = nil
+            await slowNames.value
+            require(model.activeItemID == fastItem.id && model.previewData?.title == "Multi-Set Game Layout" && model.errorMessage == nil,
+                    "a superseded request's late names and layout publish nothing")
+            model.dismiss()
+            let dismissedNames = model.requestPreview(appID: 480, item: slowItem, sources: presentationSources, actions: { _ in
+                await withCheckedContinuation { releaseNames = $0 }
+                return .notInstalled
+            })
+            await until("names lookup suspended again") { releaseNames != nil }
+            model.cancel()
+            releaseNames?.resume()
+            await dismissedNames.value
+            require(idle(model), "a request cancelled during the names lookup presents nothing")
+            try FileManager.default.removeItem(at: gameDirectory)
         }
         require(parked.isEmpty, "every suspended download was resumed")
 
@@ -1160,7 +1480,7 @@ final class StubTransport: URLProtocol, @unchecked Sendable {
         })
 
         let cancelTask = Task { @MainActor in
-            _ = try await cancelSources.preview(appID: 480, item: itemMulti)
+            _ = try await cancelSources.preview(appID: 480, item: itemMulti, actions: .notInstalled)
         }
 
         // Allow task to suspend inside download
@@ -1187,7 +1507,7 @@ final class StubTransport: URLProtocol, @unchecked Sendable {
         itemLookup[staleItem.id] = updatedItem
         var caughtStale = false
         do {
-            _ = try await sources.preview(appID: 480, item: staleItem)
+            _ = try await sources.preview(appID: 480, item: staleItem, actions: .notInstalled)
         } catch Sources.Failure.changed {
             caughtStale = true
         } catch {}
@@ -1198,13 +1518,13 @@ final class StubTransport: URLProtocol, @unchecked Sendable {
         itemLookup[sizeMismatchListing.id] = sizeMismatchDetails
         var caughtSizeMismatch = false
         do {
-            _ = try await sources.preview(appID: 480, item: sizeMismatchListing)
+            _ = try await sources.preview(appID: 480, item: sizeMismatchListing, actions: .notInstalled)
         } catch Sources.Failure.changed {
             caughtSizeMismatch = true
         } catch {}
         require(caughtSizeMismatch, "post-fetch size race with identical timeUpdated rejected with Failure.changed")
 
-        print("PASS: milestone 4 preview resolution, container and child condition preservation, unknown content fallback, grammar validation, production byte-limit and redirect enforcement, preview presentation state, and strict zero-persistence verification")
+        print("PASS: milestone 4 preview resolution, container and child condition preservation, unknown content fallback, named actions from the game's manifest, mode-shift contents, set and layer changes, production byte-limit and redirect enforcement, preview presentation state, and strict zero-persistence verification")
     }
 }
 '''
@@ -1214,7 +1534,8 @@ final class StubTransport: URLProtocol, @unchecked Sendable {
 view = (app / 'SteamInputCommunityView.swift').read_text()
 for needle, why in [
     ('@State private var preview = SteamInputPreviewPresentationModel()', 'the detail view owns one presentation model'),
-    ('preview.requestPreview(appID: appID, item: item, sources: .shared)', 'the preview button requests through the model'),
+    ('preview.requestPreview(appID: appID, item: item, sources: .shared,', 'the preview button requests through the model'),
+    ('actions: { await SteamOwnedLibrary.shared.steamInputActionNames(appID: $0) })', 'the game\'s action names come from its installed manifest'),
     ('.sheet(isPresented: Binding(get: { preview.isPresented }, set: { preview.isPresented = $0 }))', 'the sheet is bound to the model'),
     ('if let data = preview.previewData {', 'the sheet shows the model\'s preview'),
     ('.onDisappear { operation?.cancel(); preview.cancel() }', 'leaving the view cancels the request in flight'),
@@ -1224,6 +1545,19 @@ for needle, why in [
 ]:
     if view.count(needle) != 1:
         raise SystemExit(f'FAIL: {why}: expected exactly one `{needle}` in SteamInputCommunityView.swift')
+# The preview sheet shows what the data model resolved: names, mode-shift contents and what stays unresolved.
+sheet = (app / 'SteamInputPreviewView.swift').read_text()
+for needle, why in [
+    ('if let shift = b.modeShift {', 'a mode shift lists the shifted group\'s rows'),
+    ('ForEach(shift.inputs) { input in', 'the shifted rows are rendered like any other'),
+    ('if b.isUnresolved { BadgeView(text: "Unresolved", color: .red) }', 'an unresolved binding is marked'),
+    ('if act.isDisabled { BadgeView(text: "Disabled", color: .gray) }', 'a disabled activator is marked'),
+    ('if let note = preview.actionNameNote {', 'where action names came from is stated'),
+    ('ForEach(preview.layoutSettings) { setting in', 'layout settings are listed as written'),
+    ('if let source = input.sourceName {', 'a row names its physical source'),
+]:
+    if sheet.count(needle) != 1:
+        raise SystemExit(f'FAIL: {why}: expected exactly one `{needle}` in SteamInputPreviewView.swift')
 for needle, why in [('.preview(appID', 'the view must not fetch previews itself'),
                     ('showingPreview', 'the view must not keep its own sheet flag'),
                     ('SteamInputPreviewData?', 'the view must not keep its own preview result')]:

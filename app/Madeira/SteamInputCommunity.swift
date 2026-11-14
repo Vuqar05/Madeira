@@ -341,7 +341,8 @@ private extension Optional {
     /// Pure, non-persisting ephemeral preview fetch. Zero disk writes, zero journal touches.
     /// It holds no transfer slot: it writes nothing a second fetch could race, and a
     /// cancelled fetch that has not unwound yet must not block the player's retry.
-    func preview(appID: UInt32, item: SteamWorkshopItem) async throws -> SteamInputPreviewData {
+    /// `actions` is where the game's own action names come from; it is only shown, never stored.
+    func preview(appID: UInt32, item: SteamWorkshopItem, actions: SteamInputActionNames) async throws -> SteamInputPreviewData {
         guard Self.associated(item, appID: appID) else { throw Failure.invalid }
 
         let before = try await latest(appID: appID, id: item.id)
@@ -356,7 +357,7 @@ private extension Optional {
         try Task.checkCancellation()
 
         let model = try SteamInputLayoutModel(document: document)
-        return SteamInputPreviewData(model: model)
+        return SteamInputPreviewData(model: model, actions: actions)
     }
 
     func download(appID: UInt32, item: SteamWorkshopItem) async throws -> Layout {

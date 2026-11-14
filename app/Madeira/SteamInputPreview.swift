@@ -38,6 +38,15 @@ public struct SteamInputPreviewData: Equatable, Sendable {
     /// The domain model's condition: verbatim expression plus the node it is written on.
     public typealias SourceCondition = SteamInputLayoutModel.Condition
 
+    /// What a mode shift switches its source to while held: the shifted
+    /// group's own mappings, built exactly like any other group's.
+    public struct ModeShiftView: Equatable, Sendable {
+        public let source: String
+        public let groupID: String
+        public let groupTitle: String
+        public let inputs: [InputMappingView]
+    }
+
     public struct BindingView: Equatable, Identifiable, Sendable {
         public let id: String
         public let displayText: String
@@ -45,6 +54,8 @@ public struct SteamInputPreviewData: Equatable, Sendable {
         public let category: SteamInputLayoutModel.OutputCategory
         public let isUnresolved: Bool
         public let conditions: [SourceCondition]
+        /// Present for a mode shift whose group is defined exactly once.
+        public let modeShift: ModeShiftView?
 
         public init(
             id: String,
@@ -52,7 +63,8 @@ public struct SteamInputPreviewData: Equatable, Sendable {
             rawBinding: String,
             category: SteamInputLayoutModel.OutputCategory,
             isUnresolved: Bool = false,
-            conditions: [SourceCondition] = []
+            conditions: [SourceCondition] = [],
+            modeShift: ModeShiftView? = nil
         ) {
             self.id = id
             self.displayText = displayText
@@ -60,6 +72,7 @@ public struct SteamInputPreviewData: Equatable, Sendable {
             self.category = category
             self.isUnresolved = isUnresolved
             self.conditions = conditions
+            self.modeShift = modeShift
         }
     }
 
@@ -69,6 +82,8 @@ public struct SteamInputPreviewData: Equatable, Sendable {
         public let bindings: [BindingView]
         public let toggle: Bool
         public let turbo: Bool
+        /// Written in the layout's `disabled_activators`: kept, but switched off.
+        public let isDisabled: Bool
         public let conditions: [SourceCondition]
 
         public init(
@@ -77,6 +92,7 @@ public struct SteamInputPreviewData: Equatable, Sendable {
             bindings: [BindingView],
             toggle: Bool = false,
             turbo: Bool = false,
+            isDisabled: Bool = false,
             conditions: [SourceCondition] = []
         ) {
             self.id = id
@@ -84,6 +100,7 @@ public struct SteamInputPreviewData: Equatable, Sendable {
             self.bindings = bindings
             self.toggle = toggle
             self.turbo = turbo
+            self.isDisabled = isDisabled
             self.conditions = conditions
         }
     }
@@ -91,6 +108,9 @@ public struct SteamInputPreviewData: Equatable, Sendable {
     public struct InputMappingView: Equatable, Identifiable, Sendable {
         public let id: String
         public let inputName: String
+        /// The physical source the row belongs to, such as "Left trigger";
+        /// several sources share input names like "Click".
+        public let sourceName: String?
         public let activators: [ActivatorView]
         public let settings: [String: String]?
         public let conditions: [SourceCondition]
@@ -103,6 +123,7 @@ public struct SteamInputPreviewData: Equatable, Sendable {
         public init(
             id: String,
             inputName: String,
+            sourceName: String? = nil,
             activators: [ActivatorView],
             settings: [String: String]? = nil,
             conditions: [SourceCondition] = [],
@@ -114,6 +135,7 @@ public struct SteamInputPreviewData: Equatable, Sendable {
         ) {
             self.id = id
             self.inputName = inputName
+            self.sourceName = sourceName
             self.activators = activators
             self.settings = settings
             self.conditions = conditions
@@ -165,6 +187,13 @@ public struct SteamInputPreviewData: Equatable, Sendable {
         }
     }
 
+    /// One layout-wide setting, shown as written. The preview does not interpret its value.
+    public struct LayoutSetting: Equatable, Identifiable, Sendable {
+        public let key: String
+        public let value: String
+        public var id: String { key }
+    }
+
     public let title: String
     public let description: String
     public let controllerType: String
@@ -174,6 +203,11 @@ public struct SteamInputPreviewData: Equatable, Sendable {
     /// Every condition in the layout. None is evaluated, so whether the node it
     /// is written on applies is unresolved.
     public let unevaluatedConditions: [SteamInputLayoutModel.ConditionSite]
+    /// The layout-wide `settings` block in key order.
+    public let layoutSettings: [LayoutSetting]
+    /// Where the names of the layout's game actions came from, or why they
+    /// are shown unresolved. Nil when the layout binds no game action.
+    public let actionNameNote: String?
 
     public static let conditionWarning = "Condition not evaluated by this preview; current apply validation rejects conditional layouts."
 
@@ -182,12 +216,17 @@ public struct SteamInputPreviewData: Equatable, Sendable {
         diagnoses.isEmpty && unevaluatedConditions.isEmpty
     }
 
-    public init(model: SteamInputLayoutModel) {
-        self.title = model.title.isEmpty ? "Untitled Layout" : model.title
-        self.description = model.description
+    /// `actions` is where the game's own action names come from. Only a
+    /// manifest resolves a name; any other source leaves every game action
+    /// shown as the layout writes it, marked unresolved, with the reason.
+    init(model: SteamInputLayoutModel, actions: SteamInputActionNames) {
+        let builder = Builder(model: model, names: actions)
+        self.title = model.localized(model.title) ?? (model.title.isEmpty ? "Untitled Layout" : model.title)
+        self.description = model.localized(model.description) ?? model.description
         self.controllerType = model.controllerType.isEmpty ? "Generic Pad" : model.controllerType
         self.uninterpretedEntries = model.unrecognizedEntries
         self.unevaluatedConditions = model.conditionSites
+        self.layoutSettings = model.settings.keys.sorted().map { LayoutSetting(key: $0, value: model.settings[$0] ?? "") }
 
         var setViews: [ActionSetView] = []
         var detectedDiagnoses: [FeatureDiagnosis] = []
@@ -202,6 +241,14 @@ public struct SteamInputPreviewData: Equatable, Sendable {
                 detail: "Layout is authored for \(model.controllerType). Madeira uses a virtual DualSense (PS5) bridge."
             ))
         }
+        if model.version != 3 {
+            detectedDiagnoses.append(FeatureDiagnosis(
+                id: "diag-version",
+                category: .viewerOrRuntimeLimitation,
+                title: "Layout Format Version \(model.version)",
+                detail: "This preview reads version 3 layouts. Parts written in another format are listed as uninterpreted content."
+            ))
+        }
 
         // 2. Platform Conditions: one diagnosis per condition written in the layout, never evaluated.
         for (index, site) in model.conditionSites.enumerated() {
@@ -214,7 +261,7 @@ public struct SteamInputPreviewData: Equatable, Sendable {
             ))
         }
 
-        // References to groups, action sets and layers: the same check that
+        // 3. References to groups, action sets and layers: the same check that
         // refuses a layout before it is applied, so the two cannot disagree.
         for problem in SteamInputReferences.problems(in: model) {
             detectedDiagnoses.append(FeatureDiagnosis(
@@ -225,37 +272,78 @@ public struct SteamInputPreviewData: Equatable, Sendable {
             ))
         }
 
-        // Binding semantics, in source order
+        // 4. Game actions, Steam actions and binding grammar, in source order.
+        var gameActions: [(set: String, action: String)] = []
+        var steamActions: [String] = []
+        var unverified: [String] = []
         for group in model.groupDefinitions {
-            let gid = group.id
-            for input in group.inputs {
-                for act in input.activators {
-                    for b in act.bindings {
-                        if case .gameAction(let sid, let aid) = b.verb {
-                            detectedDiagnoses.append(FeatureDiagnosis(
-                                id: "diag-unresolved-action-\(sid)-\(aid)",
-                                category: .unresolvedReference,
-                                title: "Action Manifest Reference: [\(sid):\(aid)]",
-                                detail: "Shown as the layout writes it; this preview does not look up the game's name for the action."
-                            ))
-                        }
-                        if case .unverified(let verb, _) = b.verb {
-                            detectedDiagnoses.append(FeatureDiagnosis(
-                                id: "diag-unverified-verb-\(verb)-\(gid)-\(input.name)",
-                                category: .viewerOrRuntimeLimitation,
-                                title: "Unverified Binding Grammar: \(verb)",
-                                detail: "Binding '\(b.rawString)' has unrecognized grammar or unsupported arguments."
-                            ))
-                        }
-                    }
+            gameActions += group.gameActions.map { ($0.setID, $0.actionID) }
+            for binding in group.inputs.flatMap({ $0.activators.flatMap(\.bindings) }) {
+                switch binding.verb {
+                case .gameAction(let setID, let actionID):
+                    gameActions.append((setID, actionID))
+                case .steamAction(let command, _):
+                    // Steam's placeholders for "nothing bound" do nothing to verify.
+                    guard !SteamInputLayoutModel.ParsedBinding.emptyCommands.contains(command.lowercased()) else { break }
+                    let name = command.replacingOccurrences(of: "_", with: " ").capitalized
+                    if !steamActions.contains(name) { steamActions.append(name) }
+                case .unverified:
+                    if !unverified.contains(binding.rawString) { unverified.append(binding.rawString) }
+                case .xinputButton, .keyPress, .mouseButton, .mouseWheel, .modeShift, .actionSetChange, .layerChange:
+                    break
                 }
             }
         }
+        if gameActions.isEmpty {
+            actionNameNote = nil
+        } else if let manifest = actions.manifest {
+            var missing: [String] = []
+            for reference in gameActions where manifest.action(reference.action, in: reference.set) == nil {
+                let name = "\(reference.set) › \(reference.action)"
+                if !missing.contains(name) { missing.append(name) }
+            }
+            actionNameNote = "Action names come from the game's action manifest."
+            if !missing.isEmpty {
+                detectedDiagnoses.append(FeatureDiagnosis(
+                    id: "diag-actions-undeclared",
+                    category: .unresolvedReference,
+                    title: missing.count == 1 ? "1 Action Is Not In The Game's Action Manifest" : "\(missing.count) Actions Are Not In The Game's Action Manifest",
+                    detail: "The installed game does not declare: " + missing.joined(separator: ", ") + ". The layout may be written for another version of the game."
+                ))
+            }
+        } else {
+            let reason = actions.explanation ?? "The game's action manifest is unavailable."
+            actionNameNote = "Action names are not resolved. " + reason
+            detectedDiagnoses.append(FeatureDiagnosis(
+                id: "diag-actions-unresolved",
+                category: .unresolvedReference,
+                title: "Action Names Not Resolved",
+                detail: reason + " The layout's game actions are shown as it writes them."
+            ))
+        }
+        if !steamActions.isEmpty {
+            detectedDiagnoses.append(FeatureDiagnosis(
+                id: "diag-steam-actions",
+                category: .viewerOrRuntimeLimitation,
+                title: "Steam Actions",
+                detail: "Carried out by Steam itself, not sent to the game: " + steamActions.joined(separator: ", ") + ". Madeira has not verified them."
+            ))
+        }
+        for (index, raw) in unverified.enumerated() {
+            detectedDiagnoses.append(FeatureDiagnosis(
+                id: "diag-unverified-\(index)",
+                category: .viewerOrRuntimeLimitation,
+                title: "Unverified Binding Grammar: \(raw.split(separator: " ").first.map(String.init) ?? raw)",
+                detail: "Binding '\(raw)' has unrecognized grammar or unsupported arguments."
+            ))
+        }
 
-        // 3. Hardware Feature Limitations - detected ONLY from enabled (isActive) bindings and active groups
+        // 5. Hardware Feature Limitations - detected ONLY from enabled (isActive) bindings and active groups
         var hasPaddles = false
         var hasRadialMenu = false
         var hasGyro = false
+        // The same names apply validation treats as rear buttons.
+        let rearNames = ["grip", "rear", "paddle"]
 
         var activeGroupIDs = Set<String>()
         for preset in model.presets {
@@ -265,7 +353,7 @@ public struct SteamInputPreviewData: Equatable, Sendable {
                 if src.contains("gyro") {
                     hasGyro = true
                 }
-                if ["grip", "rear", "paddle"].contains(where: { src.contains($0) }) {
+                if rearNames.contains(where: { src.contains($0) }) {
                     hasPaddles = true
                 }
             }
@@ -276,9 +364,9 @@ public struct SteamInputPreviewData: Equatable, Sendable {
             if mode.contains("radial") || mode.contains("touch_menu") {
                 hasRadialMenu = true
             }
-            for input in group.inputs {
+            for input in group.inputs where input.isBound {
                 let iname = input.name.lowercased()
-                if ["grip", "rear", "paddle"].contains(where: { iname.contains($0) }) {
+                if rearNames.contains(where: { iname.contains($0) }) {
                     hasPaddles = true
                 }
                 if iname.contains("gyro") {
@@ -312,7 +400,7 @@ public struct SteamInputPreviewData: Equatable, Sendable {
             ))
         }
 
-        // 4. Uninterpreted / Unknown Content Diagnoses (deterministic IDs)
+        // 6. Uninterpreted / Unknown Content Diagnoses (deterministic IDs)
         for entry in model.unrecognizedEntries {
             detectedDiagnoses.append(FeatureDiagnosis(
                 id: "diag-unrec-\(entry.id)",
@@ -322,7 +410,7 @@ public struct SteamInputPreviewData: Equatable, Sendable {
             ))
         }
 
-        // 5. Build Action Set views resolving specific presets
+        // 7. Build Action Set views resolving specific presets
         for actSet in model.actionSets {
             let preset = model.preset(for: actSet)
             if preset == nil && !model.presets.isEmpty {
@@ -335,26 +423,18 @@ public struct SteamInputPreviewData: Equatable, Sendable {
             }
 
             let rootSetConditions = model.conditions + actSet.conditions
-
-            let regions = Self.buildRegions(
-                preset: preset,
-                model: model,
-                isLayer: false,
-                parentSet: nil,
-                parentPreset: nil,
-                enclosingConditions: rootSetConditions
-            )
             setViews.append(ActionSetView(
                 id: actSet.id,
-                title: actSet.title,
+                title: builder.title(set: actSet.id, written: actSet.title),
                 isLayer: false,
                 isNative: actSet.isNative,
                 conditions: rootSetConditions,
-                regions: regions
+                regions: builder.regions(preset: preset, isLayer: false, parentSet: nil, parentPreset: nil,
+                                         enclosingConditions: rootSetConditions)
             ))
         }
 
-        // 6. Build Action Layer views resolving layer preset & parent set inheritance
+        // 8. Build Action Layer views resolving layer preset & parent set inheritance
         for actLayer in model.actionLayers {
             let layerPreset = model.preset(for: actLayer)
             let parentSet = model.actionSets.first { $0.id.caseInsensitiveCompare(actLayer.parentSetID) == .orderedSame }
@@ -378,22 +458,14 @@ public struct SteamInputPreviewData: Equatable, Sendable {
             }
 
             let rootLayerConditions = model.conditions + (parentSet?.conditions ?? []) + actLayer.conditions
-
-            let regions = Self.buildRegions(
-                preset: layerPreset,
-                model: model,
-                isLayer: true,
-                parentSet: parentSet,
-                parentPreset: parentPreset,
-                enclosingConditions: rootLayerConditions
-            )
             setViews.append(ActionSetView(
                 id: actLayer.id,
-                title: actLayer.title,
+                title: builder.title(set: actLayer.id, written: actLayer.title),
                 isLayer: true,
                 parentSetID: actLayer.parentSetID,
                 conditions: rootLayerConditions,
-                regions: regions
+                regions: builder.regions(preset: layerPreset, isLayer: true, parentSet: parentSet, parentPreset: parentPreset,
+                                         enclosingConditions: rootLayerConditions)
             ))
         }
 
@@ -401,27 +473,181 @@ public struct SteamInputPreviewData: Equatable, Sendable {
         self.diagnoses = detectedDiagnoses
     }
 
-    private static func buildRegions(
-        preset: SteamInputLayoutModel.Preset?,
-        model: SteamInputLayoutModel,
-        isLayer: Bool,
-        parentSet: SteamInputLayoutModel.ActionSet?,
-        parentPreset: SteamInputLayoutModel.Preset?,
-        enclosingConditions: [SourceCondition]
-    ) -> [ControllerRegionView] {
-        var regionBuckets: [String: (title: String, inputs: [InputMappingView])] = [:]
-        var regionOrder: [String] = []
+    /// Turns the domain model into rows. It resolves names and shows what each
+    /// reference points at; it never evaluates a condition and never picks
+    /// among several definitions of one id.
+    private struct Builder {
+        let model: SteamInputLayoutModel
+        let names: SteamInputActionNames
+        typealias Parsed = SteamInputLayoutModel.ParsedBinding
 
-        func addInput(_ input: InputMappingView, to regionKey: String, title: String) {
-            if regionBuckets[regionKey] == nil {
-                regionBuckets[regionKey] = (title: title, inputs: [])
-                regionOrder.append(regionKey)
-            }
-            regionBuckets[regionKey]?.inputs.append(input)
+        /// How one group's rows are marked: where they come from in the set.
+        struct Placement {
+            var prefix = ""
+            var isLayerOverride = false
+            var isInherited = false
+            var parentSetName: String?
         }
 
-        func categorizeSource(_ src: String) -> (key: String, title: String) {
-            let s = src.lowercased()
+        /// A set or layer title: the game's manifest when it declares the set,
+        /// otherwise the layout's own localization, otherwise as written.
+        func title(set id: String, written: String) -> String {
+            if let manifest = names.manifest, let declared = manifest.set(id) { return manifest.name(of: declared) }
+            return model.localized(written) ?? written
+        }
+
+        func label(_ binding: Parsed) -> String? {
+            guard let label = binding.label, !label.isEmpty else { return nil }
+            if label.hasPrefix("#") { return names.manifest?.localized(label) ?? model.localized(label) ?? label }
+            return label
+        }
+
+        /// Text, and whether the name or target could not be resolved.
+        func describe(gameAction setID: String, _ actionID: String) -> (text: String, unresolved: Bool) {
+            if let manifest = names.manifest {
+                if let action = manifest.action(actionID, in: setID) { return (manifest.name(of: action), false) }
+                return ("\(setID) › \(actionID) (not in the game's action manifest)", true)
+            }
+            return ("\(setID) › \(actionID)", true)
+        }
+
+        func describe(preset number: Int, what: String) -> (text: String, unresolved: Bool) {
+            let found = model.presets(numbered: number)
+            guard found.count == 1 else {
+                return ("\(what) → preset \(number) (\(found.isEmpty ? "not defined" : "defined more than once"))", true)
+            }
+            guard let written = model.title(of: found[0]) else { return ("\(what) → preset \(number)", false) }
+            let name = found[0].name.isEmpty ? found[0].id : found[0].name
+            return ("\(what) → \(title(set: name, written: written))", false)
+        }
+
+        func binding(_ parsed: Parsed, id: String, conditions: [SourceCondition], path: [String]) -> BindingView {
+            var text: String
+            var unresolved = false
+            var shift: ModeShiftView?
+            switch parsed.verb {
+            case .gameAction(let setID, let actionID):
+                (text, unresolved) = describe(gameAction: setID, actionID)
+            case .modeShift(let source, let groupID):
+                let sourceName = Parsed.formatSource(source)
+                switch model.lookup(group: groupID) {
+                case .defined(let group):
+                    text = "Mode shift: \(sourceName) → \(group.humanMode)"
+                    // A group already being shown on this path is named, not expanded again.
+                    if !path.contains(groupID) {
+                        shift = ModeShiftView(source: sourceName, groupID: groupID, groupTitle: group.humanMode,
+                                              inputs: rows(for: group, source: source, conditions: conditions,
+                                                           placement: Placement(prefix: "\(id)-shift-"), path: path + [groupID]))
+                    }
+                case .missing:
+                    text = "Mode shift: \(sourceName) → group \(groupID) (not defined)"
+                    unresolved = true
+                case .ambiguous:
+                    text = "Mode shift: \(sourceName) → group \(groupID) (defined more than once)"
+                    unresolved = true
+                }
+            case .actionSetChange(let number):
+                (text, unresolved) = describe(preset: number, what: "Change action set")
+            case .layerChange(let operation, let number):
+                (text, unresolved) = describe(preset: number, what: Parsed.formatLayerOperation(operation))
+            case .xinputButton, .keyPress, .mouseButton, .mouseWheel, .steamAction:
+                text = parsed.baseText
+            case .unverified:
+                return BindingView(id: id, displayText: parsed.displayText, rawBinding: parsed.rawString,
+                                   category: parsed.outputCategory, isUnresolved: true, conditions: conditions)
+            }
+            if let label = label(parsed), label.caseInsensitiveCompare(text) != .orderedSame { text += " (\(label))" }
+            return BindingView(id: id, displayText: text, rawBinding: parsed.rawString, category: parsed.outputCategory,
+                               isUnresolved: unresolved, conditions: conditions, modeShift: shift)
+        }
+
+        /// Every row one group contributes for one source: its bound inputs,
+        /// the analog game action it drives, or its mode when it binds nothing.
+        /// `conditions` is the chain down to and including the source binding.
+        func rows(for group: SteamInputLayoutModel.Group, source: String, conditions: [SourceCondition],
+                  placement: Placement, path: [String]) -> [InputMappingView] {
+            let groupConditions = conditions + group.conditions
+            let base = "\(placement.prefix)\(source)-g\(group.id)"
+            var rows: [InputMappingView] = []
+
+            for input in group.inputs {
+                let inputConditions = groupConditions + input.conditions
+                var activatorViews: [ActivatorView] = []
+                for (isDisabled, activators) in [(false, input.activators), (true, input.disabledActivators)] {
+                    for (index, activator) in activators.enumerated() where !activator.bindings.isEmpty {
+                        let activatorConditions = inputConditions + activator.conditions
+                        let activatorID = "\(base)-\(input.name)-\(isDisabled ? "disabled-" : "")\(activator.kind)-\(index)"
+                        activatorViews.append(ActivatorView(
+                            id: activatorID,
+                            kind: activator.humanKind,
+                            bindings: activator.bindings.enumerated().map { offset, parsed in
+                                binding(parsed, id: "\(activatorID)-\(offset)", conditions: activatorConditions + parsed.conditions, path: path)
+                            },
+                            toggle: activator.toggle,
+                            turbo: activator.turbo,
+                            isDisabled: isDisabled,
+                            conditions: activatorConditions
+                        ))
+                    }
+                }
+                guard !activatorViews.isEmpty else { continue }
+                rows.append(InputMappingView(
+                    id: "\(base)-\(input.name)",
+                    inputName: input.humanName,
+                    sourceName: Parsed.formatSource(source),
+                    activators: activatorViews,
+                    settings: group.settings.isEmpty ? nil : group.settings,
+                    conditions: inputConditions,
+                    isLayerOverride: placement.isLayerOverride,
+                    isInherited: placement.isInherited,
+                    parentSetName: placement.parentSetName
+                ))
+            }
+
+            // The analog game action the whole group feeds, such as a stick bound to "Move".
+            if !group.gameActions.isEmpty {
+                let bindings = group.gameActions.enumerated().map { index, reference -> BindingView in
+                    let described = describe(gameAction: reference.setID, reference.actionID)
+                    return BindingView(id: "\(base)-gameaction-\(index)", displayText: described.text,
+                                       rawBinding: "\(reference.setID) \(reference.actionID)", category: .action,
+                                       isUnresolved: described.unresolved, conditions: groupConditions + reference.conditions)
+                }
+                rows.append(InputMappingView(
+                    id: "\(base)-gameactions",
+                    inputName: "\(group.humanMode) (Analog)",
+                    sourceName: Parsed.formatSource(source),
+                    activators: [ActivatorView(id: "\(base)-gameactions-analog", kind: "Analog", bindings: bindings, conditions: groupConditions)],
+                    settings: group.settings.isEmpty ? nil : group.settings,
+                    conditions: groupConditions,
+                    isLayerOverride: placement.isLayerOverride,
+                    isInherited: placement.isInherited,
+                    parentSetName: placement.parentSetName
+                ))
+            }
+
+            // A group that binds no input and names no action: its mode is what it does.
+            if rows.isEmpty {
+                var settings = group.settings
+                if settings["mode"] == nil && !group.mode.isEmpty {
+                    settings["mode"] = group.mode
+                }
+                rows.append(InputMappingView(
+                    id: "\(base)-analog",
+                    inputName: "\(group.humanMode) (Analog)",
+                    sourceName: Parsed.formatSource(source),
+                    activators: [],
+                    settings: settings.isEmpty ? nil : settings,
+                    conditions: groupConditions,
+                    isLayerOverride: placement.isLayerOverride,
+                    isInherited: placement.isInherited,
+                    parentSetName: placement.parentSetName
+                ))
+            }
+            return rows
+        }
+
+        static func categorize(_ source: String) -> (key: String, title: String) {
+            let s = source.lowercased()
             if s.contains("diamond") { return ("diamond", "Face Buttons") }
             if s.contains("dpad") { return ("dpad", "D-Pad") }
             if s.contains("trigger") || s.contains("bumper") || s.contains("shoulder") { return ("triggers", "Bumpers & Triggers") }
@@ -432,241 +658,123 @@ public struct SteamInputPreviewData: Equatable, Sendable {
             return (s, "Source: " + s.replacingOccurrences(of: "_", with: " ").capitalized)
         }
 
-        // Each level appends what the model carries for it, outermost first.
-        let presetConditions = enclosingConditions + (preset?.conditions ?? [])
+        /// Group ids a mode-shift binding in `rows` expands, at any depth.
+        static func shiftedGroups(in rows: [InputMappingView]) -> Set<String> {
+            var found = Set<String>()
+            for shift in rows.flatMap({ $0.activators.flatMap(\.bindings) }).compactMap(\.modeShift) {
+                found.insert(shift.groupID)
+                found.formUnion(shiftedGroups(in: shift.inputs))
+            }
+            return found
+        }
 
-        // 1. Process Preset Bindings
-        var processedSources = Set<String>()
-        if let p = preset {
-            for binding in p.bindings where binding.isActive {
-                let src = binding.source.lowercased()
-                processedSources.insert(src)
-                let (regKey, regTitle) = categorizeSource(src)
+        func regions(preset: SteamInputLayoutModel.Preset?, isLayer: Bool,
+                     parentSet: SteamInputLayoutModel.ActionSet?, parentPreset: SteamInputLayoutModel.Preset?,
+                     enclosingConditions: [SourceCondition]) -> [ControllerRegionView] {
+            var buckets: [String: (title: String, inputs: [InputMappingView])] = [:]
+            var order: [String] = []
+            func add(_ inputs: [InputMappingView], to key: String, title: String) {
+                if buckets[key] == nil {
+                    buckets[key] = (title: title, inputs: [])
+                    order.append(key)
+                }
+                buckets[key]?.inputs += inputs
+            }
 
-                let srcBindingConditions = presetConditions + binding.conditions
-
-                let lookup = model.lookup(group: binding.groupID)
+            /// The rows of one preset's source bindings. A binding marked
+            /// `modeshift` is not a base mapping: it is shown where a mode-shift
+            /// binding switches to it, and listed on its own only when none does.
+            var expanded = Set<String>()
+            var deferred: [() -> Void] = []
+            func place(_ entries: [SteamInputLayoutModel.SourceBinding], conditions: [SourceCondition],
+                       placement: Placement, suffix: String, skipping: Set<String>) -> Set<String> {
+                var sources = Set<String>()
+                for (index, entry) in entries.enumerated() where entry.isActive {
+                    let source = entry.source.lowercased()
+                    guard !skipping.contains(source) else { continue }
+                    let (key, title) = Self.categorize(source)
+                    if entry.isModeShift {
+                        deferred.append {
+                            guard !expanded.contains(entry.groupID) else { return }
+                            add(entryRows(entry, index: index, conditions: conditions, placement: placement),
+                                to: key + "-modeshift", title: title + " (Mode Shift)" + suffix)
+                        }
+                        continue
+                    }
+                    sources.insert(source)
+                    let built = entryRows(entry, index: index, conditions: conditions, placement: placement)
+                    expanded.formUnion(Self.shiftedGroups(in: built))
+                    add(built, to: key, title: title + suffix)
+                }
+                return sources
+            }
+            func entryRows(_ entry: SteamInputLayoutModel.SourceBinding, index: Int, conditions: [SourceCondition],
+                           placement: Placement) -> [InputMappingView] {
+                let source = entry.source.lowercased()
+                let chain = conditions + entry.conditions
+                let lookup = model.lookup(group: entry.groupID)
                 guard case .defined(let group) = lookup else {
                     // A missing or ambiguous group is shown as a placeholder, never resolved by guessing.
-                    addInput(
-                        InputMappingView(
-                            id: "missing-group-\(binding.groupID)-\(src)",
-                            inputName: "\(lookup == .missing ? "Missing" : "Ambiguous") Group [\(binding.groupID)] (\(src))",
-                            activators: [],
-                            settings: ["Source": src, "GroupID": binding.groupID, "Status": lookup == .missing ? "Unresolved Reference" : "Defined More Than Once"],
-                            conditions: srcBindingConditions,
-                            isLayerOverride: isLayer,
-                            isInherited: false,
-                            isMissingReference: true
-                        ),
-                        to: regKey,
-                        title: isLayer ? "\(regTitle) (Layer Overrides)" : regTitle
-                    )
-                    continue
+                    return [InputMappingView(
+                        id: "\(placement.prefix)missing-group-\(entry.groupID)-\(source)-\(index)",
+                        inputName: "\(lookup == .missing ? "Missing" : "Ambiguous") Group [\(entry.groupID)] (\(source))",
+                        activators: [],
+                        settings: ["Source": source, "GroupID": entry.groupID, "Status": lookup == .missing ? "Unresolved Reference" : "Defined More Than Once"],
+                        conditions: chain,
+                        isLayerOverride: placement.isLayerOverride,
+                        isInherited: placement.isInherited,
+                        parentSetName: placement.parentSetName,
+                        isMissingReference: true
+                    )]
                 }
-
-                let groupConditions = srcBindingConditions + group.conditions
-
-                var mappedAnyInput = false
-                for input in group.inputs where input.isBound {
-                    mappedAnyInput = true
-                    let inputConditions = groupConditions + input.conditions
-
-                    var actViews: [ActivatorView] = []
-                    for act in input.activators where !act.bindings.isEmpty {
-                        let actConditions = inputConditions + act.conditions
-
-                        var bviews: [BindingView] = []
-                        for b in act.bindings {
-                            bviews.append(BindingView(
-                                id: "\(src)-\(input.name)-\(act.kind)-\(b.rawString)",
-                                displayText: b.displayText,
-                                rawBinding: b.rawString,
-                                category: b.outputCategory,
-                                isUnresolved: b.outputCategory == .action || b.outputCategory == .unverified,
-                                conditions: actConditions + b.conditions
-                            ))
-                        }
-                        actViews.append(ActivatorView(
-                            id: "\(src)-\(input.name)-\(act.kind)",
-                            kind: act.humanKind,
-                            bindings: bviews,
-                            toggle: act.toggle,
-                            turbo: act.turbo,
-                            conditions: actConditions
-                        ))
-                    }
-
-                    addInput(
-                        InputMappingView(
-                            id: "\(src)-\(input.name)",
-                            inputName: input.humanName,
-                            activators: actViews,
-                            settings: group.settings.isEmpty ? nil : group.settings,
-                            conditions: inputConditions,
-                            isLayerOverride: isLayer,
-                            isInherited: false
-                        ),
-                        to: regKey,
-                        title: isLayer ? "\(regTitle) (Layer Overrides)" : regTitle
-                    )
-                }
-
-                // If group has mode or settings but no bound button inputs (e.g. analog joystick/trigger):
-                if !mappedAnyInput {
-                    var settings = group.settings
-                    if settings["mode"] == nil && !group.mode.isEmpty {
-                        settings["mode"] = group.mode
-                    }
-                    addInput(
-                        InputMappingView(
-                            id: "\(src)-analog",
-                            inputName: "\(group.humanMode) (Analog)",
-                            activators: [],
-                            settings: settings.isEmpty ? nil : settings,
-                            conditions: groupConditions,
-                            isLayerOverride: isLayer,
-                            isInherited: false
-                        ),
-                        to: regKey,
-                        title: isLayer ? "\(regTitle) (Layer Overrides)" : regTitle
-                    )
-                }
+                return self.rows(for: group, source: source, conditions: chain, placement: placement, path: [group.id])
             }
-        }
 
-        // 2. For Action Layers: Process Inherited Bindings from Parent Set
-        if isLayer, let parentPreset = parentPreset {
-            let parentPresetConditions = enclosingConditions + parentPreset.conditions
+            // 1. The set's or layer's own preset
+            var overridden = Set<String>()
+            if let preset {
+                overridden = place(preset.bindings, conditions: enclosingConditions + preset.conditions,
+                                   placement: Placement(isLayerOverride: isLayer), suffix: isLayer ? " (Layer Overrides)" : "", skipping: [])
+            }
 
-            for binding in parentPreset.bindings where binding.isActive {
-                let src = binding.source.lowercased()
-                if processedSources.contains(src) {
-                    continue // Overridden by layer
-                }
-                let (regKey, regTitle) = categorizeSource(src)
+            // 2. For Action Layers: what the parent set still supplies for every source the layer leaves alone
+            if isLayer, let parentPreset {
+                _ = place(parentPreset.bindings, conditions: enclosingConditions + parentPreset.conditions,
+                          placement: Placement(prefix: "inherited-", isInherited: true, parentSetName: parentSet?.title),
+                          suffix: " (Inherited)", skipping: overridden)
+            }
+            // Mode-shift groups no shown binding switches to, after everything that could.
+            for list in deferred { list() }
 
-                let srcBindingConditions = parentPresetConditions + binding.conditions
-
-                let lookup = model.lookup(group: binding.groupID)
-                guard case .defined(let group) = lookup else {
-                    addInput(
-                        InputMappingView(
-                            id: "inherited-missing-group-\(binding.groupID)-\(src)",
-                            inputName: "\(lookup == .missing ? "Missing" : "Ambiguous") Group [\(binding.groupID)] (\(src))",
-                            activators: [],
-                            settings: ["Source": src, "GroupID": binding.groupID, "Status": lookup == .missing ? "Unresolved Reference" : "Defined More Than Once"],
-                            conditions: srcBindingConditions,
-                            isLayerOverride: false,
-                            isInherited: true,
-                            parentSetName: parentSet?.title,
-                            isMissingReference: true
-                        ),
-                        to: regKey,
-                        title: "\(regTitle) (Inherited)"
-                    )
-                    continue
-                }
-
-                let groupConditions = srcBindingConditions + group.conditions
-
-                var mappedAnyInput = false
-                for input in group.inputs where input.isBound {
-                    mappedAnyInput = true
-                    let inputConditions = groupConditions + input.conditions
-
-                    var actViews: [ActivatorView] = []
-                    for act in input.activators where !act.bindings.isEmpty {
-                        let actConditions = inputConditions + act.conditions
-
-                        var bviews: [BindingView] = []
-                        for b in act.bindings {
-                            bviews.append(BindingView(
-                                id: "inherited-\(src)-\(input.name)-\(act.kind)-\(b.rawString)",
-                                displayText: b.displayText,
-                                rawBinding: b.rawString,
-                                category: b.outputCategory,
-                                isUnresolved: b.outputCategory == .action || b.outputCategory == .unverified,
-                                conditions: actConditions + b.conditions
-                            ))
-                        }
-                        actViews.append(ActivatorView(
-                            id: "inherited-\(src)-\(input.name)-\(act.kind)",
-                            kind: act.humanKind,
-                            bindings: bviews,
-                            toggle: act.toggle,
-                            turbo: act.turbo,
-                            conditions: actConditions
-                        ))
+            // 3. Append Uninterpreted Content Region if any exists (with rawContent and deterministic IDs)
+            if !model.unrecognizedEntries.isEmpty {
+                var unrecInputs: [InputMappingView] = []
+                func collectUnrec(_ entry: SteamInputLayoutModel.UnrecognizedEntry) {
+                    unrecInputs.append(InputMappingView(
+                        id: entry.id,
+                        inputName: entry.key,
+                        activators: [],
+                        settings: ["Path": entry.path],
+                        conditions: [],
+                        isLayerOverride: false,
+                        isInherited: false,
+                        rawContent: entry.rawContent
+                    ))
+                    for child in entry.children {
+                        collectUnrec(child)
                     }
-
-                    addInput(
-                        InputMappingView(
-                            id: "inherited-\(src)-\(input.name)",
-                            inputName: input.humanName,
-                            activators: actViews,
-                            settings: group.settings.isEmpty ? nil : group.settings,
-                            conditions: inputConditions,
-                            isLayerOverride: false,
-                            isInherited: true,
-                            parentSetName: parentSet?.title
-                        ),
-                        to: regKey,
-                        title: "\(regTitle) (Inherited)"
-                    )
                 }
-
-                if !mappedAnyInput {
-                    var settings = group.settings
-                    if settings["mode"] == nil && !group.mode.isEmpty {
-                        settings["mode"] = group.mode
-                    }
-                    addInput(
-                        InputMappingView(
-                            id: "inherited-\(src)-analog",
-                            inputName: "\(group.humanMode) (Analog)",
-                            activators: [],
-                            settings: settings.isEmpty ? nil : settings,
-                            conditions: groupConditions,
-                            isLayerOverride: false,
-                            isInherited: true,
-                            parentSetName: parentSet?.title
-                        ),
-                        to: regKey,
-                        title: "\(regTitle) (Inherited)"
-                    )
+                for entry in model.unrecognizedEntries {
+                    collectUnrec(entry)
                 }
+                buckets["uninterpreted"] = (title: "Uninterpreted Content (Viewer Limitations)", inputs: unrecInputs)
+                order.append("uninterpreted")
             }
-        }
 
-        // 3. Append Uninterpreted Content Region if any exists (with rawContent and deterministic IDs)
-        if !model.unrecognizedEntries.isEmpty {
-            var unrecInputs: [InputMappingView] = []
-            func collectUnrec(_ entry: SteamInputLayoutModel.UnrecognizedEntry) {
-                unrecInputs.append(InputMappingView(
-                    id: entry.id,
-                    inputName: entry.key,
-                    activators: [],
-                    settings: ["Path": entry.path],
-                    conditions: [],
-                    isLayerOverride: false,
-                    isInherited: false,
-                    rawContent: entry.rawContent
-                ))
-                for child in entry.children {
-                    collectUnrec(child)
-                }
+            return order.compactMap { key in
+                guard let bucket = buckets[key] else { return nil }
+                return ControllerRegionView(id: key, title: bucket.title, inputs: bucket.inputs)
             }
-            for entry in model.unrecognizedEntries {
-                collectUnrec(entry)
-            }
-            regionBuckets["uninterpreted"] = (title: "Uninterpreted Content (Viewer Limitations)", inputs: unrecInputs)
-            regionOrder.append("uninterpreted")
-        }
-
-        return regionOrder.compactMap { key in
-            guard let bucket = regionBuckets[key] else { return nil }
-            return ControllerRegionView(id: key, title: bucket.title, inputs: bucket.inputs)
         }
     }
 }
@@ -696,9 +804,11 @@ public struct SteamInputPreviewData: Equatable, Sendable {
     }
 
     /// Supersedes any earlier request. The returned task finishes once this
-    /// request has either published or been discarded.
+    /// request has either published or been discarded. `actions` supplies the
+    /// game's own action names; it must read only, like the fetch itself.
     @discardableResult
-    func requestPreview(appID: UInt32, item: SteamWorkshopItem, sources: SteamInputCommunitySources) -> Task<Void, Never> {
+    func requestPreview(appID: UInt32, item: SteamWorkshopItem, sources: SteamInputCommunitySources,
+                        actions: @escaping @MainActor (UInt32) async -> SteamInputActionNames) -> Task<Void, Never> {
         invalidate()
         let request = generation
         activeItemID = item.id
@@ -707,7 +817,10 @@ public struct SteamInputPreviewData: Equatable, Sendable {
         isLoading = true
         let task = Task { @MainActor [weak self] in
             let outcome: Result<SteamInputPreviewData, any Error>
-            do { outcome = .success(try await sources.preview(appID: appID, item: item)) }
+            // The game's action names are read first; a superseded request's
+            // names are discarded with the rest of its result.
+            let names = await actions(appID)
+            do { outcome = .success(try await sources.preview(appID: appID, item: item, actions: names)) }
             catch { outcome = .failure(error) }
             guard let self, self.generation == request else { return }
             self.task = nil
