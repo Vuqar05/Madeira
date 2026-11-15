@@ -1066,6 +1066,9 @@ simulator-tested; owner device acceptance below, item 3 still open):
   layout. Steam's PS5 and PS4 Gamepad templates both apply once their halves are
   off. Terraria's Steam Deck default is still refused for its controller type
   (the milestone 5 warning item). Covered by the editor and revisions checks.
+  Owner device check passed (2026-11-15): a layout made from Steam's PS5
+  Gamepad template, with both halves set to Not used, applied and worked in
+  the game.
 - Result: items 1, 4, 6, 7 and 8 are accepted and checked. Gyro, touchpad and
   menu bindings are editable but cannot be applied until milestone 5, as the
   acceptance script states. Item 3 stays open: creating from a template, a
