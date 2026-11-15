@@ -591,7 +591,7 @@ not only layouts that emit Xbox buttons.
 
 ## Milestone 4 — Create and edit personal Steam Input layouts
 
-- [ ] Build an editable Steam layout model and lossless VDF writer. The separate
+- [x] Build an editable Steam layout model and lossless VDF writer. The separate
   branch's parser preserves repeated keys and may be useful as a reference, but
   its import-to-JSON path is not a native Steam Input layout writer.
 - [x] Add a read-only mapping preview from community listings before saving or
@@ -602,16 +602,16 @@ not only layouts that emit Xbox buttons.
   unsupported features and settings the viewer cannot interpret.
 - [ ] Support creating from the game default, a template, a community copy or an
   existing personal VDF. Assign stable local identities and revision history.
-- [ ] Reuse editor controls where possible, backed by the native model. Implement
+- [x] Reuse editor controls where possible, backed by the native model. Implement
   buttons/chords, stick and trigger behavior, dead zones/curves, activators,
   toggle/turbo, action sets/layers/mode shifts, gyro, touchpad and menu bindings.
 - [x] Use the game's action manifest for named actions in native Steam Input games.
   Validate references to groups, action sets and layers before applying changes.
-- [ ] For fields outside the editor's supported surface, preserve them and clearly
+- [x] For fields outside the editor's supported surface, preserve them and clearly
   show that they cannot yet be edited. Never remove them on an unrelated save.
-- [ ] Add draft/save/apply, undo/redo, duplicate, rename, delete, restore default,
+- [x] Add draft/save/apply, undo/redo, duplicate, rename, delete, restore default,
   VDF import/export and a recovery path for invalid or incompatible files.
-- [ ] Make deletion safe for active/referenced layouts and retain the prior revision
+- [x] Make deletion safe for active/referenced layouts and retain the prior revision
   until a replacement is acknowledged. Live editing releases held outputs before
   switching and restores the working revision if validation/activation fails.
 - [x] Store personal layouts persistently and register/select them using the pinned
@@ -645,8 +645,8 @@ the item reports and device acceptance below):
 - The download byte limit is enforced while streaming by the helper `fetchBytes`
   uses, covered through that helper and through the real session.
 
-Items 1, 3, 4, 6, 7 and 8 were implemented afterwards; see "Editor items" below.
-Their checkboxes stay open until the owner's device acceptance.
+Items 1, 3, 4, 6, 7 and 8 were implemented afterwards; see "Editor items" below,
+which also records their device acceptance.
 
 Host checks: `tests/host/check-steam-input-vdf.py` and
 `tests/host/check-steam-input-preview.py`.
@@ -900,12 +900,12 @@ preview tests and the two menu corrections above):
   the same behavior; and restoring Game default with working controls. Items 9
   and 10 are accepted. Apply being disabled before the game starts is intentional:
   activation requires a running Steam Input session and confirmation.
-- Items 2, 5, 9 and 10 are checked above. No editor/revision-history item is accepted,
+- Items 2, 5, 9 and 10 are checked above. No editor/revision-history item was accepted then,
   and Milestone 4 as a whole remains incomplete. These are the owner's reported
   physical results, supplemented by the offline checks documented above.
 
 Editor items 1, 3, 4, 6, 7 and 8 (implemented 2026-11-15; host- and
-simulator-tested; owner device acceptance outstanding, so their boxes stay open):
+simulator-tested; owner device acceptance below, item 3 still open):
 
 - Item 1, editable model and lossless writer. `SteamInputVDF.swift` adds
   insert, copy-of-a-node, remove, rename and set-leaf edits. Each edit is one byte
@@ -1053,7 +1053,20 @@ simulator-tested; owner device acceptance outstanding, so their boxes stay open)
     moved the hotbar. The same log confirms the action set diagnosis:
     the first layout logged "Failed to create digital binding 'controller_action
     CHANGE_PRESET 2 1 1, …'", and the fixed one logs nothing.
-  Steps 8 to 10 are outstanding.
+  Steps 8 to 10 then passed (owner report, 2026-11-15): an edited community copy
+  left the community layout's original revision unchanged and survived export
+  and reimport with the same "Kept unchanged" list; the file picker and share
+  sheet opened and closed, rename, duplicate and delete worked, and deleting
+  the layout in use was refused; unsaved edits were restored after Madeira was
+  closed.
+- Result: items 1, 4, 6, 7 and 8 are accepted and checked. Gyro, touchpad and
+  menu bindings are editable but cannot be applied until milestone 5, as the
+  acceptance script states. Item 3 stays open: creating from a template, a
+  community copy, an import and a duplicate passed, but creating from the game
+  default was not accepted on the device, because Terraria's default is a
+  Steam Deck layout that apply refuses (the milestone 5 warning item). It needs
+  one game whose default is a PlayStation or Xbox gamepad layout, or that
+  milestone 5 item.
 
 Done when: a player creates a layout, changes a recognizable binding, uses it in
 the running game, restarts and gets the same result. Export/import preserves
