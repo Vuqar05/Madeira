@@ -1036,13 +1036,22 @@ simulator-tested; owner device acceptance outstanding, so their boxes stay open)
     and each extra preset is named by its key. Adding an action set or a layer
     now declares the existing sets that way first (`declaringActionSets`), and
     new sets and layers get Steam's `Preset_<1000000 + preset id>` key. That also
-    removes the refusal to add layers to such layouts. Retest outstanding.
-  - Failed, then fixed: a mode shift (d-pad up held shifts the right stick to
-    a d-pad). The editor appended the `active modeshift` entry at the end of
-    the preset. In all 54 mode shifts in the local Workshop sample, the entry
-    directly follows its source's own active entry, so the editor now writes it
-    there. Whether the position is what Steam requires is not established; the
-    retest decides it.
+    removes the refusal to add layers to such layouts. The owner's retest passed,
+    as did the same hold layer written with the new keys.
+  - Failed twice: a mode shift (d-pad up held shifts the right stick to a
+    d-pad). Moving the `active modeshift` entry directly after its source's
+    entry (the order of all 54 shifts in the local Workshop sample) did not
+    help. Steam's own `logs/controller.txt` on the iPad then gave the cause:
+    "Invalid mode 8 in mode_shift binding string" and "Failed to create digital
+    binding 'mode_shift right_joystick 8, , '". Steam resolves the target group
+    while it reads the binding, and the editor had placed the new group after
+    every other group. In all 29 mode shifts in the local Valve and Workshop
+    layouts, the target group is defined earlier than the binding. The editor
+    now inserts the new group directly before the group that holds the button,
+    and the group screen follows its group by id, because that group's position
+    moves. Retest outstanding. The same log confirms the action set diagnosis:
+    the first layout logged "Failed to create digital binding 'controller_action
+    CHANGE_PRESET 2 1 1, …'", and the fixed one logs nothing.
   Steps 8 to 10 are outstanding.
 
 Done when: a player creates a layout, changes a recognizable binding, uses it in

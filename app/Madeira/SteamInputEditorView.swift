@@ -345,7 +345,7 @@ struct SteamInputLayoutEditorView: View {
                 ForEach(preset.bindings.filter { !known.contains($0.source) && $0.isActive }, id: \.path) { binding in
                     if case .defined(let group) = draft.model.lookup(group: binding.groupID) {
                         NavigationLink {
-                            SteamInputGroupEditor(model: model, groupPath: group.path, source: binding.source)
+                            SteamInputGroupEditor(model: model, groupID: group.id, source: binding.source)
                         } label: {
                             LabeledContent(SteamInputLayoutModel.ParsedBinding.formatSource(binding.source), value: group.humanMode)
                         }
@@ -354,7 +354,7 @@ struct SteamInputLayoutEditorView: View {
                 ForEach(preset.bindings.filter { $0.isModeShift && $0.isActive }, id: \.path) { binding in
                     if case .defined(let group) = draft.model.lookup(group: binding.groupID) {
                         NavigationLink {
-                            SteamInputGroupEditor(model: model, groupPath: group.path, source: binding.source)
+                            SteamInputGroupEditor(model: model, groupID: group.id, source: binding.source)
                         } label: {
                             LabeledContent("Mode shift · " + SteamInputLayoutModel.ParsedBinding.formatSource(binding.source), value: group.humanMode)
                         }
@@ -397,7 +397,7 @@ private struct SteamInputSourceRow: View {
                 .accessibilityIdentifier("source.\(source.value)")
                 if let group {
                     NavigationLink("Edit \(source.title.lowercased())") {
-                        SteamInputGroupEditor(model: model, groupPath: group.path, source: source.value)
+                        SteamInputGroupEditor(model: model, groupID: group.id, source: source.value)
                     }.accessibilityIdentifier("source.\(source.value).edit")
                 }
             }
@@ -408,8 +408,14 @@ private struct SteamInputSourceRow: View {
 /// A group: its settings and every input's activators and bindings.
 struct SteamInputGroupEditor: View {
     @ObservedObject var model: SteamInputEditorModel
-    let groupPath: VDFPath
+    /// The group is followed by id: an edit can move it in the file (a mode
+    /// shift's group is inserted before the group holding its button).
+    let groupID: String
     let source: String
+    private var groupPath: VDFPath {
+        if let draft = model.draft, case .defined(let group) = draft.model.lookup(group: groupID) { return group.path }
+        return VDFPath([])
+    }
     @State private var bindingTarget: SteamInputBindingTarget?
     @State private var shiftTarget: VDFPath?
 

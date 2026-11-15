@@ -503,11 +503,11 @@ struct SteamInputLayoutDraft: Equatable {
         return try edited { try $0.updatingValue(at: current.path, to: value) }
     }
 
-    /// A new, empty group placed after the last group.
-    private func addingGroup(id: String, mode: String) throws -> Self {
+    /// A new, empty group placed after the last group, or at `index` among the root's elements.
+    private func addingGroup(id: String, mode: String, at index: Int? = nil) throws -> Self {
         try edited { document in
             try document.inserting(.block("group", [.leaf("id", id), .leaf("mode", mode), .block("inputs", []), .block("settings", [])]),
-                                   into: model.rootPath, at: insertionIndex(after: "group"))
+                                   into: model.rootPath, at: index ?? insertionIndex(after: "group"))
         }
     }
 
@@ -545,14 +545,25 @@ struct SteamInputLayoutDraft: Equatable {
             throw EditError.invalid("That mode is not available for this input.")
         }
         let id = nextGroupID
-        // The activator's path is unchanged: the group goes after the last group,
-        // so the path of an activator inside an earlier group stays valid.
+        // Steam resolves a mode shift's group while it reads the binding, so the
+        // group must come earlier in the file: placed after it, Steam logs
+        // "Invalid mode <id> in mode_shift binding string" and drops the binding.
+        // The new group goes directly before the group holding the activator,
+        // whose path then moves on by one.
+        let depth = model.rootPath.steps.count
+        guard activatorPath.steps.count > depth, activatorPath.steps[depth].key.caseInsensitiveCompare("group") == .orderedSame,
+              let groupIndex = elementIndex(of: VDFPath(Array(activatorPath.steps.prefix(depth + 1)))) else {
+            throw EditError.notFound("That activator no longer exists.")
+        }
+        var steps = activatorPath.steps
+        steps[depth] = .init(steps[depth].key, index: steps[depth].index + 1)
+        let movedActivator = VDFPath(steps)
         // Steam writes the shift's entry directly after the entry of the group
         // it shifts from; every layout Steam saves orders them that way.
         let after = preset(at: presetPath).flatMap { activeBinding(for: source, in: $0) }.flatMap { elementIndex(of: $0.path) }
-        return try addingGroup(id: id, mode: mode)
+        return try addingGroup(id: id, mode: mode, at: groupIndex)
             .addingSourceBinding(groupID: id, value: "\(source) active modeshift", to: presetPath, at: after.map { $0 + 1 })
-            .addingBinding(.modeShift(source: source, groupID: id), label: nil, to: activatorPath)
+            .addingBinding(.modeShift(source: source, groupID: id), label: nil, to: movedActivator)
     }
 
     /// The position of the node at `path` among its parent's keys and blocks.

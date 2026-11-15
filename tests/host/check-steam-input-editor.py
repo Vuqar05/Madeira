@@ -339,8 +339,13 @@ let preserved = ["[$WIN32]", "[$OSX]", "[$LINUX]", "[!$PS3]", "\"future_block\""
         // Mode shift: a new group the preset marks `active modeshift`, and a binding that switches to it.
         next = try draft.addingModeShift(on: press.path, in: preset.path, source: "joystick", mode: "dpad")
         check("mode shift", draft, next)
-        let shift = next.activator(at: press.path)!.bindings.last!
+        // Steam resolves the target while it reads the binding: the new group
+        // comes before the group holding the button (it logs "Invalid mode" otherwise).
+        require(next.model.groupDefinitions.map(\.id) == ["2", "0", "1"], "\(next.model.groupDefinitions.map(\.id))")
+        guard case .defined(let holder) = next.model.lookup(group: "0") else { fatalError("group 0") }
+        let shift = holder.input("button_a")!.activators[0].bindings.last!
         require(shift.verb == .modeShift(source: "joystick", groupID: "2"), "\(shift.verb)")
+        require(holder.input("button_a")!.activators[0].bindings.count == press.bindings.count + 1, "the button keeps its bindings")
         require(next.preset(at: preset.path)!.bindings.contains { $0.groupID == "2" && $0.isModeShift && $0.isActive && $0.source == "joystick" })
         require(next.referenceProblems.isEmpty, "a new mode shift resolves")
         // Steam writes a shift's entry directly after the entry of the group it shifts from.
