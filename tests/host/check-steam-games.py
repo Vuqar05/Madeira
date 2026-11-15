@@ -516,11 +516,11 @@ with tempfile.TemporaryDirectory(prefix='madeira-steam-games-') as tmp:
     (tmp / 'owned.swift').write_text('import Foundation\n' + owned_game + '\n' + vdf)
     (tmp / 'checks.swift').write_text(checks)
     exe = tmp / 'check'
-    # MadeiraDock.swift needs its Steam Input journal and the shared C wire format.
+    # MadeiraDock.swift needs its Steam Input service, journal and the shared C wire format.
     service = app.parent.parent / 'madeira-dock/src/steam_input_service'
     subprocess.run([shutil.which('clang'), '-std=c11', '-c', str(service) + '.c', '-o', str(tmp / 'service.o')], check=True)
     build = subprocess.run([SWIFTC, '-parse-as-library', '-swift-version', '5', '-sanitize=address', '-o', str(exe),
-                            '-import-objc-header', str(service) + '.h', str(app / 'SteamInputTransactions.swift'), str(tmp / 'service.o'),
+                            '-import-objc-header', str(service) + '.h', str(app / 'SteamInputTransactions.swift'), str(app / 'SteamInputPersonalReferences.swift'), str(app / 'DockSteamInput.swift'), str(tmp / 'service.o'),
                             str(tmp / 'stubs.swift'), str(tmp / 'dock.swift'), str(tmp / 'rules.swift'),
                             str(tmp / 'checks.swift'), str(tmp / 'owned.swift'), str(app / 'SteamKeyValues.swift'),
                             str(app / 'SteamInstall.swift'), str(app / 'ExternalStorage.swift'), str(app / 'SwiftSteam/Library/SteamAppInfo.swift')],

@@ -133,7 +133,7 @@ fails, and then the search by name finds this copy.
   `UserLocalConfigStore`, and the client reads it when it starts. Madeira now
   writes `"SteamController_PSSupport" "2"` there before a Steam Input launch and
   puts the line back when the Dock session ends (`DockSteamInput` in
-  `MadeiraDock.swift`).
+  `DockSteamInput.swift`).
 
 ### Device results 10 to 13 (2026-11-01)
 - With `SteamController_PSSupport` 2 in localconfig.vdf the client-wide mask

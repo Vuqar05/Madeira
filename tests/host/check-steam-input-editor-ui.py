@@ -7,7 +7,7 @@
 Requires Xcode, xcodegen and an iOS Simulator UUID from the device tools:
     python3 tests/host/check-steam-input-editor-ui.py --simulator <UUID>
 The probe builds the production editor, store, live-edit coordinator, layout
-service (extracted from MadeiraDock.swift as the host checks do) and Dock's C
+service (extracted from DockSteamInput.swift as the host checks do) and Dock's C
 transaction code. Only the Steam network, logging and the Dock drive are stubbed.
 """
 from pathlib import Path
@@ -29,7 +29,7 @@ if (work / 'Sources').exists(): shutil.rmtree(work / 'Sources')
 (work / 'Sources').mkdir(parents=True)
 (work / 'dock').mkdir(exist_ok=True)
 
-service = (app / 'MadeiraDock.swift').read_text()
+service = (app / 'DockSteamInput.swift').read_text()
 service = 'import Foundation\nenum DockSteamInputWire' + service.split('enum DockSteamInputWire', 1)[1].split("/// Steam Input's PlayStation setting", 1)[0]
 (work / 'Sources/Service.swift').write_text(service)
 workshop = (app / 'SteamWorkshopFiles.swift').read_text()

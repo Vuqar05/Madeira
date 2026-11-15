@@ -38,7 +38,7 @@ and mouse mode or discard bindings that the existing importer cannot represent.
 | Runtime control | Startup activation and refocus handling exist, currently centered on controller index 0 | Acknowledged layout-change commands, per-controller state and safe live switching |
 
 Current implementation: `madeira-dock/src/steam_input.{c,h}` and
-`app/Madeira/{MadeiraDock,Library}.swift`. Optional reference code on the separate
+`app/Madeira/{DockSteamInput,MadeiraDock,Library}.swift`. Optional reference code on the separate
 branch: `app/Madeira/{SteamInputLayouts,SteamInputLayoutsView}.swift`.
 
 ## Implementation rules

@@ -6,7 +6,7 @@
 from pathlib import Path
 import os, shutil, subprocess, tempfile
 root = Path(__file__).resolve().parents[2]
-source = (root / 'app/Madeira/MadeiraDock.swift').read_text().split('enum DockSteamInput {', 1)[1]
+source = (root / 'app/Madeira/DockSteamInput.swift').read_text().split('enum DockSteamInput {', 1)[1]
 source = 'enum DockSteamInput {' + source
 source = source.replace('FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]', 'testRoot')
 with tempfile.TemporaryDirectory(prefix='madeira-steam-input-') as tmp:

@@ -10,7 +10,7 @@ import subprocess
 import tempfile
 
 root = Path(__file__).resolve().parents[2]
-source = (root / 'app/Madeira/MadeiraDock.swift').read_text()
+source = (root / 'app/Madeira/DockSteamInput.swift').read_text()
 source = 'enum DockSteamInputWire' + source.split('enum DockSteamInputWire', 1)[1].split("/// Steam Input's PlayStation setting", 1)[0]
 source = source.replace('FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]', 'testRoot.appendingPathComponent("support")')
 service_start = source.index('@MainActor enum DockSteamInputService')
