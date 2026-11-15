@@ -340,7 +340,16 @@ func snapshot(_ url: URL) throws -> [String: String] {
 
         // Isolation.
         require(try Personal.inventory(root: support, accountID: 25, appID: 480).isEmpty && (try Personal.inventory(root: support, accountID: 24, appID: 481)).isEmpty)
-        print("PASS: personal layouts from the game default, templates, community copies, imports and duplicates; stable identities; revision history with save, restore, bounded pruning and retention of the revision the game uses; drafts across restarts; rename; safe deletion; recovery of damaged and incompatible layouts; interrupted writes; live-change staging")
+        // A touchpad half the layout uses blocks apply; set to Not used in the
+        // editor (Steam's "inactive"), the layout applies.
+        let halves = try SteamInputLayoutDraft(bytes: base)
+        let preset0 = halves.model.presets[0].path
+        let withHalves = try halves.switchingMode(of: "left_trackpad", in: preset0, to: "absolute_mouse")
+            .switchingMode(of: "right_trackpad", in: preset0, to: "single_button")
+        require(try SteamInputCompatibility(withHalves.bytes).unsupported == ["left trackpad", "right trackpad"])
+        let halvesOff = try withHalves.disablingSource("left_trackpad", in: preset0).disablingSource("right_trackpad", in: preset0)
+        require(try SteamInputCompatibility(halvesOff.bytes).canApply, "touchpad halves set to Not used no longer block apply")
+        print("PASS: personal layouts from the game default, templates, community copies, imports and duplicates; stable identities; revision history with save, restore, bounded pruning and retention of the revision the game uses; drafts across restarts; rename; safe deletion; recovery of damaged and incompatible layouts; interrupted writes; live-change staging; touchpad halves set to Not used no longer block apply")
     }
 }
 '''

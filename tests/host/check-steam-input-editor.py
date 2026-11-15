@@ -335,6 +335,13 @@ let preserved = ["[$WIN32]", "[$OSX]", "[$LINUX]", "[!$PS3]", "\"future_block\""
         let disabled = try next.disablingSource("gyro", in: preset.path)
         require(!disabled.preset(at: preset.path)!.bindings.contains { $0.source == "gyro" && $0.isActive })
         check("gyro and touchpad", draft, next)
+        // The touchpad halves Steam's PS templates use can be set to Not used, as
+        // Steam does it ("left_trackpad inactive"); the revisions check applies it.
+        let halves = try draft.switchingMode(of: "left_trackpad", in: preset.path, to: "absolute_mouse")
+            .switchingMode(of: "right_trackpad", in: preset.path, to: "single_button")
+        require(SteamInputEditorCatalog.sources.map(\.value).contains("left_trackpad") && SteamInputEditorCatalog.sources.map(\.value).contains("right_trackpad"))
+        let halvesOff = try halves.disablingSource("left_trackpad", in: preset.path).disablingSource("right_trackpad", in: preset.path)
+        require(text(halvesOff.bytes).contains("\"left_trackpad inactive\"") && text(halvesOff.bytes).contains("\"right_trackpad inactive\""))
 
         // Mode shift: a new group the preset marks `active modeshift`, and a binding that switches to it.
         next = try draft.addingModeShift(on: press.path, in: preset.path, source: "joystick", mode: "dpad")

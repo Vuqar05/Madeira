@@ -1059,6 +1059,13 @@ simulator-tested; owner device acceptance below, item 3 still open):
   sheet opened and closed, rename, duplicate and delete worked, and deleting
   the layout in use was refused; unsaved edits were restored after Madeira was
   closed.
+- Touchpad halves (2026-11-15). Steam's own PS4 and PS5 templates bind
+  `left_trackpad` and `right_trackpad` (the touchpad's halves), so apply refused
+  them, and the editor did not list those sources. It now lists them; "Not used"
+  writes `<source> inactive`, as Steam's templates do, and apply then accepts the
+  layout. Steam's PS5 and PS4 Gamepad templates both apply once their halves are
+  off. Terraria's Steam Deck default is still refused for its controller type
+  (the milestone 5 warning item). Covered by the editor and revisions checks.
 - Result: items 1, 4, 6, 7 and 8 are accepted and checked. Gyro, touchpad and
   menu bindings are editable but cannot be applied until milestone 5, as the
   acceptance script states. Item 3 stays open: creating from a template, a

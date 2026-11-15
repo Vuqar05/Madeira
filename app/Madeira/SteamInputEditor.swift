@@ -123,6 +123,8 @@ enum SteamInputEditorCatalog {
         .init(value: "joystick", title: "Left stick"), .init(value: "right_joystick", title: "Right stick"),
         .init(value: "left_trigger", title: "Left trigger"), .init(value: "right_trigger", title: "Right trigger"),
         .init(value: "switch", title: "Bumpers and menu buttons"), .init(value: "center_trackpad", title: "Touchpad"),
+        // On a PlayStation controller these are the touchpad's two halves.
+        .init(value: "left_trackpad", title: "Touchpad left half"), .init(value: "right_trackpad", title: "Touchpad right half"),
         .init(value: "gyro", title: "Gyro"),
     ]
 
@@ -140,7 +142,7 @@ enum SteamInputEditorCatalog {
         case "joystick", "right_joystick": return stick
         case "left_trigger", "right_trigger": return [.init(value: "trigger", title: "Trigger"), .init(value: "single_button", title: "Single Button")]
         case "switch": return [.init(value: "switches", title: "Switches")]
-        case "center_trackpad": return [.init(value: "absolute_mouse", title: "Mouse"), .init(value: "dpad", title: "Directional Pad"),
+        case "center_trackpad", "left_trackpad", "right_trackpad": return [.init(value: "absolute_mouse", title: "Mouse"), .init(value: "dpad", title: "Directional Pad"),
                                         .init(value: "single_button", title: "Single Button"), .init(value: "scrollwheel", title: "Scroll Wheel")] + menus
         case "gyro": return [.init(value: "mouse_joystick", title: "Gyro to Joystick Camera"), .init(value: "gyro_to_mouse", title: "Gyro to Mouse"),
                              .init(value: "joystick_camera", title: "Joystick Camera")]
