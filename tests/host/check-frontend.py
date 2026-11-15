@@ -134,7 +134,10 @@ enum ProMotionIntent {
 }
 struct TouchControl: Codable, Equatable { var nx = 0.5 }
 enum ControlAction: Codable, Equatable, Hashable { case none }   // LibraryEntry.controllerBinds
-enum GamepadInput { static let keyboardMouseAvailable = true }   // LibraryEntry's per-game DirectInput choice
+enum GamepadInput {   // LibraryEntry's per-game controller choice
+    static let keyboardMouseAvailable = true, controllerModeAvailable = true, steamInputAvailable = true
+    static func allowedMode(_ mode: String?) -> String? { mode }
+}
 struct GestureZone: Codable, Identifiable, Equatable { var id = UUID() }   // LibraryEntry.zones (GestureZones.swift)
 enum LibraryError: LocalizedError { case message(String) }
 func env(_ name: String) -> String? { getenv(name).map { String(cString: $0) } }

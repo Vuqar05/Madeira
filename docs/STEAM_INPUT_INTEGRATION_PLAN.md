@@ -1108,6 +1108,32 @@ Owner decisions (2026-11-15), asked before implementation:
   suspend/resume test and any migration from the separate emulation branch's
   layouts. Overlay menu rendering is not waived.
 
+Implementation status (2026-11-15; host- and simulator-tested, awaiting the batched
+device session in `STEAM_INPUT_M5_DEVICE_SCRIPT.md`; details in `STEAM_INPUT.md`):
+
+- Identity: a launch chooses the virtual DualSense for a PlayStation pad and a
+  Bluetooth Xbox Wireless Controller (045E:0B13) for the on-screen controls and other
+  pads, behind `env.MADEIRA_STEAM_INPUT_XBOX` (off: DualSense, as before). Selections,
+  journals, defaults, templates, remembered details and the community filter are per
+  identity; the Dock resolver serves type 32 from January's own tables. Whether the
+  client opens the Xbox pad is the first device check.
+- Another controller's layout: one gate covers every source; the missing features are
+  listed and confirmed once per revision and controller; an unconfirmed saved layout
+  is held at relaunch. This closes `requestGameDefault` applying Terraria's Steam
+  Deck default silently.
+- Recovery after a killed session: a session record; the next start removes the
+  client's crash marker and HTTP cache; a 120 s stall message and redacted
+  connection lines in the log. The cause is to be confirmed on the device.
+- Game details and the session menu: one status line, the controller Steam sees,
+  the saved choice while not running and "Use the game default from the next launch".
+- Lifecycle: held buttons and triggers released across changes; session end stops
+  feedback and forgets the last output report.
+- Players: Steam Input takes player 1; Dock reads no XInput pad, so players 2-4 stay
+  the game's XInput pads (physical multi-pad test waived).
+- Editing: Steam Input reaches only the native layouts and editor (migration waived).
+- `GamepadInput.keyboardMouseAvailable` no longer gates Steam Input
+  (`env.MADEIRA_STEAM_INPUT`).
+
 - [ ] Verify keyboard/mouse delivery, mixed Xbox/key output and native actions.
   Investigate any cross-process input restrictions with focused runtime tests.
 - [ ] Verify rumble and supported controller feedback through Valve to the physical
@@ -1181,6 +1207,9 @@ Owner decisions (2026-11-15), asked before implementation:
 - [ ] Make ordinary Steam Input selections available from Game details and the
   session menu. Keep user-facing states understandable: active layout, pending
   download, retry, incompatibility and apply failure.
+- [ ] Decouple Steam Input from `GamepadInput.keyboardMouseAvailable`
+  (`MADEIRA_XINPUT && MADEIRA_PAD_KBM`): turning off keyboard-and-mouse mode must not
+  remove or disable Steam Input.
 - [ ] Route Steam Input editing to the native path. If migration from layouts
   created with the separate emulation solution is offered, make it explicit and
   preserve saved work; do not pull that solution into main as an implicit fallback.

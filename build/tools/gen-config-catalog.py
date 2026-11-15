@@ -726,6 +726,11 @@ OVERLAY = {
                 "note": "1: with the HID controller on, player 1 also stays an XInput pad. Off by default, so a game "
                         "that reads both APIs does not see the same pad twice.",
                 "sources": ["app/Madeira/GamepadInput.swift"]},
+    "env.MADEIRA_HIDPAD_OWNER": {"category": "Controllers",
+                "note": "Set by the app for Steam Input: the one process (Madeira Dock) that may open the virtual "
+                        "controller. That process also reads no XInput pad, so players 2-4 stay the game's. Not meant "
+                        "to be set by hand.",
+                "sources": ["build/wineserver/hidpad_ios.c", "build/win32u-unix/driver_ios.c"]},
     "env.MADEIRA_STEAM_INPUT": {"category": "Controllers", "title": "Steam Input choice", "kind": "bool", "default": "1",
                 "note": "Availability of Controller = Steam Input for Steam games started through Madeira Dock. 0 removes "
                         "that choice. Independent of keyboard-and-mouse mode (env.MADEIRA_PAD_KBM).",

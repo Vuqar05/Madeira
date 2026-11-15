@@ -45,6 +45,10 @@ static HWND NtUserGetAncestor(HWND hwnd, UINT flags) { (void)flags; return hwnd;
 #define GetCurrentThreadId() 0x30u
 static void fake_err(const char *fmt, ...) { (void)fmt; }
 #define ERR fake_err
+/* Steam Input's owner rule (milestone 5): this process is a game, not Dock. */
+#define MAX_PATH 260
+static int winios_drv_process_image(unsigned int pid, char *out, unsigned int size)
+{ (void)pid; strncpy(out, "c:\\games\\game.exe", size); out[size - 1] = 0; return 1; }
 '''
 tests = r'''
 static atomic_int finished;
