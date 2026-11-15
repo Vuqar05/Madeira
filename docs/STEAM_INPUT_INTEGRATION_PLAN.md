@@ -1035,6 +1035,34 @@ layout unchanged, including when fetching or parsing fails.
   index-0 design so selections, reconnects and outputs target the correct device.
 - [ ] Define and test on-screen controller behavior with Steam Input, including
   coexistence with a physical pad and whether they share or occupy separate slots.
+  Today `GamepadInput.sample()` merges the on-screen controls into player 1 with any
+  physical pad, and in Steam Input mode that merged pad reaches Valve as the virtual
+  DualSense. This is read from the code; nothing has been tested on a device.
+- [ ] Present the controller to Steam with the identity of what the player holds:
+  an Xbox controller for the on-screen controls and for physical non-PlayStation
+  pads, the virtual DualSense for a DualSense or DualShock. Known limitation until
+  then: Steam always sees the virtual DualSense, so with an Xbox pad or the
+  on-screen controls, games that take button glyphs from Steam show PlayStation
+  glyphs. Games that read XInput see Steam's virtual Xbox pad and show Xbox glyphs.
+  Do not use a Steam Controller or Steam Deck identity for the on-screen
+  controls: Steam assumes trackpads, gyro and back buttons that they do not have,
+  and shows glyphs that match neither the screen nor the pad.
+  - First establish against the pinned client whether Valve's client in Dock
+    accepts a virtual Xbox device as input. Steam normally reads Xbox pads through
+    XInput, the same API through which it hands its own virtual pad to the game,
+    so rule out Steam reading its own output as an input. Keep the virtual
+    DualSense as the proven identity until the alternative is verified.
+  - A second virtual pad type touches Madeira's HID/Wine and Dock layers
+    (submodules). Explain each submodule change before making it.
+  - Make layouts and game defaults controller-specific. Compatibility currently
+    accepts only `controller_ps5` and `controller_ps4`, and the game-default
+    resolver, remembered controller details, personal layouts, the community
+    filter and "Start from the game default" all assume the virtual DualSense.
+    Personal layouts made for one controller type must not be applied silently
+    to another.
+  - Decide with the previous item whether the on-screen controls and a physical
+    pad remain one merged player or become separate players, each with its own
+    controller type.
 - [ ] Test focus loss, background/foreground, suspend/resume, hot unplug/replug,
   late connection, repeated launches and rapid layout changes; release held keys,
   buttons and feedback without duplicate events or stuck input.
