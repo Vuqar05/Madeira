@@ -224,20 +224,7 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
         }
 
         public static func formatSource(_ source: String) -> String {
-            switch source.lowercased() {
-            case "button_diamond": return "Face buttons"
-            case "dpad": return "D-pad"
-            case "joystick": return "Left stick"
-            case "right_joystick": return "Right stick"
-            case "left_trigger": return "Left trigger"
-            case "right_trigger": return "Right trigger"
-            case "switch": return "Bumpers and menu buttons"
-            case "left_trackpad": return "Left trackpad"
-            case "right_trackpad": return "Right trackpad"
-            case "center_trackpad": return "Touchpad"
-            case "gyro": return "Gyro"
-            default: return source.replacingOccurrences(of: "_", with: " ").capitalized
-            }
+            SteamInputSource(steamName: source)?.title ?? source.replacingOccurrences(of: "_", with: " ").capitalized
         }
 
         public var outputCategory: OutputCategory {
@@ -406,21 +393,8 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
         }
 
         public var humanMode: String {
-            switch mode.lowercased() {
-            case "four_buttons": return "Face Buttons"
-            case "dpad": return "Directional Pad"
-            case "joystick", "joystick_move": return "Analog Joystick"
-            case "joystick_mouse": return "Joystick Mouse"
-            case "trigger": return "Analog Trigger"
-            case "trigger_threshold": return "Threshold Trigger"
-            case "absolute_mouse": return "Mouse"
-            case "relative_mouse": return "Relative Mouse"
-            case "scrollwheel": return "Scroll Wheel"
-            case "radial_menu": return "Radial Menu"
-            case "touch_menu": return "Touch Menu"
-            case "mouse_joystick": return "Mouse Joystick"
-            default: return mode.isEmpty ? "Direct Inputs" : mode.replacingOccurrences(of: "_", with: " ").capitalized
-            }
+            if mode.isEmpty { return "Direct Inputs" }
+            return SteamInputMode(steamName: mode)?.title() ?? mode.replacingOccurrences(of: "_", with: " ").capitalized
         }
     }
 
@@ -1128,5 +1102,122 @@ public struct SteamInputLayoutModel: Equatable, Sendable {
             return p
         }
         return nil
+    }
+}
+
+/// A physical source of the virtual DualSense, as Steam names it in a layout.
+/// Steam's spelling is the raw value; the cases are in the order the editor lists them.
+enum SteamInputSource: String, CaseIterable, Sendable {
+    case faceButtons = "button_diamond"
+    case dpad
+    case leftStick = "joystick"
+    case rightStick = "right_joystick"
+    case leftTrigger = "left_trigger"
+    case rightTrigger = "right_trigger"
+    case bumpersAndMenu = "switch"
+    case touchpad = "center_trackpad"
+    // On a PlayStation controller these are the touchpad's two halves.
+    case touchpadLeftHalf = "left_trackpad"
+    case touchpadRightHalf = "right_trackpad"
+    case gyro
+
+    /// Steam's spelling in any case; nil for a source Madeira does not name.
+    init?(steamName: String) { self.init(rawValue: steamName.lowercased()) }
+
+    var title: String {
+        switch self {
+        case .faceButtons: return "Face buttons"
+        case .dpad: return "D-pad"
+        case .leftStick: return "Left stick"
+        case .rightStick: return "Right stick"
+        case .leftTrigger: return "Left trigger"
+        case .rightTrigger: return "Right trigger"
+        case .bumpersAndMenu: return "Bumpers and menu buttons"
+        case .touchpad: return "Touchpad"
+        case .touchpadLeftHalf: return "Touchpad left half"
+        case .touchpadRightHalf: return "Touchpad right half"
+        case .gyro: return "Gyro"
+        }
+    }
+
+    /// The modes Steam writes for this source, in the order the editor offers them.
+    var modes: [SteamInputMode] {
+        let menus: [SteamInputMode] = [.touchMenu, .radialMenu, .hotbar]
+        switch self {
+        case .faceButtons: return [.buttons, .dpad] + menus
+        case .dpad: return [.dpad, .buttons] + menus
+        case .leftStick, .rightStick:
+            return [.joystickMove, .dpad, .joystickMouse, .flickStick, .scrollWheel, .singleButton, .touchMenu, .radialMenu]
+        case .leftTrigger, .rightTrigger: return [.trigger, .singleButton]
+        case .bumpersAndMenu: return [.switches]
+        case .touchpad, .touchpadLeftHalf, .touchpadRightHalf: return [.absoluteMouse, .dpad, .singleButton, .scrollWheel] + menus
+        case .gyro: return [.mouseJoystick, .gyroToMouse, .joystickCamera]
+        }
+    }
+}
+
+/// A group's mode, as Steam names it in a layout. Steam's spelling is the raw value.
+enum SteamInputMode: String, CaseIterable, Sendable {
+    case buttons = "four_buttons"
+    case dpad
+    case joystick
+    case joystickMove = "joystick_move"
+    case joystickMouse = "joystick_mouse"
+    case flickStick = "flickstick"
+    case scrollWheel = "scrollwheel"
+    case singleButton = "single_button"
+    case touchMenu = "touch_menu"
+    case radialMenu = "radial_menu"
+    case hotbar
+    case trigger
+    case triggerThreshold = "trigger_threshold"
+    case switches
+    case absoluteMouse = "absolute_mouse"
+    case relativeMouse = "relative_mouse"
+    case mouseJoystick = "mouse_joystick"
+    case gyroToMouse = "gyro_to_mouse"
+    case joystickCamera = "joystick_camera"
+
+    /// Steam's spelling in any case; nil for a mode Madeira does not name.
+    init?(steamName: String) { self.init(rawValue: steamName.lowercased()) }
+
+    /// The title Steam's editor shows. Only the gyro titles a mode differently:
+    /// its `mouse_joystick` is Steam's "Gyro to Joystick Camera".
+    func title(on source: SteamInputSource? = nil) -> String {
+        switch self {
+        case .buttons: return "Buttons"
+        case .dpad: return "Directional Pad"
+        case .joystick, .joystickMove: return "Joystick"
+        case .joystickMouse: return "Joystick Mouse"
+        case .flickStick: return "Flick Stick"
+        case .scrollWheel: return "Scroll Wheel"
+        case .singleButton: return "Single Button"
+        case .touchMenu: return "Touch Menu"
+        case .radialMenu: return "Radial Menu"
+        case .hotbar: return "Hotbar Menu"
+        case .trigger: return "Trigger"
+        case .triggerThreshold: return "Threshold Trigger"
+        case .switches: return "Switches"
+        case .absoluteMouse: return "Mouse"
+        case .relativeMouse: return "Relative Mouse"
+        case .mouseJoystick: return source == .gyro ? "Gyro to Joystick Camera" : "Mouse Joystick"
+        case .gyroToMouse: return "Gyro to Mouse"
+        case .joystickCamera: return "Joystick Camera"
+        }
+    }
+
+    /// Inputs the mode has, as Steam names them in its own layouts.
+    var inputs: [String] {
+        switch self {
+        case .buttons: return ["button_a", "button_b", "button_x", "button_y"]
+        case .dpad: return ["dpad_north", "dpad_south", "dpad_west", "dpad_east", "click"]
+        case .trigger: return ["click", "edge"]
+        case .joystickMove: return ["click", "touch"]
+        case .scrollWheel: return ["scroll_clockwise", "scroll_counterclockwise", "click"]
+        case .switches: return ["left_bumper", "right_bumper", "button_escape", "button_menu", "button_back_left", "button_back_right"]
+        case .touchMenu, .radialMenu, .hotbar: return (0..<8).map { "touch_menu_button_\($0)" }
+        case .absoluteMouse, .flickStick, .joystickMouse, .joystickCamera, .mouseJoystick, .singleButton: return ["click"]
+        case .joystick, .triggerThreshold, .relativeMouse, .gyroToMouse: return []
+        }
     }
 }

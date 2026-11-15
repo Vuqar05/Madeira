@@ -1097,7 +1097,7 @@ final class StubTransport: URLProtocol, @unchecked Sendable {
         let removed = only(row(named, set: "InGame", region: "diamond", "Circle (B)"))
         require(removed.displayText == "InGame › Removed (not in the game's action manifest) (Old action)" && removed.isUnresolved,
                 "an action the installed game does not declare stays a visible reference: \(removed.displayText)")
-        let move = row(named, set: "InGame", region: "sticks", "Analog Joystick (Analog)")
+        let move = row(named, set: "InGame", region: "sticks", "Joystick (Analog)")
         require(move.sourceName == "Left stick" && only(move).displayText == "Move" && only(move).category == .action && !only(move).isUnresolved,
                 "a stick's analog game action is named")
         require(only(row(named, set: "InGame", region: "diamond", "Square (X)")).displayText == "E (Use)", "keyboard output with its label")
@@ -1131,7 +1131,7 @@ final class StubTransport: URLProtocol, @unchecked Sendable {
         let inGameRegions = named.actionSets[0].regions
         require(inGameRegions.map(\.id) == ["diamond", "sticks", "system"], "no separate mode-shift region when a binding switches to the group: \(inGameRegions.map(\.id))")
         let stickRows = inGameRegions.first { $0.id == "sticks" }!.inputs
-        require(stickRows.map(\.inputName) == ["Analog Joystick (Analog)", "Joystick Mouse (Analog)"], "the right stick's base mapping is group 2, not the shifted group: \(stickRows.map(\.inputName))")
+        require(stickRows.map(\.inputName) == ["Joystick (Analog)", "Joystick Mouse (Analog)"], "the right stick's base mapping is group 2, not the shifted group: \(stickRows.map(\.inputName))")
         // The layer lists its own mode-shift group, which no shown binding switches to.
         let driving = named.actionSets[2]
         require(driving.regions.map(\.id) == ["diamond", "sticks", "system", "sticks-modeshift"], "layer regions: \(driving.regions.map(\.id))")
@@ -1162,7 +1162,7 @@ final class StubTransport: URLProtocol, @unchecked Sendable {
             let reference = only(row(plain, set: "InGame", region: "diamond", "Cross (A)"))
             require(reference.displayText == "InGame › Jump (Jump)" && reference.isUnresolved && reference.category == .action,
                     "the reference is shown as written, with the layout's own label: \(reference.displayText)")
-            let stick = only(row(plain, set: "InGame", region: "sticks", "Analog Joystick (Analog)"))
+            let stick = only(row(plain, set: "InGame", region: "sticks", "Joystick (Analog)"))
             require(stick.displayText == "InGame › Move" && stick.isUnresolved)
             require(plain.actionNameNote?.hasPrefix("Action names are not resolved. ") == true && plain.actionNameNote!.contains(reason), "\(plain.actionNameNote ?? "")")
             let unresolved = plain.diagnoses.filter { $0.id == "diag-actions-unresolved" }

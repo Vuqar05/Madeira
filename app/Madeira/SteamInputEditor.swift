@@ -117,52 +117,18 @@ enum SteamInputEditorCatalog {
         .init(value: "chord", title: "Chord Press"),
     ]
 
-    /// Physical sources of the virtual DualSense and the modes Steam writes for each.
-    static let sources: [Choice] = [
-        .init(value: "button_diamond", title: "Face buttons"), .init(value: "dpad", title: "D-pad"),
-        .init(value: "joystick", title: "Left stick"), .init(value: "right_joystick", title: "Right stick"),
-        .init(value: "left_trigger", title: "Left trigger"), .init(value: "right_trigger", title: "Right trigger"),
-        .init(value: "switch", title: "Bumpers and menu buttons"), .init(value: "center_trackpad", title: "Touchpad"),
-        // On a PlayStation controller these are the touchpad's two halves.
-        .init(value: "left_trackpad", title: "Touchpad left half"), .init(value: "right_trackpad", title: "Touchpad right half"),
-        .init(value: "gyro", title: "Gyro"),
-    ]
+    /// Physical sources of the virtual DualSense, in the order the editor lists them.
+    static let sources: [Choice] = SteamInputSource.allCases.map { Choice(value: $0.rawValue, title: $0.title) }
 
+    /// The modes Steam writes for a source, titled as Steam's editor titles them there.
     static func modes(for source: String) -> [Choice] {
-        let buttons: [Choice] = [.init(value: "four_buttons", title: "Buttons"), .init(value: "dpad", title: "Directional Pad")]
-        let stick: [Choice] = [.init(value: "joystick_move", title: "Joystick"), .init(value: "dpad", title: "Directional Pad"),
-                               .init(value: "joystick_mouse", title: "Joystick Mouse"), .init(value: "flickstick", title: "Flick Stick"),
-                               .init(value: "scrollwheel", title: "Scroll Wheel"), .init(value: "single_button", title: "Single Button"),
-                               .init(value: "touch_menu", title: "Touch Menu"), .init(value: "radial_menu", title: "Radial Menu")]
-        let menus: [Choice] = [.init(value: "touch_menu", title: "Touch Menu"), .init(value: "radial_menu", title: "Radial Menu"),
-                               .init(value: "hotbar", title: "Hotbar Menu")]
-        switch source.lowercased() {
-        case "button_diamond": return buttons + menus
-        case "dpad": return [.init(value: "dpad", title: "Directional Pad"), .init(value: "four_buttons", title: "Buttons")] + menus
-        case "joystick", "right_joystick": return stick
-        case "left_trigger", "right_trigger": return [.init(value: "trigger", title: "Trigger"), .init(value: "single_button", title: "Single Button")]
-        case "switch": return [.init(value: "switches", title: "Switches")]
-        case "center_trackpad", "left_trackpad", "right_trackpad": return [.init(value: "absolute_mouse", title: "Mouse"), .init(value: "dpad", title: "Directional Pad"),
-                                        .init(value: "single_button", title: "Single Button"), .init(value: "scrollwheel", title: "Scroll Wheel")] + menus
-        case "gyro": return [.init(value: "mouse_joystick", title: "Gyro to Joystick Camera"), .init(value: "gyro_to_mouse", title: "Gyro to Mouse"),
-                             .init(value: "joystick_camera", title: "Joystick Camera")]
-        default: return []
-        }
+        guard let source = SteamInputSource(steamName: source) else { return [] }
+        return source.modes.map { Choice(value: $0.rawValue, title: $0.title(on: source)) }
     }
 
     /// Inputs each mode has, as Steam names them in its own layouts.
     static func inputs(for mode: String) -> [String] {
-        switch mode.lowercased() {
-        case "four_buttons": return ["button_a", "button_b", "button_x", "button_y"]
-        case "dpad": return ["dpad_north", "dpad_south", "dpad_west", "dpad_east", "click"]
-        case "trigger": return ["click", "edge"]
-        case "joystick_move": return ["click", "touch"]
-        case "scrollwheel": return ["scroll_clockwise", "scroll_counterclockwise", "click"]
-        case "switches": return ["left_bumper", "right_bumper", "button_escape", "button_menu", "button_back_left", "button_back_right"]
-        case "touch_menu", "radial_menu", "hotbar": return (0..<8).map { "touch_menu_button_\($0)" }
-        case "absolute_mouse", "flickstick", "joystick_mouse", "joystick_camera", "mouse_joystick", "single_button": return ["click"]
-        default: return []
-        }
+        SteamInputMode(steamName: mode)?.inputs ?? []
     }
 
     /// Group settings the editor offers as numbers, with what they mean.
