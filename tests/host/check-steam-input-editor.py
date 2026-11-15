@@ -343,6 +343,11 @@ let preserved = ["[$WIN32]", "[$OSX]", "[$LINUX]", "[!$PS3]", "\"future_block\""
         require(shift.verb == .modeShift(source: "joystick", groupID: "2"), "\(shift.verb)")
         require(next.preset(at: preset.path)!.bindings.contains { $0.groupID == "2" && $0.isModeShift && $0.isActive && $0.source == "joystick" })
         require(next.referenceProblems.isEmpty, "a new mode shift resolves")
+        // Steam writes a shift's entry directly after the entry of the group it shifts from.
+        let faceShift = try draft.addingModeShift(on: press.path, in: preset.path, source: "button_diamond", mode: "dpad")
+        require(faceShift.preset(at: preset.path)!.bindings.map(\.groupID) == ["0", "2", "1"],
+                "the shift follows its source's entry: \(faceShift.preset(at: preset.path)!.bindings.map(\.groupID))")
+        require(text(faceShift.bytes).contains("\"0\"\t\t\"button_diamond active\"\n\t\t\t\"2\"\t\t\"button_diamond active modeshift\"\n\t\t\t\"1\""))
 
         // Action sets and layers.
         next = try draft.addingActionSet(title: "Driving", copying: preset.path)
@@ -370,6 +375,32 @@ let preserved = ["[$WIN32]", "[$OSX]", "[$LINUX]", "[!$PS3]", "\"future_block\""
         require(noLayer.model.actionLayers.isEmpty && noLayer.model.presets.count == 2 && noLayer.referenceProblems.isEmpty)
         require(refusal { try draft.removingActionSet(preset.path) } == "A layout needs at least one action set.")
         require(refusal { try draft.addingActionLayer(title: "X", parentSetID: "Nope") } == "Choose the action set this layer belongs to.")
+        require(refusal { try draft.addingActionSet(title: "default", copying: nil) } == "An action set already has that name.")
+
+        // A layout that does not declare its sets (Steam's templates) gets them
+        // declared as Steam does when a second set or a layer is added:
+        // `actions` naming each preset with `legacy_set` 1, new keys `Preset_100000N`.
+        let declaration = "\t\"actions\"\n\t{\n\t\t\"Default\"\n\t\t{\n\t\t\t\"title\"\t\t\"Default\"\n\t\t\t\"legacy_set\"\t\t\"1\"\n\t\t}\n\t}\n"
+        require(fixture.contains(declaration))
+        let undeclared = try SteamInputLayoutDraft(bytes: Data(fixture.replacingOccurrences(of: declaration, with: "").utf8))
+        require(!undeclared.model.declaresActionSets && undeclared.model.actionSets.map(\.title) == ["Default"])
+        let declared = try undeclared.addingActionSet(title: "Inventory", copying: undeclared.model.presets[0].path)
+        check("declare sets", undeclared, declared)
+        require(declared.model.declaresActionSets && declared.model.actionSets.map(\.id) == ["Default", "Preset_1000001"]
+                && declared.model.actionSets.map(\.title) == ["Default", "Inventory"], "\(declared.model.actionSets)")
+        require(declared.model.presets.map(\.name) == ["Default", "Preset_1000001"] && declared.referenceProblems.isEmpty)
+        require(declared.model.preset(for: declared.model.actionSets[1])?.id == "1")
+        let declaredText = text(declared.bytes)
+        require(declaredText.range(of: "\"actions\"")!.lowerBound < declaredText.range(of: "\"future_block\"")!.lowerBound,
+                "the declaration goes before the layout's blocks")
+        let switching = try declared.replacingBinding(at: press.bindings[0].path, with: .changeActionSet(preset: 2), label: nil)
+        require(switching.referenceProblems.isEmpty, "a switch to the new set resolves")
+        // A layer on an undeclared layout: the sets are declared and its parent is the preset's name.
+        let layered = try undeclared.addingActionLayer(title: "Hotbar", parentSetID: undeclared.model.actionSets[0].id)
+        require(layered.model.declaresActionSets && layered.model.actionLayers.map(\.id) == ["Preset_1000001"]
+                && layered.model.actionLayers[0].parentSetID == "Default" && layered.model.preset(for: layered.model.actionLayers[0])?.id == "1"
+                && layered.referenceProblems.isEmpty, "\(layered.model.actionLayers)")
+        require(try declared.declaringActionSets().bytes == declared.bytes, "declaring declared sets changes nothing")
 
         // =============================================================
         // 3. Unsupported surface: shown, kept, and never edited by accident

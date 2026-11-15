@@ -925,6 +925,8 @@ simulator-tested; owner device acceptance outstanding, so their boxes stay open)
     binding);
   - action sets (copied from an existing set's groups as exact text under new
     ids), layers, renaming, and removal, which is refused while still referenced.
+    A layout without declared sets gets them declared, as Steam does, when a set
+    or layer is added (see the device acceptance below).
   Command spellings are those in Valve's templates and the sampled layouts
   (`xinput_button A`, `CHANGE_PRESET n 1 1`, `add_layer n 0 0`). Ambiguous group
   ids and version 2 layouts are not edited. `SteamInputEditHistory` gives bounded
@@ -1013,6 +1015,35 @@ simulator-tested; owner device acceptance outstanding, so their boxes stay open)
   file picker, share sheet and SwiftUI behavior on the iPad. Gyro, touchpad and
   menu bindings can be edited, but a layout that uses them still cannot be
   applied. Those inputs belong to milestone 5.
+- Owner device acceptance, first pass (2026-11-15, Terraria, DualSense, paired
+  iPad; `STEAM_INPUT_EDITOR_ACCEPTANCE.md`). Steps 1 to 5 passed: create from
+  the Gamepad template and edit, use in the game, restart, live edit while a
+  button is held, and a refused live edit. In step 1, "Start from the game
+  default" was not accepted: Terraria's controller-matched default is a Steam
+  Deck (`controller_neptune`) layout, which apply refuses; applying such
+  layouts with a warning is a milestone 5 item. For steps 6 and 7 the owner used
+  four test layouts made with the production editor operations from a personal
+  copy of Steam's Gamepad template:
+  - Passed: a hold layer (`hold_layer 2 0 0`, with the `actions` declaration
+    added by hand); a long press; toggle; turbo (`repeat_rate` 150); and a right
+    stick inner dead zone.
+  - Failed, then fixed: a second action set. On applying it, the new set's
+    bindings were in effect at once, and `CHANGE_PRESET` changed nothing. The
+    template declares no action sets, and the editor had added a preset named
+    after the set's title without declaring it. In every Steam-saved layout of a
+    game without its own action sets, the sets are declared:
+    `actions { "Default" { "title" … "legacy_set" "1" } "Preset_1000001" { … } }`,
+    and each extra preset is named by its key. Adding an action set or a layer
+    now declares the existing sets that way first (`declaringActionSets`), and
+    new sets and layers get Steam's `Preset_<1000000 + preset id>` key. That also
+    removes the refusal to add layers to such layouts. Retest outstanding.
+  - Failed, then fixed: a mode shift (d-pad up held shifts the right stick to
+    a d-pad). The editor appended the `active modeshift` entry at the end of
+    the preset. In all 54 mode shifts in the local Workshop sample, the entry
+    directly follows its source's own active entry, so the editor now writes it
+    there. Whether the position is what Steam requires is not established; the
+    retest decides it.
+  Steps 8 to 10 are outstanding.
 
 Done when: a player creates a layout, changes a recognizable binding, uses it in
 the running game, restarts and gets the same result. Export/import preserves

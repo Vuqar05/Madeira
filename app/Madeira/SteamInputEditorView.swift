@@ -319,16 +319,14 @@ struct SteamInputLayoutEditorView: View {
                     newSetName = ""
                 }.disabled(newSetName.trimmingCharacters(in: .whitespaces).isEmpty)
             }
-            if draft.model.declaresActionSets {
-                HStack {
-                    TextField("New layer", text: $newLayerName)
-                    Button("Add") {
-                        let parent = draft.model.actionSets.first { set in model.presetPath.flatMap(draft.preset(at:)) == draft.model.preset(for: set) }?.id
-                            ?? draft.model.actionSets.first?.id ?? ""
-                        model.perform { try $0.addingActionLayer(title: newLayerName, parentSetID: parent) }
-                        newLayerName = ""
-                    }.disabled(newLayerName.trimmingCharacters(in: .whitespaces).isEmpty)
-                }
+            HStack {
+                TextField("New layer", text: $newLayerName)
+                Button("Add") {
+                    let parent = draft.model.actionSets.first { set in model.presetPath.flatMap(draft.preset(at:)) == draft.model.preset(for: set) }?.id
+                        ?? draft.model.actionSets.first?.id ?? ""
+                    model.perform { try $0.addingActionLayer(title: newLayerName, parentSetID: parent) }
+                    newLayerName = ""
+                }.disabled(newLayerName.trimmingCharacters(in: .whitespaces).isEmpty)
             }
         } header: {
             Text("Action sets and layers")

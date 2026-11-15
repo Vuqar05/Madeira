@@ -527,10 +527,10 @@ struct SteamInputLayoutDraft: Equatable {
         return last.map { $0 + 1 }
     }
 
-    private func addingSourceBinding(groupID: String, value: String, to presetPath: VDFPath) throws -> Self {
+    private func addingSourceBinding(groupID: String, value: String, to presetPath: VDFPath, at index: Int? = nil) throws -> Self {
         try edited { document in
             let (withBlock, sources) = try document.ensuringBlock("group_source_bindings", in: presetPath)
-            return try withBlock.inserting(.leaf(groupID, value), into: sources)
+            return try withBlock.inserting(.leaf(groupID, value), into: sources, at: index)
         }
     }
 
@@ -547,19 +547,70 @@ struct SteamInputLayoutDraft: Equatable {
         let id = nextGroupID
         // The activator's path is unchanged: the group goes after the last group,
         // so the path of an activator inside an earlier group stays valid.
+        // Steam writes the shift's entry directly after the entry of the group
+        // it shifts from; every layout Steam saves orders them that way.
+        let after = preset(at: presetPath).flatMap { activeBinding(for: source, in: $0) }.flatMap { elementIndex(of: $0.path) }
         return try addingGroup(id: id, mode: mode)
-            .addingSourceBinding(groupID: id, value: "\(source) active modeshift", to: presetPath)
+            .addingSourceBinding(groupID: id, value: "\(source) active modeshift", to: presetPath, at: after.map { $0 + 1 })
             .addingBinding(.modeShift(source: source, groupID: id), label: nil, to: activatorPath)
+    }
+
+    /// The position of the node at `path` among its parent's keys and blocks.
+    private func elementIndex(of path: VDFPath) -> Int? {
+        guard let last = path.steps.last, case .block(_, _, let children, _, _)? = document.findNode(at: VDFPath(Array(path.steps.dropLast()))) else { return nil }
+        var index = 0, occurrence = 0
+        for child in children {
+            switch child {
+            case .leaf(let k, _, _), .block(let k, _, _, _, _):
+                if document.stringValue(for: k).caseInsensitiveCompare(last.key) == .orderedSame {
+                    if occurrence == last.index { return index }
+                    occurrence += 1
+                }
+                index += 1
+            default: break
+            }
+        }
+        return nil
     }
 
     // MARK: Action sets and layers
 
-    /// A key for a new set or layer block, unique among sets, layers and presets.
-    private func newKey(_ prefix: String) -> String {
+    /// The key Steam gives a new set or layer: `Preset_` and 1000000 plus
+    /// its preset's id, unique among sets, layers and presets.
+    private func newKey(presetID: Int) -> String {
         let used = Set((model.actionSets.map(\.id) + model.actionLayers.map(\.id) + model.presets.map(\.name)).map { $0.lowercased() })
-        var number = 1
-        while used.contains("\(prefix)\(number)".lowercased()) { number += 1 }
-        return "\(prefix)\(number)"
+        var number = 1_000_000 + presetID
+        while used.contains("preset_\(number)") { number += 1 }
+        return "Preset_\(number)"
+    }
+
+    /// Declares the layout's action sets the way Steam does once a layout for
+    /// a game without its own action sets has more than one: an `actions`
+    /// block naming each preset, `legacy_set` 1. Without it Steam does not
+    /// switch between the presets. A layout that already declares them is
+    /// returned unchanged.
+    func declaringActionSets() throws -> Self {
+        if model.declaresActionSets { return self }
+        let layerPresets = model.actionLayers.compactMap { model.preset(for: $0) }
+        let sets = model.presets.filter { !layerPresets.contains($0) }
+        let names = sets.map(\.name)
+        guard !names.isEmpty, names.allSatisfy({ name in
+            !name.isEmpty && name.allSatisfy { $0.isLetter || $0.isNumber || $0 == "_" }
+        }), Set(names.map { $0.lowercased() }).count == names.count else {
+            throw EditError.notEditable("This layout's action sets have no usable names, so Madeira cannot declare them.")
+        }
+        let actions: VDFNewNode = .block("actions", sets.map { .block($0.name, [.leaf("title", $0.name), .leaf("legacy_set", "1")]) })
+        // Steam writes the declaration before the layout's localization and groups.
+        guard case .block(_, _, let children, _, _)? = document.findNode(at: model.rootPath) else { throw EditError.notFound("The layout has no mappings.") }
+        var index = 0, firstBlock: Int?
+        for child in children {
+            switch child {
+            case .leaf: index += 1
+            case .block: if firstBlock == nil { firstBlock = index }; index += 1
+            default: break
+            }
+        }
+        return try edited { try $0.inserting(actions, into: model.rootPath, at: firstBlock) }
     }
 
     /// A new action set. Its preset starts as a copy of `copying`'s groups —
@@ -567,14 +618,16 @@ struct SteamInputLayoutDraft: Equatable {
     /// set, and editing one set never changes another.
     func addingActionSet(title: String, copying sourcePresetPath: VDFPath?) throws -> Self {
         let title = try Self.text(title, "set name")
-        let key = model.declaresActionSets ? newKey("Set_") : title
-        if !model.declaresActionSets, model.presets.contains(where: { $0.name.caseInsensitiveCompare(title) == .orderedSame }) {
+        if model.actionSets.contains(where: { $0.title.caseInsensitiveCompare(title) == .orderedSame })
+            || model.actionLayers.contains(where: { $0.title.caseInsensitiveCompare(title) == .orderedSame }) {
             throw EditError.invalid("An action set already has that name.")
         }
-        var draft = self
-        if model.declaresActionSets, let actions = model.actionSets.compactMap(\.path).first.map({ VDFPath(Array($0.steps.dropLast())) }) {
-            draft = try draft.edited { try $0.inserting(.block(key, [.leaf("title", title), .leaf("legacy_set", "1")]), into: actions) }
+        var draft = try declaringActionSets()
+        let key = draft.newKey(presetID: draft.nextPresetID)
+        guard let actions = draft.model.actionSets.compactMap(\.path).first.map({ VDFPath(Array($0.steps.dropLast())) }) else {
+            throw EditError.notEditable("This layout's action sets cannot be found.")
         }
+        draft = try draft.edited { try $0.inserting(.block(key, [.leaf("title", title), .leaf("legacy_set", "1")]), into: actions) }
         return try draft.addingPreset(name: key, copying: sourcePresetPath)
     }
 
@@ -582,18 +635,25 @@ struct SteamInputLayoutDraft: Equatable {
     /// what it binds and leaves the rest of its set as it is.
     func addingActionLayer(title: String, parentSetID: String) throws -> Self {
         let title = try Self.text(title, "layer name")
-        guard model.declaresActionSets else {
-            throw EditError.notEditable("Layers need the layout to declare its action sets. This layout does not, so Madeira cannot add one.")
-        }
-        guard model.actionSets.filter({ $0.id.caseInsensitiveCompare(parentSetID) == .orderedSame }).count == 1 else {
+        let parents = model.actionSets.filter { $0.id.caseInsensitiveCompare(parentSetID) == .orderedSame }
+        guard parents.count == 1, let parentPreset = model.preset(for: parents[0]) else {
             throw EditError.invalid("Choose the action set this layer belongs to.")
         }
-        let key = newKey("Layer_")
-        var draft = self
+        if model.actionSets.contains(where: { $0.title.caseInsensitiveCompare(title) == .orderedSame })
+            || model.actionLayers.contains(where: { $0.title.caseInsensitiveCompare(title) == .orderedSame }) {
+            throw EditError.invalid("An action set or layer already has that name.")
+        }
+        var draft = try declaringActionSets()
+        // Declaring the sets gives an undeclared parent its key: its preset's name.
+        guard let parentID = draft.model.actionSets.first(where: { draft.model.preset(for: $0)?.id == parentPreset.id })?.id else {
+            throw EditError.invalid("Choose the action set this layer belongs to.")
+        }
+        let key = draft.newKey(presetID: draft.nextPresetID)
+        let root = model.rootPath
         draft = try draft.edited { document in
-            let (withBlock, layers) = try document.ensuringBlock("action_layers", in: model.rootPath)
+            let (withBlock, layers) = try document.ensuringBlock("action_layers", in: root)
             return try withBlock.inserting(.block(key, [.leaf("title", title), .leaf("legacy_set", "1"), .leaf("set_layer", "1"),
-                                                        .leaf("parent_set_name", parentSetID)]), into: layers)
+                                                        .leaf("parent_set_name", parentID)]), into: layers)
         }
         return try draft.addingPreset(name: key, copying: nil)
     }
