@@ -1049,7 +1049,8 @@ simulator-tested; owner device acceptance outstanding, so their boxes stay open)
     layouts, the target group is defined earlier than the binding. The editor
     now inserts the new group directly before the group that holds the button,
     and the group screen follows its group by id, because that group's position
-    moves. Retest outstanding. The same log confirms the action set diagnosis:
+    moves. The owner's retest passed: holding d-pad up, the right stick
+    moved the hotbar. The same log confirms the action set diagnosis:
     the first layout logged "Failed to create digital binding 'controller_action
     CHANGE_PRESET 2 1 1, …'", and the fixed one logs nothing.
   Steps 8 to 10 are outstanding.
