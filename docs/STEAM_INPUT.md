@@ -497,3 +497,42 @@ lookup. Their host regressions pass. The owner confirmed all follow-up physical
 smoke tests passed on the updated signed iPad app: saved community replay and
 distinctive bindings, refreshed pagination, community application and Game default
 restoration with working physical input.
+
+## Controller identity (milestone 5, 2026-11-15)
+
+Steam Input reads one virtual HID controller that only Dock may open
+(`MADEIRA_HIDPAD_OWNER=dockhost.exe`). A launch now chooses its identity once,
+before Dock's handoff (`SteamInputController.beginSession`), and the selection
+store, the client's settings and the HID device all use that choice:
+
+- a DualSense or DualShock is the virtual DualSense (054C:0CE6, Steam type 45),
+  the proven identity;
+- the on-screen controls and any other pad are an Xbox Wireless Controller over
+  Bluetooth (045E:0B13, Steam type 32, `controller_xboxone`), when
+  `env.MADEIRA_STEAM_INPUT_XBOX = 1`. Without the switch every launch keeps the
+  DualSense, as before, until a device confirms the client opens the Xbox pad.
+
+The on-screen controls and a physical pad stay one merged player (owner
+decision); its identity follows the physical pad. The identity is fixed for
+the session: a pad paired later is still read through it.
+
+The Xbox device (`build/hidpad`, kind `xbox`) uses the controller's own
+Bluetooth report layout and a BTHENUM parent, so SDL's Windows HIDAPI reports a
+Bluetooth bus and its Xbox One driver reads it with or without the report
+descriptor. `tests/host/check-hidpad-sdl.py` rebuilds the descriptor from Wine's
+preparsed data with SDL's own hidapi reconstruction and checks SDL reads every
+field at the right offset; a nested rumble collection was found to split report
+0x01 there and was flattened. Rumble (report 0x03) reaches the physical pad
+like the DualSense's. With the Xbox identity Madeira also sets
+`SteamController_XBoxSupport` to 1 for the launch (January reads it as a
+boolean; steamclient64 `0x5d38c6`) and restores it afterwards.
+
+Selections, journals, remembered controller details and cached Workshop
+defaults are kept per identity (the DualSense keeps its existing identity and
+file names). Game defaults resolve for the identity's Steam type: January's
+compatibility for type 32 is generic, Xbox 360, Xbox One, PS3, Apple and
+Android layouts, and its templates are `controller_xboxone_*` (madeira-dock
+`tools/check-steam-input-compat.py` and `check-steam-input-ui.py`). The
+community filter, Steam templates and "Start from the game default" use the
+current identity. `tests/host/check-steam-input-controller.py` covers the rule,
+compatibility and per-controller resolution.

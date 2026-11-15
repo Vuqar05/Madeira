@@ -431,9 +431,10 @@ extension SteamInputPersonalCopy {
     }
 }
 
-/// Steam's own PlayStation 5 templates, as a starting point for a personal
-/// layout. They are read from the installed client (the pinned January
-/// template table), never bundled, and only the ones present are offered.
+/// Steam's own templates for the player's controller (DualSense or Xbox), as
+/// a starting point for a personal layout. They are read from the installed
+/// client (the pinned January template table), never bundled, and only the
+/// ones present are offered.
 enum SteamInputTemplates {
     struct Template: Identifiable, Equatable {
         let name: String
@@ -447,11 +448,13 @@ enum SteamInputTemplates {
         (12, "Gamepad with Flick Stick"), (6, "Keyboard (WASD) and Mouse"), (8, "Mouse"), (9, "Relative Mouse"),
     ]
 
-    static func available(clientRoot: URL) -> [Template] {
+    static func available(clientRoot: URL, controller: SteamInputController = .dualSense) -> [Template] {
         var seen = Set<String>()
         return catalog.compactMap { entry in
-            guard let name = sh_input_january_ps5_template(entry.index).flatMap({ String(validatingUTF8: $0) }), seen.insert(name).inserted,
-                  let bytes = try? DockSteamInputBundledManifest.januaryPS5Template(clientRoot: clientRoot, index: entry.index),
+            guard let name = sh_input_january_template(controller.steamTypeID, entry.index).flatMap({ String(validatingUTF8: $0) }),
+                  seen.insert(name).inserted,
+                  let bytes = try? DockSteamInputBundledManifest.januaryTemplate(clientRoot: clientRoot, controller: controller,
+                                                                                index: entry.index),
                   (try? DockSteamInputNative.revision(bytes)) != nil else { return nil }
             return Template(name: name, title: entry.title, bytes: bytes)
         }

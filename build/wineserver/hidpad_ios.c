@@ -481,6 +481,14 @@ static unsigned int hidpad_output( struct hidpad_device *device, const unsigned 
         winios_hidpad_set_output( &device->output );
         hidpad_output_log( device, data, size, how );
     }
+    else if (device->id->kind == HIDPAD_KIND_XBOX &&
+             hidpad_xbox_output( data, size, &device->output ))
+    {
+        winios_hidpad_set_output( &device->output );
+        if (device->outputs < HIDPAD_OUT_LOG)
+            fprintf( stderr, "[hidpad-out] m5 xbox #%u via %s: enable %02x rumble L%u R%u\n",
+                     device->outputs + 1, how, data[1], device->output.rumble_left, device->output.rumble_right );
+    }
     else if (!device->outputs)
         fprintf( stderr, "[hid-pad] ml2101 first output report via %s: report %#x, %u bytes\n", how,
                  data[0], size );
@@ -706,7 +714,8 @@ void madeira_hidpad_init( void )
 
     if (!id) return;
     desc = hidpad_descriptor( id, &desc_len );
-    expect = id->kind == HIDPAD_KIND_DUALSENSE ? HIDPAD_DUALSENSE_INPUT_LEN : HIDPAD_GENERIC_INPUT_LEN;
+    expect = id->kind == HIDPAD_KIND_DUALSENSE ? HIDPAD_DUALSENSE_INPUT_LEN
+           : id->kind == HIDPAD_KIND_XBOX ? HIDPAD_XBOX_INPUT_LEN : HIDPAD_GENERIC_INPUT_LEN;
     if (!(preparsed = madeira_hidparse_preparse( desc, desc_len, &size, input, output, feature )) ||
         input[1] != expect)
     {

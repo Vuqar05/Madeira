@@ -11,7 +11,7 @@ import tempfile
 
 root = Path(__file__).resolve().parents[2]
 source = (root / 'app/Madeira/DockSteamInput.swift').read_text()
-source = 'enum DockSteamInputWire' + source.split('enum DockSteamInputWire', 1)[1].split("/// Steam Input's PlayStation setting", 1)[0]
+source = 'enum DockSteamInputWire' + source.split('enum DockSteamInputWire', 1)[1].split("/// Steam Input's controller settings for a Dock launch", 1)[0]
 source = source.replace('FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]', 'testRoot.appendingPathComponent("support")')
 service_start = source.index('@MainActor enum DockSteamInputService')
 service_end = source.index('struct DockSteamInputSelection:')
@@ -907,6 +907,6 @@ with tempfile.TemporaryDirectory(prefix='madeira-input-service-') as temporary:
     main = tmp / 'main.swift'
     main.write_text('import Foundation\n' + source + cases)
     subprocess.run([os.environ.get('HOST_CC') or shutil.which('clang'), '-std=c11', '-Wall', '-Wextra', '-Werror', '-c', str(root/'madeira-dock/src/steam_input_service.c'), '-o', str(tmp/'shared.o')], check=True)
-    subprocess.run([os.environ.get('SWIFTC') or shutil.which('swiftc'), '-D', 'DEBUG', '-module-cache-path', str(tmp/'modules'), '-import-objc-header', str(root/'madeira-dock/src/steam_input_service.h'), str(root/'app/Madeira/SteamInputTransactions.swift'), str(root/'app/Madeira/SteamInputPersonalReferences.swift'), str(main), str(tmp/'shared.o'), '-o', str(tmp/'check')], check=True)
+    subprocess.run([os.environ.get('SWIFTC') or shutil.which('swiftc'), '-D', 'DEBUG', '-module-cache-path', str(tmp/'modules'), '-import-objc-header', str(root/'madeira-dock/src/steam_input_service.h'), str(root/'app/Madeira/SteamInputTransactions.swift'), str(root/'app/Madeira/SteamInputController.swift'), str(root/'app/Madeira/SteamInputPersonalReferences.swift'), str(main), str(tmp/'shared.o'), '-o', str(tmp/'check')], check=True)
     subprocess.run([str(tmp/'check'), str(tmp)], check=True)
     subprocess.run([str(tmp/'fixture'), 'verify', str(tmp/'command.bin')], check=True)

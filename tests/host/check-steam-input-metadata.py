@@ -121,7 +121,9 @@ enum SteamInstallFiles { static func betaKey(appID: Int, steamApps: URL) -> Stri
     static var value: DockSteamInputContext?
     static var remembered: DockSteamInputContext?
     static func context(appID: UInt32) -> DockSteamInputContext? { value }
-    static func rememberedContext(appID: UInt32) -> DockSteamInputContext? { remembered }
+    static func rememberedContext(appID: UInt32, controller: SteamInputController) -> DockSteamInputContext? {
+        remembered?.controller == controller ? remembered : nil
+    }
 }
 @MainActor final class SteamInputDefaultSources {
     enum Failure: Error { case incompatible }
@@ -129,7 +131,8 @@ enum SteamInstallFiles { static func betaKey(appID: Int, steamApps: URL) -> Stri
     var value: DockSteamInputDefault.Recommendation?
     var calls: [([UInt64], Bool)] = []
     static func metadata(appID: UInt32) async throws -> SteamAppInfo.SteamInputMetadata? { nil }
-    func recommendation(appID: UInt32, ids: [UInt64], refresh: Bool, controllerMatched: Bool) async throws -> DockSteamInputDefault.Recommendation {
+    func recommendation(appID: UInt32, ids: [UInt64], refresh: Bool, controllerMatched: Bool,
+                        controller: SteamInputController) async throws -> DockSteamInputDefault.Recommendation {
         calls.append((ids, controllerMatched))
         guard let value else { throw Failure.incompatible }
         return value
@@ -326,6 +329,6 @@ with tempfile.TemporaryDirectory(prefix='madeira-input-pics-') as temporary:
     main.write_text(service_test)
     subprocess.run([compiler, '-parse-as-library', '-module-cache-path', str(tmp / 'modules'),
                     '-import-objc-header', str(header), str(root / 'app/Madeira/SwiftSteam/Library/SteamAppInfo.swift'),
-                    str(root / 'app/Madeira/SteamInputTransactions.swift'), str(main), str(tmp / 'service.o'),
+                    str(root / 'app/Madeira/SteamInputTransactions.swift'), str(root / 'app/Madeira/SteamInputController.swift'), str(main), str(tmp / 'service.o'),
                     '-o', str(tmp / 'service-check')], check=True)
     subprocess.run([str(tmp / 'service-check'), str(tmp)], check=True)

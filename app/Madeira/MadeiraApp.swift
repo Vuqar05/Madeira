@@ -24,6 +24,8 @@ struct MadeiraApp: App {
         ProfileUnification.run()
         // Games and downloads keep going when Madeira leaves the screen (BackgroundRun.swift).
         BackgroundRun.shared.start()
+        // Steam Input's controller identity reads the paired pad and madeira.cfg.
+        GamepadInput.installSteamInputEnvironment()
         // Read the cached library before the first grid page is built.
         if LibraryGridArm.enabled, SteamOwnedLibrary.enabled { SteamOwnedLibrary.shared.start() }
     }

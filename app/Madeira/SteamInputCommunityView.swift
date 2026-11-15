@@ -21,12 +21,15 @@ struct SteamInputCommunityView: View {
     @State private var request: UUID?
     @State private var fetched: Date?
     @State private var downloaded: [SteamInputCommunitySources.Revision] = []
+    /// The controller whose layouts this page offers: the running session's,
+    /// else the one a launch would present now.
+    @State private var controller = SteamInputController.current
     private var accountID: UInt32 {
         SteamOwnedLibrary.shared.personalLayoutAccountID
     }
     private var queryKey: String { "\(order.rawValue):\(SteamInputCommunitySources.search(search))" }
     private var visible: [SteamWorkshopItem] {
-        compatibleOnly ? items.filter { ($0.tags ?? []).contains { ["controller_ps5", "controller_ps4"].contains($0) } } : items
+        compatibleOnly ? items.filter { ($0.tags ?? []).contains { controller.accepts(type: $0) } } : items
     }
     var body: some View {
         List {
@@ -34,7 +37,11 @@ struct SteamInputCommunityView: View {
                 Picker("Sort", selection: $order) {
                     ForEach(SteamInputCommunitySources.Order.allCases) { Text($0.label).tag($0) }
                 }
-                Toggle("DualSense / DualShock layouts only", isOn: $compatibleOnly)
+                Toggle(controller == .dualSense ? "DualSense / DualShock layouts only" : "Xbox controller layouts only",
+                       isOn: $compatibleOnly).accessibilityIdentifier("community.compatibleOnly")
+                Text("Steam sees your controller as \(controller == .dualSense ? "a DualSense" : "an Xbox controller"). "
+                     + "Layouts made for it work fully; others need confirmation before they apply.")
+                    .font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("community.controller")
                 Text("Valve's Steam Input engine runs these layouts. Compatibility is checked against the downloaded bindings before applying.")
                     .font(.caption).foregroundStyle(.secondary)
             }
@@ -46,7 +53,8 @@ struct SteamInputCommunityView: View {
                 }
             }
             SteamInputPersonalLayoutsSection(appID: appID, accountID: accountID, gameDefault: { try await gameDefault() },
-                                             templates: { SteamInputTemplates.available(clientRoot: MadeiraDock.clientRoot) })
+                                             templates: { SteamInputTemplates.available(clientRoot: MadeiraDock.clientRoot,
+                                                                                        controller: controller) })
             Section("Community layouts") {
                 ForEach(visible) { item in
                     NavigationLink {
@@ -88,7 +96,8 @@ struct SteamInputCommunityView: View {
         let id = Int(appID)
         let game = await Task.detached { MadeiraDock.games(drive: MadeiraDock.drive).first { $0.id == id } }.value
         guard let game else { throw SteamInputUnavailable(errorDescription: "The game is not installed.") }
-        let resolution = await SteamOwnedLibrary.shared.resolveSteamInputDefault(game: game, refresh: false, rememberedContext: true)
+        let resolution = await SteamOwnedLibrary.shared.resolveSteamInputDefault(game: game, refresh: false, rememberedContext: true,
+                                                                                 controller: controller)
         guard case .recommended(let value) = resolution else {
             if resolution == .unresolved(.contextUnavailable) || resolution == .unresolved(.templateControllerDependent) {
                 // Steam's choice depends on the controller, which Dock reports only while the game runs.

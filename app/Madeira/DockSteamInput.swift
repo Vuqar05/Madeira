@@ -65,11 +65,14 @@ enum DockSteamInputWire {
     }
 }
 
-/// The single Madeira virtual DualSense transport currently occupies slot 0.
-/// This identity describes that bridge, not a paired controller's hardware ID.
-/// Physical per-device identity/player assignment remains to be implemented.
+/// One Madeira virtual controller occupies Steam's slot 0: the DualSense or
+/// the Xbox controller the launch chose (SteamInputController). Selections,
+/// journals and remembered details are kept per identity, never per physical
+/// pad, so each controller type keeps its own layouts.
 @MainActor enum DockSteamInputService {
-    static let controllerID = UUID(uuidString: "77F4893A-244E-4808-994C-617331E9DC25")!
+    /// The identity this launch's selection and journal belong to.
+    private(set) static var controller: SteamInputController = .dualSense
+    static var controllerID: UUID { controller.controllerID }
     private(set) static var snapshot: DockSteamInputWire.Snapshot?
     private(set) static var selection: DockSteamInputSelection?
     /// Pending journal work requires explicit recovery; never reapply it just
@@ -173,33 +176,36 @@ enum DockSteamInputWire {
         if let value { remember(value, appID: appID) }
         return value
     }
-    /// Where the controller details Dock last reported for each game are kept.
-    private static func rememberedURL(appID: UInt32) -> URL {
-        storage.appendingPathComponent("SteamInputContext/\(appID).json")
+    /// Where the controller details Dock last reported for each game and
+    /// controller are kept (the DualSense's under the name it always had).
+    private static func rememberedURL(appID: UInt32, controller: SteamInputController) -> URL {
+        storage.appendingPathComponent("SteamInputContext/\(appID)\(controller == .dualSense ? "" : "-" + controller.rawValue).json")
     }
-    private static var rememberedCache: [UInt32: DockSteamInputContext] = [:]
-    /// Keeps what Dock reported for the virtual DualSense in this game's
+    private struct RememberedKey: Hashable { let appID: UInt32; let controller: SteamInputController }
+    private static var rememberedCache: [RememberedKey: DockSteamInputContext] = [:]
+    /// Keeps what Dock reported for the virtual controller in this game's
     /// session, so a personal layout can be started from the game default
     /// while the game is not running. Written only when it changes.
     private static func remember(_ value: DockSteamInputContext, appID: UInt32) {
-        guard value.isDualSense, rememberedCache[appID] != value else { return }
-        rememberedCache[appID] = value
-        let url = rememberedURL(appID: appID)
+        guard let controller = value.controller, rememberedCache[.init(appID: appID, controller: controller)] != value else { return }
+        rememberedCache[.init(appID: appID, controller: controller)] = value
+        let url = rememberedURL(appID: appID, controller: controller)
         do {
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             try JSONEncoder().encode(value).write(to: url, options: .atomic)
         } catch { SteamLog.event("[steam-input] controller details not kept") }
     }
-    /// The controller details Dock reported in this game's most recent session,
-    /// or nil when it has never reported them. Never used to apply a layout:
-    /// only to choose the starting point of a new personal layout.
-    static func rememberedContext(appID: UInt32) -> DockSteamInputContext? {
-        if let cached = rememberedCache[appID] { return cached }
-        guard appID > 0, let data = try? Data(contentsOf: rememberedURL(appID: appID)), data.count <= 8192,
-              let value = try? JSONDecoder().decode(DockSteamInputContext.self, from: data), value.isDualSense,
+    /// The details Dock reported for `controller` in this game's most recent
+    /// session with it, or nil when it never has. Never used to apply a
+    /// layout: only to choose the starting point of a new personal layout.
+    static func rememberedContext(appID: UInt32, controller: SteamInputController) -> DockSteamInputContext? {
+        let key = RememberedKey(appID: appID, controller: controller)
+        if let cached = rememberedCache[key] { return cached }
+        guard appID > 0, let data = try? Data(contentsOf: rememberedURL(appID: appID, controller: controller)), data.count <= 8192,
+              let value = try? JSONDecoder().decode(DockSteamInputContext.self, from: data), value.controller == controller,
               value.vendor <= 65535, value.product <= 65535, (value.manifestPath?.utf8.count ?? 0) <= 4096,
               !(value.manifestPath ?? "").unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { return nil }
-        rememberedCache[appID] = value
+        rememberedCache[key] = value
         return value
     }
     /// An explicit retry refreshes read-only source context; it never applies a
@@ -212,6 +218,7 @@ enum DockSteamInputWire {
     static func begin(accountID: UInt32, appID: UInt32) {
         end()
         self.accountID = accountID; self.appID = appID
+        controller = SteamInputController.current
         let hex = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
         session = stride(from: 0, to: 32, by: 2).map { offset in
             let start = hex.index(hex.startIndex, offsetBy: offset)
@@ -348,13 +355,16 @@ enum DockSteamInputWire {
     /// read is reported as unknown, so nothing is deleted on a guess.
     static func personalReferences(accountID: UInt32, appID: UInt32) -> SteamInputPersonalReferences {
         let live = accountID == self.accountID && appID == self.appID && accountID > 0
-        let saved: DockSteamInputSelection
-        if live, let selection { saved = selection }
-        else {
+        // Every controller's selection counts: a layout chosen for the Xbox
+        // controller is in use even while the DualSense plays.
+        var selections: [DockSteamInputSelection] = []
+        for identity in SteamInputController.allCases {
+            if live, identity == controller, let selection { selections.append(selection); continue }
             guard accountID > 0, appID > 0,
-                  let loaded = try? DockSteamInputSelection.load(in: storage, accountID: accountID, appID: appID, controllerID: controllerID)
+                  let loaded = try? DockSteamInputSelection.load(in: storage, accountID: accountID, appID: appID,
+                                                                  controllerID: identity.controllerID)
             else { return .unknown }
-            saved = loaded
+            selections.append(loaded)
         }
         func personal(_ revision: DockSteamInputSelection.Revision?) -> (UUID, String?)? {
             guard let revision, revision.source == .personal, let identity = revision.identity,
@@ -362,11 +372,13 @@ enum DockSteamInputWire {
             return (id, revision.contentHash)
         }
         var references = SteamInputPersonalReferences()
-        for revision in [saved.requested, saved.lastActivated] {
-            guard let (id, hash) = personal(revision) else { continue }
-            references.selected[id, default: []].formUnion(hash.map { [$0] } ?? [])
+        for saved in selections {
+            for revision in [saved.requested, saved.lastActivated] {
+                guard let (id, hash) = personal(revision) else { continue }
+                references.selected[id, default: []].formUnion(hash.map { [$0] } ?? [])
+            }
+            if let (id, hash) = personal(saved.lastActivated), let hash { references.confirmed[id] = hash }
         }
-        if let (id, hash) = personal(saved.lastActivated), let hash { references.confirmed[id] = hash }
         if live {
             var flight = [preparedChoice, submission?.choice]
             if case .requested(let choice)? = bootstrap?.purpose { flight.append(choice) }
@@ -378,16 +390,16 @@ enum DockSteamInputWire {
     /// An explicit, clearly generic choice; never labelled as the game's own.
     static func requestGenericTemplate(clientRoot: URL) throws {
         if !canChange, canBootstrap {
-            let source = try DockSteamInputDefault.genericTemplate(clientRoot: clientRoot)
+            let source = try DockSteamInputDefault.genericTemplate(clientRoot: clientRoot, controller: controller)
             try startBootstrap(source: source,
-                choice: .init(source: .template, identity: DockSteamInputDefault.genericTemplate,
+                choice: .init(source: .template, identity: controller.genericTemplate,
                               contentHash: DockSteamInputNative.contentHash(source)))
             return
         }
         guard canChange, let baseline = workingBaseline() else { throw DockSteamInputJournal.Failure.busy }
-        let source = try DockSteamInputDefault.genericTemplate(clientRoot: clientRoot)
+        let source = try DockSteamInputDefault.genericTemplate(clientRoot: clientRoot, controller: controller)
         _ = try prepareLocal(source: source, baseline: baseline,
-                             choice: .init(source: .template, identity: DockSteamInputDefault.genericTemplate, contentHash: nil))
+                             choice: .init(source: .template, identity: controller.genericTemplate, contentHash: nil))
         try submitPrepared()
     }
 #if DEBUG
@@ -1031,14 +1043,14 @@ extension DockSteamInputPresentation {
             if current { actions.note += " It is active." }
             else if active != nil { actions.note += " Another layout is active." }
         case .noRecommendation:
-            actions.offerGeneric = !(active?.source == .template && active?.identity == DockSteamInputDefault.genericTemplate)
+            actions.offerGeneric = !(active?.source == .template && SteamInputController.allCases.contains { $0.genericTemplate == active?.identity })
             actions.note += " Steam's generic Gamepad template is available, but it is not this game's own layout."
         case .noHint:
             actions.offerRetry = true
         case .unresolved(let reason):
             actions.offerRetry = true
             if [.manifestUnsupported, .templateUnsupported, .workshopIncompatible].contains(reason) {
-                actions.offerGeneric = !(active?.source == .template && active?.identity == DockSteamInputDefault.genericTemplate)
+                actions.offerGeneric = !(active?.source == .template && SteamInputController.allCases.contains { $0.genericTemplate == active?.identity })
                 actions.note += " Steam's generic Gamepad template is available, but it is not this game's own layout."
             }
         }
@@ -1046,22 +1058,33 @@ extension DockSteamInputPresentation {
     }
 }
 
-/// Steam Input's PlayStation setting for a Dock launch (docs/STEAM_INPUT.md).
+/// Steam Input's controller settings for a Dock launch (docs/STEAM_INPUT.md).
 /// Valve's client reads `SteamController_PSSupport` from the account's
 /// localconfig.vdf (top level of UserLocalConfigStore: 1 games without
 /// PlayStation support, the default; 2 every game) when it starts, and only
-/// with 2 does it open a PlayStation pad. Before a Steam Input launch the
-/// key is set to 2; when the Dock session ends the line is put back as it
-/// was. The previous state is noted in Documents, so a crash is undone at
-/// the next launch. Only this one line of the file changes.
+/// with 2 does it open a PlayStation pad. For the Xbox identity it also needs
+/// `SteamController_XBoxSupport`, which January reads as a boolean (the
+/// client-wide controller mask gains bit 2 when it is true; steamclient64
+/// 0x5d38c6). Before a Steam Input launch the keys are set; when the Dock
+/// session ends each line is put back as it was. The previous state is noted
+/// in Documents, so a crash is undone at the next launch. Only these lines
+/// of the file change.
 enum DockSteamInput {
     static let key = "SteamController_PSSupport"
+    static let xboxKey = "SteamController_XBoxSupport"
     private static let every = "2"
     private static var note: URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("madeira-steam-input.json")
     }
-    private struct Note: Codable { var file: String; var previous: String? }
+    /// `previous` is the PlayStation key's earlier value (the note's original
+    /// shape); `others` holds any other key changed for the same launch.
+    private struct Note: Codable {
+        var file: String
+        var previous: String?
+        var others: [Other]? = nil
+        struct Other: Codable { var key: String; var previous: String? }
+    }
 
     static func localConfig(steamID: UInt64) -> URL {
         MadeiraDock.clientRoot.appendingPathComponent("userdata/\(steamID & 0xffff_ffff)/config/localconfig.vdf")
@@ -1069,18 +1092,18 @@ enum DockSteamInput {
 
     /// The key's value at the top level of UserLocalConfigStore, nil when absent.
     /// Throws when the file is not laid out as expected.
-    static func value(in text: String) throws -> String? {
+    static func value(in text: String, key: String = key) throws -> String? {
         let lines = text.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n")
         let (open, close) = try block(lines)
-        return top(lines, open: open, close: close).lazy.compactMap { entry(lines[$0]) }.first
+        return top(lines, open: open, close: close).lazy.compactMap { entry(lines[$0], key: key) }.first
     }
 
     /// The text with the key set to `value` (nil removes the line).
-    static func setting(_ value: String?, in text: String) throws -> String {
+    static func setting(_ value: String?, in text: String, key: String = key) throws -> String {
         let newline = text.contains("\r\n") ? "\r\n" : "\n"
         var lines = text.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n")
         let (open, close) = try block(lines)
-        if let at = top(lines, open: open, close: close).first(where: { entry(lines[$0]) != nil }) {
+        if let at = top(lines, open: open, close: close).first(where: { entry(lines[$0], key: key) != nil }) {
             if let value { lines[at] = "\t\"\(key)\"\t\t\"\(value)\"" } else { lines.remove(at: at) }
         } else if let value {
             lines.insert("\t\"\(key)\"\t\t\"\(value)\"", at: open + 1)
@@ -1088,24 +1111,36 @@ enum DockSteamInput {
         return lines.joined(separator: newline)
     }
 
-    /// Before the launch: the key goes to 2 when `enabled`; any earlier change
-    /// still noted (a crash) is undone first.
-    static func prepare(steamID: UInt64, enabled: Bool) throws {
+    /// Before the launch: the PlayStation key goes to 2 when `enabled`, and
+    /// the Xbox key to 1 when the launch presents the Xbox identity; any
+    /// earlier change still noted (a crash) is undone first.
+    static func prepare(steamID: UInt64, enabled: Bool, controller: SteamInputController = .dualSense) throws {
         guard restore() else { throw Layout() }
         guard enabled else { return }
         let url = localConfig(steamID: steamID)
         let fm = FileManager.default
-        let text = fm.fileExists(atPath: url.path)
+        var text = fm.fileExists(atPath: url.path)
             ? try String(contentsOf: url, encoding: .utf8) : "\"UserLocalConfigStore\"\n{\n}\n"
         let previous = try value(in: text)
-        guard previous != every else { return }
-        let changed = try setting(every, in: text)
+        var others: [Note.Other] = []
+        var changed = false
+        if previous != every { text = try setting(every, in: text); changed = true }
+        if controller == .xbox {
+            let earlier = try value(in: text, key: xboxKey)
+            if earlier != "1" {
+                text = try setting("1", in: text, key: xboxKey); changed = true
+                others.append(.init(key: xboxKey, previous: earlier))
+            }
+        }
+        guard changed else { return }
         try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         // Persist recovery before touching the client's settings. Failed writes
         // keep the note so the next launch can finish restoring the old value.
-        try JSONEncoder().encode(Note(file: url.path, previous: previous)).write(to: note, options: .atomic)
-        try changed.write(to: url, atomically: true, encoding: .utf8)
-        SteamLog.event("[steam-input] PlayStation support enabled for this launch")
+        try JSONEncoder().encode(Note(file: url.path, previous: previous, others: others.isEmpty ? nil : others))
+            .write(to: note, options: .atomic)
+        try text.write(to: url, atomically: true, encoding: .utf8)
+        SteamLog.event("[steam-input] PlayStation support enabled for this launch"
+                       + (others.isEmpty ? "" : "; Xbox support enabled for this launch"))
     }
 
     /// After the client has shut down. Keep recovery information if it fails.
@@ -1116,13 +1151,18 @@ enum DockSteamInput {
             let saved = try JSONDecoder().decode(Note.self, from: Data(contentsOf: note))
             let url = URL(fileURLWithPath: saved.file)
             // A first-account write can fail after journaling but before the
-            // file exists. The previous absent key is already restored then.
-            if saved.previous == nil && !fm.fileExists(atPath: url.path) {
+            // file exists. The previous absent keys are already restored then.
+            if saved.previous == nil, (saved.others ?? []).allSatisfy({ $0.previous == nil }),
+               !fm.fileExists(atPath: url.path) {
                 try fm.removeItem(at: note)
                 return true
             }
-            let text = try String(contentsOf: url, encoding: .utf8)
-            try setting(saved.previous, in: text).write(to: url, atomically: true, encoding: .utf8)
+            var text = try String(contentsOf: url, encoding: .utf8)
+            text = try setting(saved.previous, in: text)
+            for other in saved.others ?? [] where [xboxKey].contains(other.key) {
+                text = try setting(other.previous, in: text, key: other.key)
+            }
+            try text.write(to: url, atomically: true, encoding: .utf8)
             try fm.removeItem(at: note)
             SteamLog.event("[steam-input] PlayStation setting restored")
             return true
@@ -1156,8 +1196,8 @@ enum DockSteamInput {
         return out
     }
 
-    /// The value when `line` is `"SteamController_PSSupport" "v"`.
-    private static func entry(_ line: String) -> String? {
+    /// The value when `line` is `"<key>" "v"`.
+    private static func entry(_ line: String, key: String) -> String? {
         let parts = line.trimmingCharacters(in: .whitespaces).components(separatedBy: "\"")
         // "", key, whitespace, "", value, ""
         guard parts.count == 5, parts[0].isEmpty, parts[1] == key, parts[2].trimmingCharacters(in: .whitespaces).isEmpty,

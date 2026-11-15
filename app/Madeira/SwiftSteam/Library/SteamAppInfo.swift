@@ -78,13 +78,17 @@ struct SteamAppInfo {
             let branches: [String]
             let useActionBlock: Bool
         }
-        func workshopRecommendation(branch: String) -> UInt64? {
+        /// January's rich-metadata order for a connected controller of Steam
+        /// type `exact` (default: the DualSense), whose compatible layout types
+        /// (SteamUI 0x731ca0) are `compatible`.
+        func workshopRecommendation(branch: String, exact: String = "controller_ps5",
+                                    compatible: Set<String> = ["controller_ps4", "controller_ps5"]) -> UInt64? {
             guard let entries = workshopDetails else { return nil }
             let branch = branch.isEmpty || branch == "public" ? "default" : branch
             var fallback: UInt64?
             for matches: (WorkshopDefault) -> Bool in [
-                { $0.controllerType == "controller_ps5" },
-                { ["controller_ps4", "controller_ps5"].contains($0.controllerType) }
+                { $0.controllerType.lowercased() == exact },
+                { compatible.contains($0.controllerType.lowercased()) }
             ] {
                 for entry in entries where matches(entry) {
                     if entry.branches.contains(where: { $0.caseInsensitiveCompare(branch) == .orderedSame }) { return entry.id }

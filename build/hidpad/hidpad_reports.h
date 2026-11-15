@@ -234,6 +234,124 @@ static const unsigned char hidpad_generic_descriptor[] =
     0xC0,                   /* End Collection */
 };
 
+/* Xbox Wireless Controller over Bluetooth (Steam Input's Xbox identity). The
+ * report layout is the controller's own, as SDL's SDL_hidapi_xboxone.c reads
+ * it without a descriptor (HIDAPI_DriverXboxOneBluetooth_HandleStatePacket,
+ * report 0x01 of more than 16 bytes) and as its descriptor-driven reader maps
+ * it (HIDAPI_DriverXboxOne_HandleDescriptorReport: X/Y and Z/Rz sticks of 16
+ * bits, Brake/Accelerator triggers of 10 bits, a 1-8 hat, 15 buttons), and
+ * Linux's hid-microsoft.c / xpadneo describe for firmware 5.x:
+ *
+ *   [1..8]  LX LY RX RY, 0..65535 centred at 32768, Y growing downwards
+ *   [9..12] left / right trigger, 0..1023 in the low 10 bits
+ *   [13]    hat, 1 (N) .. 8 (NW) clockwise, 0 centred
+ *   [14]    A 0x01, B 0x02, X 0x08, Y 0x10, LB 0x40, RB 0x80 (buttons 1-8)
+ *   [15]    View 0x04, Menu 0x08, Xbox 0x10, LS 0x20, RS 0x40 (buttons 9-15)
+ *   [16]    Share 0x01 (Consumer Record)
+ *
+ * Output report 0x03 is the rumble SDL writes (rumble_packet in
+ * HIDAPI_DriverXboxOne_UpdateRumble, Bluetooth): enable bits, left trigger,
+ * right trigger, low- and high-frequency motor (0-100), sustain, release, loops
+ * (xpadneo's struct ff_data). */
+static const unsigned char hidpad_xbox_descriptor[] =
+{
+    0x05, 0x01,             /* Usage Page (Generic Desktop) */
+    0x09, 0x05,             /* Usage (Game Pad) */
+    0xA1, 0x01,             /* Collection (Application) */
+    0x85, 0x01,             /*   Report ID (0x01) */
+    0x09, 0x01,             /*   Usage (Pointer) */
+    0xA1, 0x00,             /*   Collection (Physical) */
+    0x09, 0x30,             /*     Usage (X) */
+    0x09, 0x31,             /*     Usage (Y) */
+    0x15, 0x00,             /*     Logical Minimum (0) */
+    0x27, 0xFF, 0xFF, 0x00, 0x00, /* Logical Maximum (65535) */
+    0x95, 0x02,             /*     Report Count (2) */
+    0x75, 0x10,             /*     Report Size (16) */
+    0x81, 0x02,             /*     Input (Data,Var,Abs) */
+    0xC0,                   /*   End Collection */
+    0x09, 0x01,             /*   Usage (Pointer) */
+    0xA1, 0x00,             /*   Collection (Physical) */
+    0x09, 0x32,             /*     Usage (Z) */
+    0x09, 0x35,             /*     Usage (Rz) */
+    0x15, 0x00,             /*     Logical Minimum (0) */
+    0x27, 0xFF, 0xFF, 0x00, 0x00, /* Logical Maximum (65535) */
+    0x95, 0x02,             /*     Report Count (2) */
+    0x75, 0x10,             /*     Report Size (16) */
+    0x81, 0x02,             /*     Input (Data,Var,Abs) */
+    0xC0,                   /*   End Collection */
+    0x05, 0x02,             /*   Usage Page (Simulation Controls) */
+    0x09, 0xC5,             /*   Usage (Brake) */
+    0x15, 0x00,             /*   Logical Minimum (0) */
+    0x26, 0xFF, 0x03,       /*   Logical Maximum (1023) */
+    0x95, 0x01,             /*   Report Count (1) */
+    0x75, 0x0A,             /*   Report Size (10) */
+    0x81, 0x02,             /*   Input (Data,Var,Abs) */
+    0x25, 0x00,             /*   Logical Maximum (0) */
+    0x75, 0x06,             /*   Report Size (6) */
+    0x81, 0x03,             /*   Input (Const,Var,Abs): padding */
+    0x09, 0xC4,             /*   Usage (Accelerator) */
+    0x26, 0xFF, 0x03,       /*   Logical Maximum (1023) */
+    0x75, 0x0A,             /*   Report Size (10) */
+    0x81, 0x02,             /*   Input (Data,Var,Abs) */
+    0x25, 0x00,             /*   Logical Maximum (0) */
+    0x75, 0x06,             /*   Report Size (6) */
+    0x81, 0x03,             /*   Input (Const,Var,Abs): padding */
+    0x05, 0x01,             /*   Usage Page (Generic Desktop) */
+    0x09, 0x39,             /*   Usage (Hat switch) */
+    0x15, 0x01,             /*   Logical Minimum (1) */
+    0x25, 0x08,             /*   Logical Maximum (8) */
+    0x35, 0x00,             /*   Physical Minimum (0) */
+    0x46, 0x3B, 0x01,       /*   Physical Maximum (315) */
+    0x65, 0x14,             /*   Unit (English Rotation: degrees) */
+    0x75, 0x04,             /*   Report Size (4) */
+    0x81, 0x42,             /*   Input (Data,Var,Abs,Null) */
+    0x15, 0x00,             /*   Logical Minimum (0) */
+    0x25, 0x00,             /*   Logical Maximum (0) */
+    0x45, 0x00,             /*   Physical Maximum (0) */
+    0x65, 0x00,             /*   Unit (None) */
+    0x81, 0x03,             /*   Input (Const,Var,Abs): padding */
+    0x05, 0x09,             /*   Usage Page (Button) */
+    0x19, 0x01,             /*   Usage Minimum (1) */
+    0x29, 0x0F,             /*   Usage Maximum (15) */
+    0x25, 0x01,             /*   Logical Maximum (1) */
+    0x75, 0x01,             /*   Report Size (1) */
+    0x95, 0x0F,             /*   Report Count (15) */
+    0x81, 0x02,             /*   Input (Data,Var,Abs) */
+    0x25, 0x00,             /*   Logical Maximum (0) */
+    0x95, 0x01,             /*   Report Count (1) */
+    0x81, 0x03,             /*   Input (Const,Var,Abs): padding */
+    0x05, 0x0C,             /*   Usage Page (Consumer) */
+    0x0A, 0xB2, 0x00,       /*   Usage (Record): Share */
+    0x25, 0x01,             /*   Logical Maximum (1) */
+    0x81, 0x02,             /*   Input (Data,Var,Abs) */
+    0x25, 0x00,             /*   Logical Maximum (0) */
+    0x95, 0x07,             /*   Report Count (7) */
+    0x81, 0x03,             /*   Input (Const,Var,Abs): padding */
+    0x05, 0x0F,             /*   Usage Page (Physical Interface Device) */
+    0x85, 0x03,             /*   Report ID (0x03) */
+    0x09, 0x97,             /*     Usage (DC Enable Actuators) */
+    0x25, 0x01,             /*     Logical Maximum (1) */
+    0x75, 0x04,             /*     Report Size (4) */
+    0x95, 0x01,             /*     Report Count (1) */
+    0x91, 0x02,             /*     Output (Data,Var,Abs) */
+    0x25, 0x00,             /*     Logical Maximum (0) */
+    0x91, 0x03,             /*     Output (Const,Var,Abs): padding */
+    0x09, 0x70,             /*     Usage (Magnitude) */
+    0x25, 0x64,             /*     Logical Maximum (100) */
+    0x75, 0x08,             /*     Report Size (8) */
+    0x95, 0x04,             /*     Report Count (4) */
+    0x91, 0x02,             /*     Output (Data,Var,Abs) */
+    0x09, 0x50,             /*     Usage (Duration) */
+    0x26, 0xFF, 0x00,       /*     Logical Maximum (255) */
+    0x95, 0x01,             /*     Report Count (1) */
+    0x91, 0x02,             /*     Output (Data,Var,Abs) */
+    0x09, 0xA7,             /*     Usage (Start Delay) */
+    0x91, 0x02,             /*     Output (Data,Var,Abs) */
+    0x09, 0x7C,             /*     Usage (Loop Count) */
+    0x91, 0x02,             /*     Output (Data,Var,Abs) */
+    0xC0,                   /* End Collection */
+};
+
 static inline const unsigned char *hidpad_descriptor( const struct hidpad_identity *id, unsigned int *size )
 {
     if (id->kind == HIDPAD_KIND_DUALSENSE)
@@ -241,12 +359,20 @@ static inline const unsigned char *hidpad_descriptor( const struct hidpad_identi
         *size = sizeof(hidpad_dualsense_descriptor);
         return hidpad_dualsense_descriptor;
     }
+    if (id->kind == HIDPAD_KIND_XBOX)
+    {
+        *size = sizeof(hidpad_xbox_descriptor);
+        return hidpad_xbox_descriptor;
+    }
     *size = sizeof(hidpad_generic_descriptor);
     return hidpad_generic_descriptor;
 }
 
 #define HIDPAD_DUALSENSE_INPUT_LEN 64
 #define HIDPAD_GENERIC_INPUT_LEN   14
+#define HIDPAD_XBOX_INPUT_LEN      17
+#define HIDPAD_XBOX_OUT_RUMBLE     0x03
+#define HIDPAD_XBOX_OUT_LEN        9
 
 /* Per-device state the reports carry from one to the next. */
 struct hidpad_report_state
@@ -398,11 +524,41 @@ static inline unsigned int hidpad_generic_input( const struct winios_hidpad *pad
     return HIDPAD_GENERIC_INPUT_LEN;
 }
 
+/* Xbox Bluetooth input report 0x01, 17 bytes (layout above). */
+static inline unsigned int hidpad_xbox_input( const struct winios_hidpad *pad, unsigned char *r )
+{
+    static const struct { uint32_t xi; unsigned char byte, bit; } map[] =
+    {
+        { HIDPAD_XI_A, 14, 0x01 }, { HIDPAD_XI_B, 14, 0x02 }, { HIDPAD_XI_X, 14, 0x08 },
+        { HIDPAD_XI_Y, 14, 0x10 }, { HIDPAD_XI_LSHOULDER, 14, 0x40 }, { HIDPAD_XI_RSHOULDER, 14, 0x80 },
+        { HIDPAD_XI_BACK, 15, 0x04 }, { HIDPAD_XI_START, 15, 0x08 }, { HIDPAD_XI_GUIDE, 15, 0x10 },
+        { HIDPAD_XI_LTHUMB, 15, 0x20 }, { HIDPAD_XI_RTHUMB, 15, 0x40 },
+    };
+    uint32_t b = pad->connected ? pad->buttons : 0;
+    unsigned int i;
+    int hat = hidpad_hat( b );
+
+    memset( r, 0, HIDPAD_XBOX_INPUT_LEN );
+    r[0] = 0x01;
+    hidpad_put16( r + 1, pad->connected ? (unsigned int)(pad->lx + 32768) : 32768 );
+    hidpad_put16( r + 3, pad->connected ? (unsigned int)(hidpad_flip( pad->ly ) + 32768) : 32768 );
+    hidpad_put16( r + 5, pad->connected ? (unsigned int)(pad->rx + 32768) : 32768 );
+    hidpad_put16( r + 7, pad->connected ? (unsigned int)(hidpad_flip( pad->ry ) + 32768) : 32768 );
+    /* 0..255 to 0..1023, both ends exact. */
+    hidpad_put16( r + 9, pad->connected ? (pad->left_trigger * 1023u + 127) / 255 : 0 );
+    hidpad_put16( r + 11, pad->connected ? (pad->right_trigger * 1023u + 127) / 255 : 0 );
+    r[13] = hat < 0 ? 0 : hat + 1;
+    for (i = 0; i < sizeof(map) / sizeof(map[0]); i++)
+        if (b & map[i].xi) r[map[i].byte] |= map[i].bit;
+    return HIDPAD_XBOX_INPUT_LEN;
+}
+
 static inline unsigned int hidpad_input_report( const struct hidpad_identity *id, const struct winios_hidpad *pad,
                                                 struct hidpad_report_state *st, uint64_t now_us,
                                                 unsigned char *buf )
 {
     if (id->kind == HIDPAD_KIND_DUALSENSE) return hidpad_dualsense_input( pad, st, now_us, buf );
+    if (id->kind == HIDPAD_KIND_XBOX) return hidpad_xbox_input( pad, buf );
     return hidpad_generic_input( pad, buf );
 }
 
@@ -596,6 +752,28 @@ static inline uint32_t hidpad_dualsense_output_flags( const unsigned char *r, un
 {
     const unsigned char *c = hidpad_dualsense_common( r, len );
     return c ? (uint32_t)c[0] | (uint32_t)c[1] << 8 | (uint32_t)c[38] << 16 : 0;
+}
+
+/* Xbox rumble (output report 0x03): the motors as 0-100 %, scaled to the
+ * 0-255 the DualSense path uses, so the app applies both the same way. The
+ * trigger motors have no counterpart on the physical pads Madeira serves and
+ * are dropped. Returns 1 when the report was a rumble report. A zero enable
+ * mask or a zero duration stops the motors, as on the controller. */
+static inline int hidpad_xbox_output( const unsigned char *r, unsigned int len,
+                                      struct winios_hidpad_output *out )
+{
+    unsigned int low, high, on;
+
+    if (!r || len < HIDPAD_XBOX_OUT_LEN || r[0] != HIDPAD_XBOX_OUT_RUMBLE) return 0;
+    /* Enable bits as xpadneo's FF_RUMBLE_*: 0x01 weak (high-frequency) main
+     * motor, 0x02 strong (low-frequency), 0x04 right and 0x08 left trigger. */
+    on = (r[1] & 0x03) && r[6];
+    low = on && (r[1] & 0x02) ? (r[4] > 100 ? 100 : r[4]) : 0;
+    high = on && (r[1] & 0x01) ? (r[5] > 100 ? 100 : r[5]) : 0;
+    out->rumble_valid = 1;
+    out->rumble_left = (unsigned char)((low * 255 + 50) / 100);
+    out->rumble_right = (unsigned char)((high * 255 + 50) / 100);
+    return 1;
 }
 
 #endif

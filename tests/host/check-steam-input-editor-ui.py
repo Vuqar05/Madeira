@@ -30,13 +30,13 @@ if (work / 'Sources').exists(): shutil.rmtree(work / 'Sources')
 (work / 'dock').mkdir(exist_ok=True)
 
 service = (app / 'DockSteamInput.swift').read_text()
-service = 'import Foundation\nenum DockSteamInputWire' + service.split('enum DockSteamInputWire', 1)[1].split("/// Steam Input's PlayStation setting", 1)[0]
+service = 'import Foundation\nenum DockSteamInputWire' + service.split('enum DockSteamInputWire', 1)[1].split("/// Steam Input's controller settings for a Dock launch", 1)[0]
 (work / 'Sources/Service.swift').write_text(service)
 workshop = (app / 'SteamWorkshopFiles.swift').read_text()
 (work / 'Sources/Workshop.swift').write_text(workshop[:workshop.index("/// Valve's record of an app's installed Workshop items:")])
 for name in ['SwiftSteam/Library/SteamAppInfo.swift', 'SwiftSteam/Proto/SteamProtoMessages.swift', 'SwiftSteam/Core/SteamError.swift',
              'SteamKeyValues.swift', 'SteamInputVDF.swift', 'SteamInputModel.swift', 'SteamInputReferences.swift', 'SteamInputActions.swift',
-             'SteamInputPreview.swift', 'SteamInputTransactions.swift', 'SteamInputDefaults.swift', 'SteamInputCommunity.swift',
+             'SteamInputPreview.swift', 'SteamInputTransactions.swift', 'SteamInputController.swift', 'SteamInputDefaults.swift', 'SteamInputCommunity.swift',
              'SteamInputEditor.swift', 'SteamInputPersonalReferences.swift', 'SteamInputPersonalRevisions.swift', 'SteamInputLiveEdit.swift',
              'SteamInputEditorView.swift', 'SteamInputPersonalView.swift']:
     shutil.copyfile(app / name, work / 'Sources' / Path(name).name)

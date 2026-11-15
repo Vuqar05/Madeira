@@ -1575,6 +1575,6 @@ with tempfile.TemporaryDirectory(prefix='madeira-input-preview-') as temporary:
                     str(app/'SwiftSteam/Library/SteamAppInfo.swift'), str(app/'SwiftSteam/Proto/SteamProtoMessages.swift'), str(app/'SwiftSteam/Core/SteamError.swift'),
                     str(app/'SteamKeyValues.swift'), str(app/'SteamInputVDF.swift'), str(app/'SteamInputModel.swift'), str(app/'SteamInputReferences.swift'), str(app/'SteamInputActions.swift'),
                     str(app/'SteamInputPreview.swift'),
-                    str(app/'SteamInputTransactions.swift'), str(app/'SteamInputDefaults.swift'),
+                    str(app/'SteamInputTransactions.swift'), str(app/'SteamInputController.swift'), str(app/'SteamInputDefaults.swift'),
                     str(app/'SteamInputCommunity.swift'), str(app/'SteamInputEditor.swift'), str(app/'SteamInputPersonalReferences.swift'), str(app/'SteamInputPersonalRevisions.swift'), str(tmp/'workshop.swift'), str(tmp/'main.swift'), str(tmp/'service.o'), '-o', str(tmp/'check')], check=True)
     subprocess.run([str(tmp/'check'), str(tmp/'isolated_roots')], check=True)

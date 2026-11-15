@@ -1093,6 +1093,21 @@ layout unchanged, including when fetching or parsing fails.
 
 ## Milestone 5 — Complete controller behavior and session lifecycle
 
+Owner decisions (2026-11-15), asked before implementation:
+
+- The on-screen controls and a physical pad stay one merged player for now. The
+  player's identity follows the physical pad when one is paired (the virtual
+  DualSense for a PlayStation pad, an Xbox controller otherwise) and is an Xbox
+  controller for the on-screen controls alone. Letting the player choose merged or
+  separate players is milestone 7.
+- A layout made for another controller type is confirmed once per layout revision
+  and controller type. The confirmation is remembered, so relaunching re-applies it
+  without asking; an edited revision or another controller type asks again.
+- Device testing uses a DualSense and the on-screen controls; no Xbox, DualShock 4 or
+  second pad is available. The owner waives the physical multi-pad test, the physical
+  suspend/resume test and any migration from the separate emulation branch's
+  layouts. Overlay menu rendering is not waived.
+
 - [ ] Verify keyboard/mouse delivery, mixed Xbox/key output and native actions.
   Investigate any cross-process input restrictions with focused runtime tests.
 - [ ] Verify rumble and supported controller feedback through Valve to the physical
@@ -1198,6 +1213,16 @@ pads or regression to ordinary XInput/DirectInput controller modes.
 Done when: the three requested user journeys work end to end from a clean install,
 their selections persist and can be reversed, and the release has an explicit tested
 support matrix. A passing generic Gamepad test alone does not close this plan.
+
+## Milestone 7 — Player choice of merged or separate on-screen controls
+
+- [ ] Let the player choose whether the on-screen controls and a physical pad are
+  one merged player (milestone 5's behaviour) or separate players, each with its own
+  controller identity, Steam slot and layout selection. Keep merged as the default
+  and keep every saved per-controller selection when the choice changes.
+
+Done when: both choices pass device testing with a physical pad and the on-screen
+controls, and switching between them causes no duplicate pads or stuck input.
 
 ## Order and completion boundary
 

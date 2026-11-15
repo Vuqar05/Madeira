@@ -16,7 +16,7 @@ import Foundation
 let testRoot = URL(fileURLWithPath: CommandLine.arguments[1])
 enum MadeiraDock { static var clientRoot: URL { testRoot.appendingPathComponent("Steam") } }
 enum SteamLog { static func event(_ text: String) { } }
-'''
+''' + (root / 'app/Madeira/SteamInputController.swift').read_text()
     cases = r'''
 let fm = FileManager.default
 let empty = "\"UserLocalConfigStore\"\n{\n\t\"Apps\"\n\t{\n\t\t\"SteamController_PSSupport\"\t\"0\"\n\t}\n}\n"
@@ -56,7 +56,29 @@ try DockSteamInput.setting("2", in: empty).write(to: file, atomically: true, enc
 try DockSteamInput.prepare(steamID: 7, enabled: false)
 assert(try DockSteamInput.value(in: String(contentsOf: file, encoding: .utf8)) == "0")
 assert(!fm.fileExists(atPath: testRoot.appendingPathComponent("madeira-steam-input.json").path))
-print("PASS: LF/CRLF, nested keys, first-account setup, unrelated settings and failed-restore recovery")
+// The Xbox identity also turns on Xbox support; both lines go back as they were.
+try DockSteamInput.setting("0", in: empty).write(to: file, atomically: true, encoding: .utf8)
+try DockSteamInput.prepare(steamID: 7, enabled: true, controller: .xbox)
+let both = try String(contentsOf: file, encoding: .utf8)
+assert(try DockSteamInput.value(in: both) == "2" && DockSteamInput.value(in: both, key: DockSteamInput.xboxKey) == "1")
+assert(DockSteamInput.restore())
+let back = try String(contentsOf: file, encoding: .utf8)
+assert(try DockSteamInput.value(in: back) == "0" && DockSteamInput.value(in: back, key: DockSteamInput.xboxKey) == nil)
+assert(back.contains("\t\t\"SteamController_PSSupport\"\t\"0\""))
+// An Xbox setting the player already had is kept; the DualSense identity never touches it.
+try DockSteamInput.setting("1", in: DockSteamInput.setting("2", in: empty), key: DockSteamInput.xboxKey).write(to: file, atomically: true, encoding: .utf8)
+try DockSteamInput.prepare(steamID: 7, enabled: true, controller: .xbox)
+assert(!fm.fileExists(atPath: testRoot.appendingPathComponent("madeira-steam-input.json").path))
+try DockSteamInput.setting(nil, in: DockSteamInput.setting("2", in: empty), key: DockSteamInput.xboxKey).write(to: file, atomically: true, encoding: .utf8)
+try DockSteamInput.prepare(steamID: 7, enabled: true, controller: .dualSense)
+assert(try DockSteamInput.value(in: String(contentsOf: file, encoding: .utf8), key: DockSteamInput.xboxKey) == nil)
+// A crash with the Xbox key changed is undone at the next launch.
+try DockSteamInput.setting("0", in: empty).write(to: file, atomically: true, encoding: .utf8)
+try DockSteamInput.prepare(steamID: 7, enabled: true, controller: .xbox)
+try DockSteamInput.prepare(steamID: 7, enabled: false)
+let recovered = try String(contentsOf: file, encoding: .utf8)
+assert(try DockSteamInput.value(in: recovered) == "0" && DockSteamInput.value(in: recovered, key: DockSteamInput.xboxKey) == nil)
+print("PASS: LF/CRLF, nested keys, first-account setup, unrelated settings, failed-restore recovery and the Xbox identity's support key")
 '''
     cases = cases.replace('assert(', 'require(')
     stub += '\nfunc require(_ body: @autoclosure () throws -> Bool) { precondition(try! body()) }\n'

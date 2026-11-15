@@ -210,5 +210,5 @@ with tempfile.TemporaryDirectory(prefix='madeira-input-transactions-') as tempor
     tmp = Path(temporary)
     (tmp/'main.swift').write_text(cases)
     subprocess.run([os.environ.get('HOST_CC') or shutil.which('clang'), '-std=c11', '-Wall', '-Wextra', '-Werror', '-c', str(root/'madeira-dock/src/steam_input_service.c'), '-o', str(tmp/'shared.o')], check=True)
-    subprocess.run([os.environ.get('SWIFTC') or shutil.which('swiftc'), '-module-cache-path', str(tmp/'modules'), '-import-objc-header', str(root/'madeira-dock/src/steam_input_service.h'), str(root/'app/Madeira/SteamInputTransactions.swift'), str(tmp/'main.swift'), str(tmp/'shared.o'), '-o', str(tmp/'check')], check=True)
+    subprocess.run([os.environ.get('SWIFTC') or shutil.which('swiftc'), '-module-cache-path', str(tmp/'modules'), '-import-objc-header', str(root/'madeira-dock/src/steam_input_service.h'), str(root/'app/Madeira/SteamInputTransactions.swift'), str(root/'app/Madeira/SteamInputController.swift'), str(tmp/'main.swift'), str(tmp/'shared.o'), '-o', str(tmp/'check')], check=True)
     subprocess.run([str(tmp/'check'), str(tmp/'storage')], check=True)

@@ -726,6 +726,12 @@ OVERLAY = {
                 "note": "1: with the HID controller on, player 1 also stays an XInput pad. Off by default, so a game "
                         "that reads both APIs does not see the same pad twice.",
                 "sources": ["app/Madeira/GamepadInput.swift"]},
+    "env.MADEIRA_STEAM_INPUT_XBOX": {"category": "Controllers", "title": "Steam Input: Xbox identity for on-screen and other pads",
+                "kind": "bool", "default": "0",
+                "note": "1: with Controller = Steam Input, the on-screen controls and pads that are not PlayStation ones reach "
+                        "Valve's client as an Xbox Wireless Controller, with Xbox layouts and glyphs. Off: every pad is the "
+                        "virtual DualSense, as before. Read at launch.",
+                "sources": ["app/Madeira/GamepadInput.swift"]},
     "env.MADEIRA_HIDPAD_AUTO_GENERIC": {"category": "Controllers", "title": "HID mode: other pads as a generic HID gamepad",
                 "kind": "bool", "default": "0",
                 "note": "1: with env.MADEIRA_PAD_MODE = hid, a pad that is not a PlayStation one becomes a generic HID "

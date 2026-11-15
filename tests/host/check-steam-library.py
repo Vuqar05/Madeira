@@ -1284,7 +1284,7 @@ try:
                   steam / 'Core/SteamMessageCodec.swift', steam / 'Core/SteamCMSession.swift',
                   steam / 'Content/ContentDecryptor.swift', steam / 'Content/DepotManifest.swift', steam / 'Content/SteamLANPeer.swift',
                   steam / 'Library/SteamAppInfo.swift', steam / 'Library/SteamLibraryFetcher.swift',
-                  steam / 'Install/AppManifestWriter.swift', app / 'SteamInstall.swift', app / 'SteamKeyValues.swift', app / 'ExternalStorage.swift', app / 'SteamInputTransactions.swift',
+                  steam / 'Install/AppManifestWriter.swift', app / 'SteamInstall.swift', app / 'SteamKeyValues.swift', app / 'ExternalStorage.swift', app / 'SteamInputTransactions.swift', app / 'SteamInputController.swift',
                   app / 'SteamInputPersonalReferences.swift', app / 'DockSteamInput.swift']
     exe = work / 'check'
     build = subprocess.run([SWIFTC, '-parse-as-library', '-swift-version', '5', '-sanitize=address', '-g', '-o', str(exe),

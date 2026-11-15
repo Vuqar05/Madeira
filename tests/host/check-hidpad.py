@@ -340,6 +340,109 @@ static void check_generic( void )
     free( p.pre );
 }
 
+/* Steam Input's Xbox identity: the Bluetooth Xbox Wireless Controller layout
+ * SDL's HIDAPI Xbox One driver reads (hidpad_reports.h). */
+static void check_xbox( void )
+{
+    const struct hidpad_identity *id = hidpad_identity_from_env( "xbox" );
+    struct hidpad_report_state st = {0};
+    struct winios_hidpad pad = {0};
+    struct parsed p;
+    HIDP_CAPS caps;
+    unsigned char r[64];
+    unsigned int len, i;
+    char link[256];
+
+    assert( id && id->kind == HIDPAD_KIND_XBOX && id->vid == 0x045e && id->pid == 0x0b13 && id->bluetooth );
+    hidpad_interface_link( id, link, sizeof(link) );
+    assert( !strcmp( link, "HID#{00001124-0000-1000-8000-00805F9B34FB}_VID&0002045E_PID&0B13#9&4d616465&0&0000"
+                           "#{4d1e55b2-f16f-11cf-88cb-001111000030}" ) );
+    parse( id, &p );
+    assert( HidP_GetCaps( p.pre, &caps ) == HIDP_STATUS_SUCCESS );
+    assert( caps.UsagePage == HID_USAGE_PAGE_GENERIC && caps.Usage == HID_USAGE_GENERIC_GAMEPAD );
+    assert( caps.InputReportByteLength == HIDPAD_XBOX_INPUT_LEN && p.in[1] == HIDPAD_XBOX_INPUT_LEN );
+    assert( caps.OutputReportByteLength == HIDPAD_XBOX_OUT_LEN && p.out[3] == HIDPAD_XBOX_OUT_LEN );
+    assert( !caps.FeatureReportByteLength && !p.in[2] && !p.out[1] );
+
+    /* At rest: centred 16-bit sticks, released triggers, null hat. */
+    len = hidpad_input_report( id, &pad, &st, 0, r );
+    assert( len == HIDPAD_XBOX_INPUT_LEN && r[0] == 1 );
+    assert( value( &p, HID_USAGE_PAGE_GENERIC, HID_USAGE_GENERIC_X, r, len ) == 32768 );
+    assert( value( &p, HID_USAGE_PAGE_GENERIC, HID_USAGE_GENERIC_RZ, r, len ) == 32768 );
+    assert( value( &p, HID_USAGE_PAGE_SIMULATION, HID_USAGE_SIMULATION_BRAKE, r, len ) == 0 );
+    assert( value( &p, HID_USAGE_PAGE_GENERIC, HID_USAGE_GENERIC_HATSWITCH, r, len ) == 0 );
+    assert( buttons( &p, r, len ) == 0 );
+
+    /* SDL's byte offsets: [1..8] LX LY RX RY (Y down), [9..12] 10-bit triggers. */
+    pad.connected = 1;
+    pad.lx = 32767; pad.ly = 32767; pad.rx = -32768; pad.ry = -32768;
+    pad.left_trigger = 255; pad.right_trigger = 1;
+    len = hidpad_input_report( id, &pad, &st, 0, r );
+    assert( (r[1] | r[2] << 8) == 65535 && (r[3] | r[4] << 8) == 1 );
+    assert( (r[5] | r[6] << 8) == 0 && (r[7] | r[8] << 8) == 65535 );
+    assert( value( &p, HID_USAGE_PAGE_GENERIC, HID_USAGE_GENERIC_X, r, len ) == 65535 );
+    assert( value( &p, HID_USAGE_PAGE_GENERIC, HID_USAGE_GENERIC_Y, r, len ) == 1 );
+    assert( value( &p, HID_USAGE_PAGE_GENERIC, HID_USAGE_GENERIC_Z, r, len ) == 0 );
+    assert( value( &p, HID_USAGE_PAGE_GENERIC, HID_USAGE_GENERIC_RZ, r, len ) == 65535 );
+    assert( value( &p, HID_USAGE_PAGE_SIMULATION, HID_USAGE_SIMULATION_BRAKE, r, len ) == 1023 );
+    assert( value( &p, HID_USAGE_PAGE_SIMULATION, HID_USAGE_SIMULATION_ACCELERATOR, r, len ) == 4 );
+    assert( (r[9] | r[10] << 8) == 1023 && (r[11] | r[12] << 8) == 4 );
+    pad.lx = pad.ly = pad.rx = pad.ry = 0; pad.left_trigger = pad.right_trigger = 0;
+
+    /* Buttons: HID usages and SDL's Bluetooth bits ([14] A B - X Y - LB RB,
+     * [15] - - View Menu Xbox LS RS). */
+    {
+        static const struct { uint32_t in; unsigned int usage, byte, bit; } map[] =
+        {
+            { HIDPAD_XI_A, 1, 14, 0x01 }, { HIDPAD_XI_B, 2, 14, 0x02 }, { HIDPAD_XI_X, 4, 14, 0x08 },
+            { HIDPAD_XI_Y, 5, 14, 0x10 }, { HIDPAD_XI_LSHOULDER, 7, 14, 0x40 }, { HIDPAD_XI_RSHOULDER, 8, 14, 0x80 },
+            { HIDPAD_XI_BACK, 11, 15, 0x04 }, { HIDPAD_XI_START, 12, 15, 0x08 }, { HIDPAD_XI_GUIDE, 13, 15, 0x10 },
+            { HIDPAD_XI_LTHUMB, 14, 15, 0x20 }, { HIDPAD_XI_RTHUMB, 15, 15, 0x40 },
+        };
+        for (i = 0; i < sizeof(map) / sizeof(map[0]); i++)
+        {
+            pad.buttons = map[i].in;
+            len = hidpad_input_report( id, &pad, &st, 0, r );
+            assert( buttons( &p, r, len ) == 1u << (map[i].usage - 1) );
+            assert( r[map[i].byte] == map[i].bit && r[29 - map[i].byte] == 0 && !r[16] );
+        }
+        pad.buttons = WINIOS_HIDPAD_TOUCHPAD | WINIOS_HIDPAD_MUTE | WINIOS_HIDPAD_L2;
+        len = hidpad_input_report( id, &pad, &st, 0, r );
+        assert( buttons( &p, r, len ) == 0 );
+    }
+    /* Hat: 1 north, clockwise to 8; SDL reads [13] the same way. */
+    pad.buttons = HIDPAD_XI_DPAD_DOWN | HIDPAD_XI_DPAD_LEFT;
+    len = hidpad_input_report( id, &pad, &st, 0, r );
+    assert( value( &p, HID_USAGE_PAGE_GENERIC, HID_USAGE_GENERIC_HATSWITCH, r, len ) == 6 && r[13] == 6 );
+    pad.buttons = HIDPAD_XI_DPAD_UP;
+    len = hidpad_input_report( id, &pad, &st, 0, r );
+    assert( r[13] == 1 );
+    /* Disconnected: at rest even with stale input in the snapshot. */
+    pad.connected = 0; pad.buttons = HIDPAD_XI_A; pad.lx = 100;
+    len = hidpad_input_report( id, &pad, &st, 0, r );
+    assert( !r[14] && (r[1] | r[2] << 8) == 32768 );
+
+    /* Rumble: SDL's Bluetooth packet { 0x03, 0x0F, LT, RT, low, high, 0xFF, 0, 0xEB }. */
+    {
+        struct winios_hidpad_output out = {0};
+        unsigned char o[9] = { 0x03, 0x0f, 7, 9, 100, 50, 0xff, 0, 0xeb };
+        assert( hidpad_xbox_output( o, sizeof(o), &out ) );
+        assert( out.rumble_valid && out.rumble_left == 255 && out.rumble_right == 128 );
+        o[1] = 0x02;
+        assert( hidpad_xbox_output( o, sizeof(o), &out ) && out.rumble_left == 255 && out.rumble_right == 0 );
+        o[1] = 0x0f; o[6] = 0;
+        assert( hidpad_xbox_output( o, sizeof(o), &out ) && out.rumble_left == 0 && out.rumble_right == 0 );
+        o[6] = 0xff; o[4] = 200;
+        assert( hidpad_xbox_output( o, sizeof(o), &out ) && out.rumble_left == 255 );
+        o[1] = 0x0c;
+        assert( hidpad_xbox_output( o, sizeof(o), &out ) && !out.rumble_left && !out.rumble_right );
+        assert( !hidpad_xbox_output( o, 8, &out ) );
+        o[0] = 0x02;
+        assert( !hidpad_xbox_output( o, sizeof(o), &out ) );
+    }
+    free( p.pre );
+}
+
 static void check_transport( void )
 {
     struct winios_hidpad pad = {0}, got;
@@ -374,6 +477,7 @@ int main( void )
     check_ids();
     check_dualsense();
     check_generic();
+    check_xbox();
     check_transport();
     return 0;
 }
@@ -425,7 +529,7 @@ static inline void init_unicode_string( UNICODE_STRING *str, const WCHAR *data )
     str->Buffer = (WCHAR *)data;
 }
 
-struct node { char name[160]; struct node *parent; int is_volatile; char values[512]; };
+struct node { char name[160]; struct node *parent; int is_volatile; char values[1024]; };
 static struct node nodes[64];
 static unsigned int node_count, creates, log_lines;
 static char live_link[256], last_log[512];
@@ -517,6 +621,7 @@ NTSTATUS WINAPI NtSetValueKey( HANDLE key, const UNICODE_STRING *name, ULONG ind
         line[len++] = ';';
         line[len] = 0;
     }
+    assert( strlen( n->values ) + strlen( line ) < sizeof(n->values) );
     strcat( n->values, line );
     return STATUS_SUCCESS;
 }
@@ -622,6 +727,26 @@ int main( void )
     /* HID: VID_..., instance, interface, #, Control (no second class key);
      * USB: USB, VID_..., serial, the USB interface class, interface, #, Control. */
     assert( creates == 12 );
+
+    /* Steam Input's Xbox identity: a Bluetooth parent (BTHENUM compatible ID,
+     * so SDL's Windows HIDAPI reports a Bluetooth bus) and no USB interface. */
+    reset();
+    strcpy( live_link, "\\??\\HID#{00001124-0000-1000-8000-00805F9B34FB}_VID&0002045E_PID&0B13#9&4d616465&0&0000"
+                       "#{4d1e55b2-f16f-11cf-88cb-001111000030}" );
+    setenv( "MADEIRA_HIDPAD", "xbox", 1 );
+    ios_hidpad_publish();
+    assert( log_lines == 1 && strstr( last_log, "045E:0B13" ) && strstr( last_log, "(4/4 keys)" ) );
+    assert( strstr( last_log, "Bluetooth parent 1/1" ) );
+    n = find( CCS "\\Enum\\HID\\{00001124-0000-1000-8000-00805F9B34FB}_VID&0002045E_PID&0B13\\9&4d616465&0&0000" );
+    assert( n && strstr( n->values, "Mfg=sz:Microsoft;" ) );
+    assert( strstr( n->values, "Parent=sz:BTHENUM\\{00001124-0000-1000-8000-00805f9b34fb}_VID&0002045e_PID&0b13"
+                               "\\8&4d616465&0&02a14d616478_C00000000;" ) );
+    n = find( CCS "\\Enum\\BTHENUM\\{00001124-0000-1000-8000-00805f9b34fb}_VID&0002045e_PID&0b13"
+                  "\\8&4d616465&0&02a14d616478_C00000000" );
+    assert( n && n->is_volatile );
+    assert( strstr( n->values, "CompatibleIDs=multi:BTHENUM\\{00001124-0000-1000-8000-00805f9b34fb}|;" ) );
+    assert( !find( CCS "\\Control\\DeviceClasses\\{a5dcbf10-6530-11d2-901f-00c04fb951ed}" ) );
+    strcpy( live_link, "\\??\\HID#VID_054C&PID_0CE6&MI_03#9&4d616465&0&0000#{4d1e55b2-f16f-11cf-88cb-001111000030}" );
 
     /* The env names another identity: the registry follows the device that exists. */
     reset();

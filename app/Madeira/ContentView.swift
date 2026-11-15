@@ -3566,12 +3566,18 @@ struct ContentView: View {
                 }
                 if GamepadInput.keyboardMouseAvailable && profile?.usesSteamInput == true {
                     try await SteamRuntimeInstaller.shared.prepareSteamInput(prefix: MadeiraDock.prefix) { _ in }
+                    // One identity for the whole launch: the selection store,
+                    // the client's settings and the HID device all read it.
+                    SteamInputController.beginSession()
+                } else {
+                    SteamInputController.endSession()
                 }
                 try MadeiraDock.writeHandoff(account: signIn.accountName, token: signIn.refreshToken, appID: game.id)
                 // Steam Input: the client reads its PlayStation setting from the account's
                 // localconfig.vdf when it starts (DockSteamInput; put back in dockEnded).
                 try DockSteamInput.prepare(steamID: try MadeiraDock.subject(signIn.refreshToken),
-                                       enabled: GamepadInput.keyboardMouseAvailable && profile?.usesSteamInput == true)
+                                       enabled: GamepadInput.keyboardMouseAvailable && profile?.usesSteamInput == true,
+                                       controller: SteamInputController.session ?? .dualSense)
             } catch { fail(error); return }
             MadeiraDock.configure(game, launchOption: launchOption, arguments: LaunchArgumentText.plain(profile?.arguments ?? ""))
             // "Steam starts" (DockStartProgram): the chosen program takes the place of the

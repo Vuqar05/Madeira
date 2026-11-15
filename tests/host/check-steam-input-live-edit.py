@@ -17,7 +17,7 @@ import tempfile
 root = Path(__file__).resolve().parents[2]
 app = root / 'app/Madeira'
 source = (app / 'DockSteamInput.swift').read_text()
-source = 'enum DockSteamInputWire' + source.split('enum DockSteamInputWire', 1)[1].split("/// Steam Input's PlayStation setting", 1)[0]
+source = 'enum DockSteamInputWire' + source.split('enum DockSteamInputWire', 1)[1].split("/// Steam Input's controller settings for a Dock launch", 1)[0]
 source = source.replace('FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]', 'testRoot.appendingPathComponent("support")')
 
 c_fixture = r'''
@@ -159,24 +159,24 @@ cases = r'''
         put32(&bytes, 40, vendor); put32(&bytes, 44, product); put32(&bytes, 48, 45); put32(&bytes, 52, UInt32(path.utf8.count))
         bytes.append(Data(path.utf8)); return bytes
     }
-    require(DockSteamInputService.rememberedContext(appID: 480) == nil, "nothing is remembered before Dock reports it")
+    require(DockSteamInputService.rememberedContext(appID: 480, controller: .dualSense) == nil, "nothing is remembered before Dock reports it")
     try contextFrame(vendor: 0x054c, product: 0x0ce6, path: "C:\\steamapps\\common\\fixture\\actions.vdf").write(to: contextFile)
     let live = DockSteamInputService.context(appID: 480)
     require(live?.isDualSense == true && live?.capabilities == 0x1800)
-    require(DockSteamInputService.rememberedContext(appID: 480) == live, "the reported details are remembered")
-    require(DockSteamInputService.context(appID: 481) == nil && DockSteamInputService.rememberedContext(appID: 481) == nil, "only for that game")
+    require(DockSteamInputService.rememberedContext(appID: 480, controller: .dualSense) == live, "the reported details are remembered")
+    require(DockSteamInputService.context(appID: 481) == nil && DockSteamInputService.rememberedContext(appID: 481, controller: .dualSense) == nil, "only for that game")
     let rememberedFile = storage.appendingPathComponent("SteamInputContext/480.json")
     require(try JSONDecoder().decode(DockSteamInputContext.self, from: Data(contentsOf: rememberedFile)) == live, "kept on disk for later launches")
     // Another controller is never remembered as the virtual DualSense.
     try contextFrame(vendor: 0x045e, product: 0x028e, path: "").write(to: contextFile)
-    require(DockSteamInputService.context(appID: 480)?.isDualSense == false && DockSteamInputService.rememberedContext(appID: 480) == live)
+    require(DockSteamInputService.context(appID: 480)?.isDualSense == false && DockSteamInputService.rememberedContext(appID: 480, controller: .dualSense) == live)
     // A damaged or hostile remembered file is ignored.
     try fm.createDirectory(at: storage.appendingPathComponent("SteamInputContext"), withIntermediateDirectories: true)
     try Data("{".utf8).write(to: storage.appendingPathComponent("SteamInputContext/482.json"))
-    require(DockSteamInputService.rememberedContext(appID: 482) == nil)
+    require(DockSteamInputService.rememberedContext(appID: 482, controller: .dualSense) == nil)
     var hostile = live!; hostile = DockSteamInputContext(capabilities: 0, vendor: 0x054c, product: 0x0ce6, rawType: 45, manifestPath: "a\u{7}b")
     try JSONEncoder().encode(hostile).write(to: storage.appendingPathComponent("SteamInputContext/483.json"))
-    require(DockSteamInputService.rememberedContext(appID: 483) == nil, "control characters are refused")
+    require(DockSteamInputService.rememberedContext(appID: 483, controller: .dualSense) == nil, "control characters are refused")
     try fm.removeItem(at: contextFile)
 
     // Held output is released before any change is written: the quiesce
@@ -360,7 +360,7 @@ int main(int argc, char **argv) {
                     '-import-objc-header', str(header),
                     str(app/'SwiftSteam/Library/SteamAppInfo.swift'), str(app/'SwiftSteam/Proto/SteamProtoMessages.swift'), str(app/'SwiftSteam/Core/SteamError.swift'),
                     str(app/'SteamKeyValues.swift'), str(app/'SteamInputVDF.swift'), str(app/'SteamInputModel.swift'), str(app/'SteamInputReferences.swift'),
-                    str(app/'SteamInputActions.swift'), str(app/'SteamInputPreview.swift'), str(app/'SteamInputTransactions.swift'), str(app/'SteamInputDefaults.swift'),
+                    str(app/'SteamInputActions.swift'), str(app/'SteamInputPreview.swift'), str(app/'SteamInputTransactions.swift'), str(app/'SteamInputController.swift'), str(app/'SteamInputDefaults.swift'),
                     str(app/'SteamInputEditor.swift'), str(app/'SteamInputPersonalReferences.swift'), str(app/'SteamInputPersonalRevisions.swift'),
                     str(app/'SteamInputCommunity.swift'), str(app/'SteamInputLiveEdit.swift'), str(tmp/'workshop.swift'), str(tmp/'main.swift'), str(tmp/'shared.o'),
                     '-o', str(tmp/'check')], check=True)

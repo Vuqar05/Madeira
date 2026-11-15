@@ -98,17 +98,20 @@ final class GamepadInput: @unchecked Sendable {
     /// wineserver starts (ContentView.runWineFullSequence): the wineserver and
     /// the first Wine process read MADEIRA_HIDPAD to create the device and its
     /// registry entries. In XInput mode it only unsets that and logs.
-    /// `steamInput` (the game's Controller: Steam Input): player 1 is a DualSense,
-    /// whatever madeira.cfg says, so the HIDAPI driver in Valve's client finds a pad
-    /// it supports (docs/STEAM_INPUT.md).
+    /// `steamInput` (the game's Controller: Steam Input): player 1 is the
+    /// launch's Steam Input identity (SteamInputController: a DualSense, or an
+    /// Xbox Wireless Controller for the on-screen controls and other pads),
+    /// whatever madeira.cfg says, so the HIDAPI driver in Valve's client finds a
+    /// pad it supports (docs/STEAM_INPUT.md).
     @MainActor func beginPadSession(steamInput: Bool = false) {
-        let mode = steamInput ? (value: "dualsense", source: "steam-input") : Self.configuredPadMode()
+        let identity = steamInput ? (SteamInputController.session ?? SteamInputController.beginSession()) : nil
+        let mode = identity.map { (value: $0.hidpad, source: "steam-input") } ?? Self.configuredPadMode()
         let output = Self.configuredPadOutput()
         unsetenv("MADEIRA_HIDPAD"); unsetenv("MADEIRA_HIDPAD_NAME"); unsetenv("MADEIRA_HIDPAD_OWNER"); unsetenv("MADEIRA_XINPUT_FORWARD")
         // An earlier session in this app run may have taken player 1 off XInput.
         DockSteamInputService.onInputQuiescedChanged = nil
         queue.async { [self] in hidActive = false; hidKeepsXInput = false; steamInputQuiesced = false; steamInputLatchedButtons = 0 }
-        guard ["hid", "dualsense", "generic"].contains(mode.value) else {
+        guard ["hid", "dualsense", "generic"].contains(mode.value) || identity != nil else {
             LogStore.shared.log("[hid-pad] ml2100 session mode=xinput source=\(mode.source)")
             beginPadOutput(xinput: output.xinput && Self.enabled, hid: false, value: output.value)
             return
@@ -133,7 +136,7 @@ final class GamepadInput: @unchecked Sendable {
         }
         let kind: String
         switch mode.value {
-        case "dualsense", "generic": kind = mode.value
+        case "dualsense", "generic", "xbox": kind = mode.value
         // No pad yet: a DualSense, the identity this mode exists for.
         default: kind = first == nil || sony ? "dualsense" : "generic"
         }
@@ -155,8 +158,8 @@ final class GamepadInput: @unchecked Sendable {
         queue.async { [self] in hidActive = true; hidKeepsXInput = keepXInput; steamInputQuiesced = initialQuiesced; sample() }
         LogStore.shared.log("[hid-pad] ml2100 session mode=\(mode.value) source=\(mode.source) kind=\(kind) "
                             + "pad=\(first?.productCategory ?? "none") xinput-slot0=\(keepXInput ? "kept" : "off")")
-        // Only the DualSense identity has output reports (the generic pad has none).
-        beginPadOutput(xinput: output.xinput, hid: output.hid && kind == "dualsense", value: output.value)
+        // The DualSense and Xbox identities have output reports (the generic pad has none).
+        beginPadOutput(xinput: output.xinput, hid: output.hid && (kind == "dualsense" || kind == "xbox"), value: output.value)
     }
 
     /// ml2106: arm PadOutput.m for this session. Before the wineserver starts,
@@ -165,6 +168,18 @@ final class GamepadInput: @unchecked Sendable {
         madeira_pad_output_configure(xinput ? 1 : 0, hid ? 1 : 0)
         LogStore.shared.log("[hidpad-out] ml2106 session env.MADEIRA_PAD_OUTPUT=\(value) "
                             + "xinput-rumble=\(xinput ? 1 : 0) dualsense-output=\(hid ? 1 : 0)")
+    }
+
+    /// SteamInputController's readers: the Xbox identity switch, player 1's
+    /// paired pad as beginPadSession picks it, and Steam's event log.
+    @MainActor static func installSteamInputEnvironment() {
+        SteamInputController.environment = .init(
+            xboxSwitch: { optIn("MADEIRA_STEAM_INPUT_XBOX") },
+            pairedIsPlayStation: {
+                guard let pad = GCController.controllers().first(where: { $0.extendedGamepad != nil })?.extendedGamepad else { return nil }
+                return pad is GCDualSenseGamepad || pad is GCDualShockGamepad
+            },
+            log: { SteamLog.event($0) })
     }
 
     /// Documents/madeira.cfg `env.NAME`, else the process environment; only "0" disables.

@@ -131,6 +131,6 @@ with tempfile.TemporaryDirectory(prefix='madeira-input-defaults-') as temporary:
                     str(header.with_suffix('.c')), '-o', str(tmp / 'service.o')], check=True)
     subprocess.run([shutil.which('swiftc'), '-parse-as-library', '-module-cache-path', str(tmp / 'modules'),
                     '-import-objc-header', str(header), str(root / 'app/Madeira/SwiftSteam/Library/SteamAppInfo.swift'),
-                    str(root / 'app/Madeira/SteamInputTransactions.swift'), str(root / 'app/Madeira/SteamInputDefaults.swift'),
+                    str(root / 'app/Madeira/SteamInputTransactions.swift'), str(root / 'app/Madeira/SteamInputController.swift'), str(root / 'app/Madeira/SteamInputDefaults.swift'),
                     str(tmp / 'main.swift'), str(tmp / 'service.o'), '-o', str(tmp / 'check')], check=True)
     subprocess.run([str(tmp / 'check'), str(tmp / 'cache')], check=True)

@@ -576,14 +576,19 @@ final class SteamOwnedLibrary: ObservableObject {
     /// `rememberedContext`: when the game is not running, use the controller
     /// details Dock reported in its last session. Only for choosing where a new
     /// personal layout starts; the Steam Input controls never pass it.
-    func resolveSteamInputDefault(game: DockGame, refresh: Bool = false, rememberedContext: Bool = false) async -> DockSteamInputDefault.Resolution {
+    /// `controller`: whose default (nil: the running session's identity, else
+    /// the one a launch would choose now).
+    func resolveSteamInputDefault(game: DockGame, refresh: Bool = false, rememberedContext: Bool = false,
+                                  controller: SteamInputController? = nil) async -> DockSteamInputDefault.Resolution {
         guard game.id > 0, game.id <= Int(UInt32.max) else { return .unresolved(.dataUnavailable) }
+        let controller = controller ?? SteamInputController.current
         let metadata = await steamInputMetadata(appID: game.id, refresh: refresh)
         let live = DockSteamInputService.context(appID: UInt32(game.id))
         // A running game may have supplied a manifest that outranks PICS. Do
         // not present a metadata-only guess as its default before Dock answers.
         if inSession && live == nil { return .unresolved(.contextUnavailable) }
-        let context = live ?? (rememberedContext && !inSession ? DockSteamInputService.rememberedContext(appID: UInt32(game.id)) : nil)
+        let context = live ?? (rememberedContext && !inSession
+            ? DockSteamInputService.rememberedContext(appID: UInt32(game.id), controller: controller) : nil)
         var directory: URL?
         if game.installed { directory = try? ExternalDrives.nativeURL(game.library + "/common/" + game.installDir) }
         let resolved = DockSteamInputDefault.resolve(
@@ -591,34 +596,37 @@ final class SteamOwnedLibrary: ObservableObject {
                                         controllerSupport: $0.controllerSupport) },
             gameDirectory: directory, clientRoot: MadeiraDock.clientRoot,
             context: context,
-            windowsDirectory: "C:/" + game.library + "/common/" + game.installDir)
+            windowsDirectory: "C:/" + game.library + "/common/" + game.installDir, controller: controller)
         if resolved == .unresolved(.workshopSource), let metadata {
             var ids = metadata.workshopIDs ?? []
             let controllerMatched = metadata.workshopDetails?.isEmpty == false
             if controllerMatched {
-                guard let context, context.isDualSense else { return .unresolved(.contextUnavailable) }
+                guard let context, context.controller == controller else { return .unresolved(.contextUnavailable) }
                 // Steam's installed branch, never the branch merely chosen for
                 // a future download. January calls the public branch "default".
                 guard let steamApps = try? ExternalDrives.nativeURL(game.library) else { return .unresolved(.dataUnavailable) }
                 let branch = SteamInstallFiles.betaKey(appID: game.id, steamApps: steamApps) ?? "default"
-                guard let id = metadata.workshopRecommendation(branch: branch) else { return .unresolved(.workshopIncompatible) }
+                guard let id = metadata.workshopRecommendation(branch: branch, exact: controller.steamType,
+                                                               compatible: controller.compatibleTypes) else {
+                    return .unresolved(.workshopIncompatible)
+                }
                 ids = [id]
             }
             guard !ids.isEmpty else {
                 guard metadata.workshopIDs != nil else { return resolved }
                 return metadata.workshopDetails != nil ? .noRecommendation :
                     DockSteamInputDefault.workshopFallback(controllerSupport: metadata.controllerSupport,
-                        clientRoot: MadeiraDock.clientRoot, context: context)
+                        clientRoot: MadeiraDock.clientRoot, context: context, controller: controller)
             }
             do {
                 let value = try await SteamInputDefaultSources.shared.recommendation(appID: UInt32(game.id), ids: ids,
-                    refresh: refresh, controllerMatched: controllerMatched)
+                    refresh: refresh, controllerMatched: controllerMatched, controller: controller)
                 try Task.checkCancellation()
                 return .recommended(value)
             } catch SteamInputDefaultSources.Failure.incompatible {
                 return metadata.workshopDetails != nil ? .unresolved(.workshopIncompatible) :
                     DockSteamInputDefault.workshopFallback(controllerSupport: metadata.controllerSupport,
-                        clientRoot: MadeiraDock.clientRoot, context: context)
+                        clientRoot: MadeiraDock.clientRoot, context: context, controller: controller)
             } catch { return .unresolved(.workshopUnavailable) }
         }
         return resolved
@@ -1293,6 +1301,7 @@ final class SteamOwnedLibrary: ObservableObject {
     /// ContentView.startDock): the connection comes back once no session runs.
     func dockEnded() {
         DockSteamInput.restore()
+        SteamInputController.endSession()
         guard gate.heldForDock else { return }
         gate.releaseDock()
         reconcileSession()

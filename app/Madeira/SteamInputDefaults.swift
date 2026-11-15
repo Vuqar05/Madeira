@@ -38,18 +38,23 @@ import Darwin
         let hash: String
         let title: String
         var controllerMatched: Bool? = nil
+        /// The controller the record was chosen for; nil in records written
+        /// before milestone 5, which were all for the DualSense.
+        var controller: SteamInputController? = nil
     }
     enum Failure: Error { case unavailable, invalid, incompatible }
 
     /// PICS's ordered list, not a community search, establishes game association.
-    /// January chooses the first compatible (PS4 or PS5) listed layout, not the
-    /// first PS5 layout. A failed earlier download cannot be silently skipped.
-    func recommendation(appID: UInt32, ids: [UInt64], refresh: Bool = false, controllerMatched: Bool = false) async throws -> DockSteamInputDefault.Recommendation {
+    /// January chooses the first listed layout compatible with the connected
+    /// controller (SteamUI 0x5437c9 calls 0x731ca0 with its type), not the first
+    /// exact one. A failed earlier download cannot be silently skipped.
+    func recommendation(appID: UInt32, ids: [UInt64], refresh: Bool = false, controllerMatched: Bool = false,
+                        controller: SteamInputController = .dualSense) async throws -> DockSteamInputDefault.Recommendation {
         guard appID > 0, !ids.isEmpty, ids.count <= 32, ids.allSatisfy({ $0 > 0 }), Set(ids).count == ids.count else {
             throw Failure.invalid
         }
         try Task.checkCancellation()
-        if !refresh, let cached = try cached(appID: appID, ids: ids, controllerMatched: controllerMatched) { return cached }
+        if !refresh, let cached = try cached(appID: appID, ids: ids, controllerMatched: controllerMatched, controller: controller) { return cached }
         let items = try await details(ids)
         guard items.count == ids.count, Set(items.map(\.id)) == Set(ids) else { throw Failure.unavailable }
         for id in ids {
@@ -62,30 +67,37 @@ import Darwin
             guard bytes.count == Int(item.fileSize), !bytes.isEmpty, bytes.count <= Self.limit else { throw Failure.invalid }
             _ = try DockSteamInputNative.revision(bytes)
             guard let type = Self.controllerType(bytes) else { throw Failure.invalid }
-            guard controllerMatched || ["controller_ps4", "controller_ps5"].contains(type.lowercased()) else { continue }
+            guard controllerMatched || controller.accepts(type: type) else { continue }
             let record = Cached(appID: appID, itemID: id, candidates: ids, updated: item.timeUpdated,
-                                hash: DockSteamInputNative.contentHash(bytes), title: item.title, controllerMatched: controllerMatched)
+                                hash: DockSteamInputNative.contentHash(bytes), title: item.title, controllerMatched: controllerMatched,
+                                controller: controller)
             let directory = root.appendingPathComponent(String(appID), isDirectory: true)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             // A failed refresh leaves the last complete record/object pair intact.
             try bytes.write(to: directory.appendingPathComponent(record.hash + ".vdf"), options: .atomic)
-            try JSONEncoder().encode(record).write(to: directory.appendingPathComponent("default.json"), options: .atomic)
+            try JSONEncoder().encode(record).write(to: directory.appendingPathComponent(Self.recordName(controller)), options: .atomic)
             return Self.recommendation(record, bytes: bytes)
         }
         throw Failure.incompatible
     }
 
-    private func cached(appID: UInt32, ids: [UInt64], controllerMatched: Bool) throws -> DockSteamInputDefault.Recommendation? {
+    /// One record per controller; the DualSense keeps the name it always had.
+    private static func recordName(_ controller: SteamInputController) -> String {
+        controller == .dualSense ? "default.json" : "default-\(controller.rawValue).json"
+    }
+    private func cached(appID: UInt32, ids: [UInt64], controllerMatched: Bool,
+                        controller: SteamInputController) throws -> DockSteamInputDefault.Recommendation? {
         let directory = root.appendingPathComponent(String(appID), isDirectory: true)
-        let path = directory.appendingPathComponent("default.json")
+        let path = directory.appendingPathComponent(Self.recordName(controller))
         guard FileManager.default.fileExists(atPath: path.path) else { return nil }
         let record = try JSONDecoder().decode(Cached.self, from: Self.read(path, limit: 8192))
         guard record.appID == appID, record.hash.utf8.count == 64,
               record.hash.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else { throw Failure.invalid }
-        guard record.candidates == ids, ids.contains(record.itemID), (record.controllerMatched ?? false) == controllerMatched else { return nil }
+        guard record.candidates == ids, ids.contains(record.itemID), (record.controllerMatched ?? false) == controllerMatched,
+              (record.controller ?? .dualSense) == controller else { return nil }
         let bytes = try Self.read(directory.appendingPathComponent(record.hash + ".vdf"), limit: Self.limit)
         guard DockSteamInputNative.contentHash(bytes) == record.hash,
-              let type = Self.controllerType(bytes), controllerMatched || ["controller_ps4", "controller_ps5"].contains(type.lowercased()) else {
+              let type = Self.controllerType(bytes), controllerMatched || controller.accepts(type: type) else {
             throw Failure.invalid
         }
         _ = try DockSteamInputNative.revision(bytes)

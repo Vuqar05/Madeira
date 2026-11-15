@@ -7,9 +7,10 @@
  * With `env.MADEIRA_PAD_MODE = hid` in madeira.cfg, player 1's controller
  * reaches Windows as a HID game controller instead of an XInput pad: a
  * DualSense (Sony 054C:0CE6, so Sony's libScePad and anything matching Sony's
- * IDs sees a PlayStation pad) or a generic HID gamepad. The app decides
+ * IDs sees a PlayStation pad), a generic HID gamepad or, for Steam Input
+ * only, a Bluetooth Xbox Wireless Controller (045E:0B13). The app decides
  * which at session start (GamepadInput.swift) and exports it as
- * MADEIRA_HIDPAD=dualsense|generic before the wineserver starts. Two places
+ * MADEIRA_HIDPAD=dualsense|generic|xbox before the wineserver starts. Two places
  * read it:
  *
  *   build/wineserver/hidpad_ios.c   the device object, its reads and IOCTLs
@@ -31,6 +32,7 @@
 #define HIDPAD_KIND_NONE      0
 #define HIDPAD_KIND_DUALSENSE 1
 #define HIDPAD_KIND_GENERIC   2
+#define HIDPAD_KIND_XBOX      3
 
 /* GUID_DEVINTERFACE_HID, lower case as setupapi writes it. */
 #define HIDPAD_HID_INTERFACE_GUID "{4d1e55b2-f16f-11cf-88cb-001111000030}"
@@ -58,6 +60,7 @@ struct hidpad_identity
     const char *manufacturer;
     const char *product;
     const char *serial;
+    int bluetooth;              /* parent devnode is BTHENUM, not a USB composite device */
 };
 
 static const struct hidpad_identity hidpad_identities[] =
@@ -72,7 +75,7 @@ static const struct hidpad_identity hidpad_identities[] =
         /* The USB string descriptors of a CFI-ZCT1W ("Sony Interactive
          * Entertainment DualSense Wireless Controller" in Linux's hidraw
          * line); "Wireless Controller" alone is the DualShock 4's product. */
-        "Sony Interactive Entertainment", "DualSense Wireless Controller", "02a14d616465",
+        "Sony Interactive Entertainment", "DualSense Wireless Controller", "02a14d616465", 0,
     },
     {
         /* pid.codes (no USB-IF membership needed); the same IDs as the opt-in
@@ -85,7 +88,24 @@ static const struct hidpad_identity hidpad_identities[] =
           "HID\\VID_1209&UP:0001_U:0005", "HID_DEVICE_SYSTEM_GAME", "HID_DEVICE_UP:0001_U:0005",
           "HID_DEVICE" },
         "{4d616465-6972-6148-4944-47454e000001}",
-        "Madeira", "Madeira Gamepad", "",
+        "Madeira", "Madeira Gamepad", "", 0,
+    },
+    {
+        /* Steam Input's Xbox identity (docs/STEAM_INPUT.md, milestone 5): an
+         * Xbox Wireless Controller (Series, model 1914) over Bluetooth, the
+         * only way Windows shows an Xbox pad as a HID game controller (wired,
+         * it is a GIP device behind xboxgip.sys). SDL's HIDAPI Xbox One driver
+         * in Valve's client reads it; Steam types it controller_xboxone. Only
+         * used with MADEIRA_HIDPAD_OWNER=dockhost.exe, so a game never opens it
+         * and Microsoft's vendor ID is not seen twice next to XInput. */
+        HIDPAD_KIND_XBOX, "xbox", 0x045e, 0x0b13, 0x0517,
+        "HID\\{00001124-0000-1000-8000-00805F9B34FB}_VID&0002045E_PID&0B13", "9&4d616465&0&0000",
+        { "HID\\{00001124-0000-1000-8000-00805f9b34fb}_VID&0002045e_PID&0b13&REV_0517",
+          "HID\\{00001124-0000-1000-8000-00805f9b34fb}_VID&0002045e_PID&0b13",
+          "HID\\VID_045E&UP:0001_U:0005", "HID_DEVICE_SYSTEM_GAME", "HID_DEVICE_UP:0001_U:0005",
+          "HID_DEVICE" },
+        "{4d616465-6972-6148-4944-58424f580001}",
+        "Microsoft", "Xbox Wireless Controller", "02a14d616478", 1,
     },
 };
 

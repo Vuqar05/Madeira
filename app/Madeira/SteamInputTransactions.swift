@@ -371,12 +371,18 @@ enum DockSteamInputNative {
     /// Nil only when the manifest has no usable controller entry at all; the
     /// portable reader follows SteamUI's exact-then-compatible-then-first order.
     static func manifestPS5Path(_ data: Data, device: DockSteamInputContext? = nil) throws -> String? {
+        try manifestPath(data, controller: .dualSense, device: device)
+    }
+    /// January's manifest controller choice for `controller`'s Steam type;
+    /// `device` must be that controller's reported details, or nil.
+    static func manifestPath(_ data: Data, controller: SteamInputController, device: DockSteamInputContext? = nil) throws -> String? {
         guard !data.isEmpty, data.count < 1 << 20 else { throw DockSteamInputJournal.Failure.invalid }
+        let device = device?.controller == controller ? device : nil
         var path = [CChar](repeating: 0, count: 1024)
         let result = data.withUnsafeBytes { bytes in
             path.withUnsafeMutableBufferPointer { target in
-                sh_input_manifest_ps5_device_path(bytes.baseAddress!.assumingMemoryBound(to: CChar.self),
-                    data.count, device?.vendor ?? UInt32.max, device?.product ?? UInt32.max,
+                sh_input_manifest_device_path(bytes.baseAddress!.assumingMemoryBound(to: CChar.self),
+                    data.count, controller.steamTypeID, device?.vendor ?? UInt32.max, device?.product ?? UInt32.max,
                     target.baseAddress!, target.count)
             }
         }
@@ -410,9 +416,10 @@ struct DockSteamInputContext: Equatable, Codable {
     let product: UInt32
     let rawType: UInt32
     let manifestPath: String?
-    /// Context is useful only for the virtual DualSense bridge the resolver
-    /// supports. Never reinterpret another physical controller as this bridge.
-    var isDualSense: Bool { vendor == 0x054c && product == 0x0ce6 }
+    /// The Madeira virtual controller these details describe, or nil for any
+    /// other device. Never reinterpret another physical controller as a bridge.
+    var controller: SteamInputController? { SteamInputController(vendor: vendor, product: product) }
+    var isDualSense: Bool { controller == .dualSense }
 
     static func parse(_ data: Data, session: [UInt8], appID: UInt32, epoch: UInt32) -> Self? {
         let bytes = [UInt8](data)
@@ -494,7 +501,8 @@ enum DockSteamInputBundledManifest {
         defer { close(root) }
         return try read(root: root, components: parts)
     }
-    static func candidate(gameDirectory: URL, manifestPath: String, device: DockSteamInputContext? = nil) throws -> Candidate? {
+    static func candidate(gameDirectory: URL, manifestPath: String, device: DockSteamInputContext? = nil,
+                          controller: SteamInputController = .dualSense) throws -> Candidate? {
         let manifestParts = try components(manifestPath)
         let root = open(gameDirectory.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
         guard root >= 0 else { throw DockSteamInputJournal.Failure.corrupt }
@@ -502,7 +510,7 @@ enum DockSteamInputBundledManifest {
         let parent = try directory(root: root, components: manifestParts.dropLast())
         defer { close(parent) }
         let manifest = try read(root: parent, components: [manifestParts.last!])
-        guard let relative = try DockSteamInputNative.manifestPS5Path(manifest, device: device) else { return nil }
+        guard let relative = try DockSteamInputNative.manifestPath(manifest, controller: controller, device: device) else { return nil }
         let candidateParts = try components(relative)
         let layoutParts = Array(manifestParts.dropLast()) + candidateParts
         let layout = try read(root: parent, components: candidateParts)
@@ -536,7 +544,12 @@ enum DockSteamInputBundledManifest {
     /// A pinned January client template candidate, not proof that cached PICS
     /// data is current. The caller must establish client and metadata scope.
     static func januaryPS5Template(clientRoot: URL, index: UInt32) throws -> Data? {
-        guard let name = sh_input_january_ps5_template(index), let filename = String(validatingUTF8: name) else { return nil }
+        try januaryTemplate(clientRoot: clientRoot, controller: .dualSense, index: index)
+    }
+    /// The same for either Madeira controller ("controller_ps5_…" or "controller_xboxone_…").
+    static func januaryTemplate(clientRoot: URL, controller: SteamInputController, index: UInt32) throws -> Data? {
+        guard let name = sh_input_january_template(controller.steamTypeID, index),
+              let filename = String(validatingUTF8: name) else { return nil }
         let root = open(clientRoot.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
         guard root >= 0 else { throw DockSteamInputJournal.Failure.corrupt }
         defer { close(root) }
@@ -550,7 +563,7 @@ enum DockSteamInputBundledManifest {
 /// delegates to the ordered Workshop resolver in SteamInputDefaultSources.
 /// Submission and receipts remain exclusively in DockSteamInputService.
 enum DockSteamInputDefault {
-    static let genericTemplate = "controller_ps5_gamepad_joystick.vdf"
+    static let genericTemplate = SteamInputController.dualSense.genericTemplate
     struct Recommendation: Equatable {
         enum Origin: Equatable { case actionManifest, steamTemplate, workshop }
         let source: Data
@@ -600,8 +613,12 @@ enum DockSteamInputDefault {
     }
     /// `hints` is nil when the metadata was never read; `gameDirectory` is nil
     /// when the game is not installed.
+    /// `controller` is the identity whose default this is; `context` counts
+    /// only when it describes that controller.
     static func resolve(hints metadata: Hints?, gameDirectory: URL?, clientRoot: URL,
-                        context: DockSteamInputContext? = nil, windowsDirectory: String? = nil) -> Resolution {
+                        context: DockSteamInputContext? = nil, windowsDirectory: String? = nil,
+                        controller: SteamInputController = .dualSense) -> Resolution {
+        let context = context?.controller == controller ? context : nil
         var path = metadata?.manifestPath
         if let runtimePath = context?.manifestPath {
             guard let confined = relativeManifestPath(runtimePath, windowsDirectory: windowsDirectory) else {
@@ -613,7 +630,7 @@ enum DockSteamInputDefault {
             guard let gameDirectory else { return .unresolved(.notInstalled) }
             do {
                 if let candidate = try DockSteamInputBundledManifest.candidate(gameDirectory: gameDirectory, manifestPath: path,
-                    device: context?.isDualSense == true ? context : nil) {
+                    device: context, controller: controller) {
                     _ = try DockSteamInputNative.revision(candidate.layout)
                     return .recommended(.init(source: candidate.layout, origin: .actionManifest))
                 }
@@ -631,14 +648,14 @@ enum DockSteamInputDefault {
             template = 2
         }
         if template == 2 || template == 3 {
-            guard let context, context.isDualSense else { return .unresolved(.templateControllerDependent) }
+            guard let context else { return .unresolved(.templateControllerDependent) }
             if context.capabilities & 0x1800 == 0 { template = 4 }
         }
         switch template {
         case 1: return .unresolved(.workshopSource)
         case let index:
-            guard sh_input_january_ps5_template(index) != nil else { return .unresolved(.templateUnsupported) }
-            guard let data = try? DockSteamInputBundledManifest.januaryPS5Template(clientRoot: clientRoot, index: index),
+            guard sh_input_january_template(controller.steamTypeID, index) != nil else { return .unresolved(.templateUnsupported) }
+            guard let data = try? DockSteamInputBundledManifest.januaryTemplate(clientRoot: clientRoot, controller: controller, index: index),
                   (try? DockSteamInputNative.revision(data)) != nil else { return .unresolved(.templateUnavailable) }
             return .recommended(.init(source: data, origin: .steamTemplate,
                                       mouseOrKeyboard: sh_input_january_ps5_template_mouse_or_keyboard(index)))
@@ -648,10 +665,11 @@ enum DockSteamInputDefault {
     /// After the legacy index-1 list has no compatible layout, January's
     /// template resolver picks 2 for controller-supporting apps, otherwise 6.
     /// Rich config details suppress this fallback, even when their list is empty.
-    static func workshopFallback(controllerSupport: UInt32?, clientRoot: URL, context: DockSteamInputContext?) -> Resolution {
+    static func workshopFallback(controllerSupport: UInt32?, clientRoot: URL, context: DockSteamInputContext?,
+                                 controller: SteamInputController = .dualSense) -> Resolution {
         guard let support = controllerSupport else { return .unresolved(.dataUnavailable) }
         return resolve(hints: .init(templateIndex: support == 0 ? 6 : 2, manifestPath: nil),
-                       gameDirectory: nil, clientRoot: clientRoot, context: context)
+                       gameDirectory: nil, clientRoot: clientRoot, context: context, controller: controller)
     }
 
     /// A client-supplied Windows absolute path is accepted only beneath this
@@ -672,9 +690,9 @@ enum DockSteamInputDefault {
         return relative
     }
 
-    /// Steam's PS5 "Gamepad" template as an explicit, clearly generic choice.
-    static func genericTemplate(clientRoot: URL) throws -> Data {
-        guard let data = try DockSteamInputBundledManifest.januaryPS5Template(clientRoot: clientRoot, index: 4) else {
+    /// Steam's "Gamepad" template for `controller`, an explicit, clearly generic choice.
+    static func genericTemplate(clientRoot: URL, controller: SteamInputController = .dualSense) throws -> Data {
+        guard let data = try DockSteamInputBundledManifest.januaryTemplate(clientRoot: clientRoot, controller: controller, index: 4) else {
             throw DockSteamInputJournal.Failure.invalid
         }
         _ = try DockSteamInputNative.revision(data)

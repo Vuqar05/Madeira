@@ -6272,6 +6272,42 @@ static unsigned int ios_hidpad_usb_parent( const struct hidpad_identity *id, con
 }
 
 /***********************************************************************
+ *           ios_hidpad_bt_parent
+ *
+ * Steam Input's Xbox identity (milestone 5): Windows shows an Xbox Wireless
+ * Controller as a HID device only over Bluetooth, below a BTHENUM devnode for
+ * the HID service ({00001124-...}). SDL's Windows HIDAPI (get_bus_type in
+ * hidapi/windows/hid.c) reads the parent's CompatibleIDs; "BTHENUM" makes the
+ * bus Bluetooth, the case SDL's Xbox One driver reads without the GIP
+ * handshake a wired pad needs. Only the Enum key: a Bluetooth device has no
+ * USB interface for the client to list. Returns how many keys were written.
+ */
+static unsigned int ios_hidpad_bt_parent( const struct hidpad_identity *id, const char *bt_instance )
+{
+    static const char enumkey[] = "\\Registry\\Machine\\System\\CurrentControlSet\\Enum";
+    const char *class_name = "HIDClass", *class_guid = HIDPAD_HIDCLASS_GUID;
+    const char *desc = "Bluetooth HID Device";
+    const char *compatible[] = { "BTHENUM\\{00001124-0000-1000-8000-00805f9b34fb}" };
+    char hardware0[96];
+    const char *hardware[1] = { hardware0 };
+    HANDLE key;
+
+    snprintf( hardware0, sizeof(hardware0), "BTHENUM\\{00001124-0000-1000-8000-00805f9b34fb}_VID&0002%04x_PID&%04x",
+              id->vid, id->pid );
+    if (!(key = ios_hidpad_key( enumkey, bt_instance ))) return 0;
+    ios_hidpad_value( key, "ClassGUID", REG_SZ, &class_guid, 1, 0 );
+    ios_hidpad_value( key, "Class", REG_SZ, &class_name, 1, 0 );
+    ios_hidpad_value( key, "DeviceDesc", REG_SZ, &desc, 1, 0 );
+    ios_hidpad_value( key, "Mfg", REG_SZ, &id->manufacturer, 1, 0 );
+    ios_hidpad_value( key, "HardwareID", REG_MULTI_SZ, hardware, 1, 0 );
+    ios_hidpad_value( key, "CompatibleIDs", REG_MULTI_SZ, compatible, ARRAY_SIZE(compatible), 0 );
+    ios_hidpad_value( key, "ContainerID", REG_SZ, &id->container_id, 1, 0 );
+    ios_hidpad_value( key, "ConfigFlags", REG_DWORD, NULL, 0, 0 );
+    NtClose( key );
+    return 1;
+}
+
+/***********************************************************************
  *           ios_hidpad_publish
  *
  * ml2102: the registry half of the opt-in HID controller (MADEIRA_HIDPAD,
@@ -6297,7 +6333,7 @@ static void ios_hidpad_publish(void)
     const char *class_name = "HIDClass", *class_guid = HIDPAD_HIDCLASS_GUID;
     const char *desc = "HID-compliant game controller";
     unsigned int written = 0, usb_parent;
-    char usb_instance[128];
+    char usb_instance[160];
     HANDLE key;
 
     if (!getenv( "MADEIRA_HIDPAD" )) return;
@@ -6309,7 +6345,12 @@ static void ios_hidpad_publish(void)
     }
     snprintf( instance, sizeof(instance), "%s\\%s", id->device_id, id->instance );
     snprintf( symlink, sizeof(symlink), "\\\\?\\%s", link );
-    snprintf( usb_instance, sizeof(usb_instance), "USB\\VID_%04X&PID_%04X\\%s", id->vid, id->pid, id->serial );
+    if (id->bluetooth)
+        snprintf( usb_instance, sizeof(usb_instance),
+                  "BTHENUM\\{00001124-0000-1000-8000-00805f9b34fb}_VID&0002%04x_PID&%04x\\8&4d616465&0&%s_C00000000",
+                  id->vid, id->pid, id->serial );
+    else
+        snprintf( usb_instance, sizeof(usb_instance), "USB\\VID_%04X&PID_%04X\\%s", id->vid, id->pid, id->serial );
 
     if ((key = ios_hidpad_key( enumkey, instance )))
     {
@@ -6327,7 +6368,7 @@ static void ios_hidpad_publish(void)
         NtClose( key );
         written++;
     }
-    usb_parent = ios_hidpad_usb_parent( id, usb_instance );
+    usb_parent = id->bluetooth ? ios_hidpad_bt_parent( id, usb_instance ) : ios_hidpad_usb_parent( id, usb_instance );
     snprintf( path, sizeof(path), "%s\\##?#%s", HIDPAD_HID_INTERFACE_GUID, link );
     if ((key = ios_hidpad_key( classes, path )))
     {
@@ -6351,8 +6392,9 @@ static void ios_hidpad_publish(void)
         NtClose( key );
         written++;
     }
-    wine_log_write( "[hid-pad] ml2102 %s %04X:%04X registered (%u/4 keys) as %s, USB parent %u/4 rev=ml2105",
-                    id->env, id->vid, id->pid, written, symlink, usb_parent );
+    wine_log_write( "[hid-pad] ml2102 %s %04X:%04X registered (%u/4 keys) as %s, %s parent %u/%u rev=ml2105",
+                    id->env, id->vid, id->pid, written, symlink, id->bluetooth ? "Bluetooth" : "USB",
+                    usb_parent, id->bluetooth ? 1 : 4 );
 }
 
 static void ios_vcrt_sz( HANDLE key, const char *name, const char *value )
