@@ -88,8 +88,12 @@ struct SteamInputCommunityView: View {
         let id = Int(appID)
         let game = await Task.detached { MadeiraDock.games(drive: MadeiraDock.drive).first { $0.id == id } }.value
         guard let game else { throw SteamInputUnavailable(errorDescription: "The game is not installed.") }
-        let resolution = await SteamOwnedLibrary.shared.resolveSteamInputDefault(game: game, refresh: false)
+        let resolution = await SteamOwnedLibrary.shared.resolveSteamInputDefault(game: game, refresh: false, rememberedContext: true)
         guard case .recommended(let value) = resolution else {
+            if resolution == .unresolved(.contextUnavailable) || resolution == .unresolved(.templateControllerDependent) {
+                // Steam's choice depends on the controller, which Dock reports only while the game runs.
+                throw SteamInputUnavailable(errorDescription: "Steam chooses this game's default for the connected controller, and Madeira has not seen it yet. Start the game once with the controller connected; after that, this works without the game running.")
+            }
             throw SteamInputUnavailable(errorDescription: DockSteamInputDefault.explanation(resolution))
         }
         return (value.source, String(value.sourceDescription.prefix(120)))

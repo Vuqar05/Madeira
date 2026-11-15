@@ -573,13 +573,17 @@ final class SteamOwnedLibrary: ObservableObject {
     /// cached or freshly fetched app metadata. Nothing here activates a layout
     /// or touches a saved selection, and an unresolved result is never evidence
     /// that the game has no recommendation.
-    func resolveSteamInputDefault(game: DockGame, refresh: Bool = false) async -> DockSteamInputDefault.Resolution {
+    /// `rememberedContext`: when the game is not running, use the controller
+    /// details Dock reported in its last session. Only for choosing where a new
+    /// personal layout starts; the Steam Input controls never pass it.
+    func resolveSteamInputDefault(game: DockGame, refresh: Bool = false, rememberedContext: Bool = false) async -> DockSteamInputDefault.Resolution {
         guard game.id > 0, game.id <= Int(UInt32.max) else { return .unresolved(.dataUnavailable) }
         let metadata = await steamInputMetadata(appID: game.id, refresh: refresh)
-        let context = DockSteamInputService.context(appID: UInt32(game.id))
+        let live = DockSteamInputService.context(appID: UInt32(game.id))
         // A running game may have supplied a manifest that outranks PICS. Do
         // not present a metadata-only guess as its default before Dock answers.
-        if inSession && context == nil { return .unresolved(.contextUnavailable) }
+        if inSession && live == nil { return .unresolved(.contextUnavailable) }
+        let context = live ?? (rememberedContext && !inSession ? DockSteamInputService.rememberedContext(appID: UInt32(game.id)) : nil)
         var directory: URL?
         if game.installed { directory = try? ExternalDrives.nativeURL(game.library + "/common/" + game.installDir) }
         let resolved = DockSteamInputDefault.resolve(

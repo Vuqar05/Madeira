@@ -809,7 +809,38 @@ enum DockSteamInputWire {
               let file = try? FileHandle(forReadingFrom: contextFile) else { return nil }
         defer { try? file.close() }
         guard let bytes = try? file.read(upToCount: 56 + 4097) else { return nil }
-        return DockSteamInputContext.parse(bytes, session: session, appID: appID, epoch: snapshot.epoch)
+        let value = DockSteamInputContext.parse(bytes, session: session, appID: appID, epoch: snapshot.epoch)
+        if let value { remember(value, appID: appID) }
+        return value
+    }
+    /// Where the controller details Dock last reported for each game are kept.
+    private static func rememberedURL(appID: UInt32) -> URL {
+        storage.appendingPathComponent("SteamInputContext/\(appID).json")
+    }
+    private static var rememberedCache: [UInt32: DockSteamInputContext] = [:]
+    /// Keeps what Dock reported for the virtual DualSense in this game's
+    /// session, so a personal layout can be started from the game default
+    /// while the game is not running. Written only when it changes.
+    private static func remember(_ value: DockSteamInputContext, appID: UInt32) {
+        guard value.isDualSense, rememberedCache[appID] != value else { return }
+        rememberedCache[appID] = value
+        let url = rememberedURL(appID: appID)
+        do {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try JSONEncoder().encode(value).write(to: url, options: .atomic)
+        } catch { SteamLog.event("[steam-input] controller details not kept") }
+    }
+    /// The controller details Dock reported in this game's most recent session,
+    /// or nil when it has never reported them. Never used to apply a layout:
+    /// only to choose the starting point of a new personal layout.
+    static func rememberedContext(appID: UInt32) -> DockSteamInputContext? {
+        if let cached = rememberedCache[appID] { return cached }
+        guard appID > 0, let data = try? Data(contentsOf: rememberedURL(appID: appID)), data.count <= 8192,
+              let value = try? JSONDecoder().decode(DockSteamInputContext.self, from: data), value.isDualSense,
+              value.vendor <= 65535, value.product <= 65535, (value.manifestPath?.utf8.count ?? 0) <= 4096,
+              !(value.manifestPath ?? "").unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { return nil }
+        rememberedCache[appID] = value
+        return value
     }
     /// An explicit retry refreshes read-only source context; it never applies a
     /// fallback or changes persisted intent. Reuses the bounded query loop.

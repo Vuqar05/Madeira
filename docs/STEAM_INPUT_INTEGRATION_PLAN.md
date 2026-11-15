@@ -988,6 +988,16 @@ simulator-tested; owner device acceptance outstanding, so their boxes stay open)
   and a relaunch; create, rename, duplicate and delete; refusal to delete the
   chosen layout; recovery of a damaged layout; and modes and action sets. The
   Debug iOS app build succeeds.
+- Game default outside the game (owner report, 2026-11-15): "Start from the game
+  default" failed from the menu with "Waiting for Steam's controller and
+  layout-source details", because Steam's default for a controller-matched
+  Workshop list or template index 2/3 depends on controller details Dock reports
+  only while the game runs. Dock's report for the virtual DualSense is now kept
+  per game (`DockSteamInputService.rememberedContext`), and creating a personal
+  layout outside a session uses it. The Steam Input controls and apply never do,
+  and a running session still waits for its own report. Before the game has run
+  once with this build, the creation page says to start it once with the
+  controller connected. Covered by the live-edit and metadata checks.
 - Packaging note: in this worktree the ignored Wine DLLs and native libraries are
   symlinks into the main checkout, and Xcode copies the DLL links into the
   bundle as links (734 of them), which would be broken on the iPad and fail

@@ -404,7 +404,7 @@ enum DockSteamInputNative {
 /// Reads depot-bundled candidates without following links or allowing a
 /// manifest path to escape the supplied installed game directory. A nil result
 /// only means no exact DualSense entry was present in this manifest.
-struct DockSteamInputContext: Equatable {
+struct DockSteamInputContext: Equatable, Codable {
     let capabilities: UInt32
     let vendor: UInt32
     let product: UInt32

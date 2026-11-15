@@ -119,7 +119,9 @@ enum MadeiraDock { static var clientRoot = URL(fileURLWithPath: "/") }
 enum SteamInstallFiles { static func betaKey(appID: Int, steamApps: URL) -> String? { nil } }
 @MainActor enum DockSteamInputService {
     static var value: DockSteamInputContext?
+    static var remembered: DockSteamInputContext?
     static func context(appID: UInt32) -> DockSteamInputContext? { value }
+    static func rememberedContext(appID: UInt32) -> DockSteamInputContext? { remembered }
 }
 @MainActor final class SteamInputDefaultSources {
     enum Failure: Error { case incompatible }
@@ -227,6 +229,18 @@ __RESOLVER_METHOD__
             library.owned[0].steamInputMetadata = .init(templateIndex: index, manifestPath: nil)
             do { let r = await library.resolveSteamInputDefault(game: game); precondition(r == .unresolved(.templateControllerDependent)) }
         }
+        // A new personal layout may start from the default while the game is
+        // not running, using the details Dock reported in the game's last
+        // session. The Steam Input controls never use them, and a running
+        // session waits for its own.
+        DockSteamInputService.remembered = DockSteamInputContext(capabilities: 0, vendor: 0x054c, product: 0x0ce6, rawType: 45, manifestPath: nil)
+        library.owned[0].steamInputMetadata = .init(templateIndex: 2, manifestPath: nil)
+        do { let r = await library.resolveSteamInputDefault(game: game); precondition(r == .unresolved(.templateControllerDependent)) }
+        do { let r = await library.resolveSteamInputDefault(game: game, rememberedContext: true); precondition(recommended(r)?.source == templateBytes) }
+        library.inSession = true
+        do { let r = await library.resolveSteamInputDefault(game: game, rememberedContext: true); precondition(r == .unresolved(.contextUnavailable)) }
+        library.inSession = false
+        DockSteamInputService.remembered = nil
         // The live bridge's capability bits decide whether indices 2/3 stay
         // mixed-output templates or become the pure Gamepad template.
         let noMouse = DockSteamInputContext(capabilities: 0, vendor: 0x054c, product: 0x0ce6, rawType: 45, manifestPath: nil)

@@ -15,7 +15,9 @@ it happens as written.
 1. **Create and edit.**
    1. Open the game's Steam Input controls, then Community layouts › Personal
       layouts · local › New layout….
-   2. Start from the game default. Then repeat New layout and start from the
+   2. Start from the game default. If Madeira has not seen this game running
+      with the controller since installing this build, it says so: start the
+      game once, quit it, and try again from the menu. Then repeat New layout and start from the
       Gamepad template. Both appear in the list.
    3. Open the template layout, then Edit layout › Face buttons › Edit face
       buttons.

@@ -150,6 +150,35 @@ cases = r'''
     try feed.write(to: feedFile); DockSteamInputService.refresh()
     require(DockSteamInputService.canChange, "the session is ready for a change")
 
+    // Dock's controller details are remembered per game, so a personal layout
+    // can start from the game default while the game is not running.
+    let contextFile = MadeiraDock.drive.appendingPathComponent("madeira-steam-input-context.bin")
+    func contextFrame(vendor: UInt32, product: UInt32, path: String) -> Data {
+        var bytes = Data("MSICTX01".utf8); bytes.append(feed[8..<24]); bytes.append(Data(repeating: 0, count: 32))
+        put32(&bytes, 24, 480); put32(&bytes, 28, 1); put32(&bytes, 32, 3); put32(&bytes, 36, 0x1800)
+        put32(&bytes, 40, vendor); put32(&bytes, 44, product); put32(&bytes, 48, 45); put32(&bytes, 52, UInt32(path.utf8.count))
+        bytes.append(Data(path.utf8)); return bytes
+    }
+    require(DockSteamInputService.rememberedContext(appID: 480) == nil, "nothing is remembered before Dock reports it")
+    try contextFrame(vendor: 0x054c, product: 0x0ce6, path: "C:\\steamapps\\common\\fixture\\actions.vdf").write(to: contextFile)
+    let live = DockSteamInputService.context(appID: 480)
+    require(live?.isDualSense == true && live?.capabilities == 0x1800)
+    require(DockSteamInputService.rememberedContext(appID: 480) == live, "the reported details are remembered")
+    require(DockSteamInputService.context(appID: 481) == nil && DockSteamInputService.rememberedContext(appID: 481) == nil, "only for that game")
+    let rememberedFile = storage.appendingPathComponent("SteamInputContext/480.json")
+    require(try JSONDecoder().decode(DockSteamInputContext.self, from: Data(contentsOf: rememberedFile)) == live, "kept on disk for later launches")
+    // Another controller is never remembered as the virtual DualSense.
+    try contextFrame(vendor: 0x045e, product: 0x028e, path: "").write(to: contextFile)
+    require(DockSteamInputService.context(appID: 480)?.isDualSense == false && DockSteamInputService.rememberedContext(appID: 480) == live)
+    // A damaged or hostile remembered file is ignored.
+    try fm.createDirectory(at: storage.appendingPathComponent("SteamInputContext"), withIntermediateDirectories: true)
+    try Data("{".utf8).write(to: storage.appendingPathComponent("SteamInputContext/482.json"))
+    require(DockSteamInputService.rememberedContext(appID: 482) == nil)
+    var hostile = live!; hostile = DockSteamInputContext(capabilities: 0, vendor: 0x054c, product: 0x0ce6, rawType: 45, manifestPath: "a\u{7}b")
+    try JSONEncoder().encode(hostile).write(to: storage.appendingPathComponent("SteamInputContext/483.json"))
+    require(DockSteamInputService.rememberedContext(appID: 483) == nil, "control characters are refused")
+    try fm.removeItem(at: contextFile)
+
     // Held output is released before any change is written: the quiesce
     // callback runs while no command exists yet.
     var quiesce: [(on: Bool, commandWritten: Bool)] = []
