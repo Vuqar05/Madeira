@@ -1933,6 +1933,7 @@ final class LibraryModel: ObservableObject {
         LogStore.shared.setDisplayActive(true)
         launching = false; launchLogs = false; LibraryKeyboard.hide()
         DockStartScreen.shared.finish()
+        MainActor.assumeIsolated { GamepadInput.shared.endPadSession() }
         LibraryController.shared.configure(enabled: enabled, ownsInput: enabled)
         MetalHostView.shared.isHidden = true
         ProMotionIntent.shared.setActive(false)

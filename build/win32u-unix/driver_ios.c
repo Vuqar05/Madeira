@@ -3296,11 +3296,42 @@ static ULONG_PTR ios_gamepad_foreground( DWORD *flags )
  * non-Madeira win32u returns for a code it does not know, so xinput1_3's
  * runtime probe falls back to the existing HID path.
  */
+/* Steam Input (milestone 5): MADEIRA_HIDPAD_OWNER names the one process that
+ * reads player 1 as a virtual HID controller (Valve's client in Dock). That
+ * process sees no XInput pads: Steam Input never takes over players 2-4, which
+ * reach the game as ordinary XInput pads, and never reads a pad back that it
+ * also receives through the HID controller. Decided once per process. */
+static int ios_gamepad_hidden_here(void)
+{
+    static int hidden = -1;
+    const char *owner = getenv( "MADEIRA_HIDPAD_OWNER" );
+    char image[MAX_PATH], *base;
+    size_t n;
+
+    if (hidden >= 0) return hidden;
+    hidden = 0;
+    if (!owner || !*owner || !winios_drv_process_image( GetCurrentProcessId(), image, sizeof(image) )) return hidden;
+    base = strrchr( image, '\\' );
+    base = base ? base + 1 : image;
+    /* The image path is lower case already (winios_drv_process_image). */
+    n = strlen( owner );
+    if (strlen( base ) == n)
+    {
+        size_t i;
+        hidden = 1;
+        for (i = 0; i < n; i++)
+            if (base[i] != ((owner[i] >= 'A' && owner[i] <= 'Z') ? owner[i] + 32 : owner[i])) hidden = 0;
+    }
+    if (hidden) ERR( "[xinput] steam-input owner %s reads no XInput pads (players 2-4 stay the game's)\n", base );
+    return hidden;
+}
+
 ULONG_PTR ios_gamepad_query( UINT index, UINT op, void *buffer )
 {
     struct winios_gamepad pad;
 
     if (!buffer || index >= 4) return 0;
+    if (op != 3 && ios_gamepad_hidden_here()) return 0;
     if (op == 3) return ios_gamepad_foreground( buffer );   /* NtUserGamepadOp_Foreground */
     if (op == 0 && index == 0) ios_foreground_check();
     if (!winios_gamepad_get_state( index, &pad )) return 0;

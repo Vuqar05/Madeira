@@ -110,7 +110,7 @@ final class GamepadInput: @unchecked Sendable {
         unsetenv("MADEIRA_HIDPAD"); unsetenv("MADEIRA_HIDPAD_NAME"); unsetenv("MADEIRA_HIDPAD_OWNER"); unsetenv("MADEIRA_XINPUT_FORWARD")
         // An earlier session in this app run may have taken player 1 off XInput.
         DockSteamInputService.onInputQuiescedChanged = nil
-        queue.async { [self] in hidActive = false; hidKeepsXInput = false; steamInputQuiesced = false; steamInputLatchedButtons = 0 }
+        queue.async { [self] in hidActive = false; hidKeepsXInput = false; steamInputHeld.reset() }
         guard ["hid", "dualsense", "generic"].contains(mode.value) || identity != nil else {
             LogStore.shared.log("[hid-pad] ml2100 session mode=xinput source=\(mode.source)")
             beginPadOutput(xinput: output.xinput && Self.enabled, hid: false, value: output.value)
@@ -155,11 +155,26 @@ final class GamepadInput: @unchecked Sendable {
         if kind == "generic", let name = first?.vendorName { setenv("MADEIRA_HIDPAD_NAME", name, 1) }
         let keepXInput = Self.optIn("MADEIRA_HIDPAD_XINPUT")
         let initialQuiesced = steamInput && DockSteamInputService.inputQuiesced
-        queue.async { [self] in hidActive = true; hidKeepsXInput = keepXInput; steamInputQuiesced = initialQuiesced; sample() }
+        queue.async { [self] in hidActive = true; hidKeepsXInput = keepXInput; steamInputHeld.setQuiesced(initialQuiesced); sample() }
         LogStore.shared.log("[hid-pad] ml2100 session mode=\(mode.value) source=\(mode.source) kind=\(kind) "
                             + "pad=\(first?.productCategory ?? "none") xinput-slot0=\(keepXInput ? "kept" : "off")")
         // The DualSense and Xbox identities have output reports (the generic pad has none).
         beginPadOutput(xinput: output.xinput, hid: output.hid && (kind == "dualsense" || kind == "xbox"), value: output.value)
+    }
+
+    /// The library session ended (Library.swift returnToLibrary): whatever the
+    /// game or Steam Input last asked of the physical pad stops (a crash or an
+    /// interrupted session never sends "motors off"), and the Steam Input
+    /// gate forgets this session's held input. The next session arms output again.
+    @MainActor func endPadSession() {
+        madeira_pad_output_configure(0, 0)
+        // The virtual controller's last output report (rumble, triggers, lights)
+        // is forgotten, so the next session does not replay it.
+        var none = winios_hidpad_output()
+        winios_hidpad_set_output(&none)
+        DockSteamInputService.onInputQuiescedChanged = nil
+        queue.async { [self] in steamInputHeld.reset() }
+        LogStore.shared.log("[hidpad-out] session ended: controller feedback stopped")
     }
 
     /// ml2106: arm PadOutput.m for this session. Before the wineserver starts,
@@ -370,13 +385,13 @@ final class GamepadInput: @unchecked Sendable {
     private var hidActive = false
     /// MADEIRA_HIDPAD_XINPUT=1: player 1 stays an XInput pad as well.
     private var hidKeepsXInput = false
-    private var steamInputQuiesced = false
-    private var steamInputLatchedButtons: UInt16 = 0
+    /// Held input across a Steam Input layout change (SteamInputHeldRelease); queue-owned.
+    private var steamInputHeld = SteamInputHeldRelease()
 
     func setSteamInputQuiesced(_ quiesced: Bool) {
         queue.async { [self] in
-            guard steamInputQuiesced != quiesced else { return }
-            steamInputQuiesced = quiesced
+            guard steamInputHeld.quiesced != quiesced else { return }
+            steamInputHeld.setQuiesced(quiesced)
             sample()
         }
     }
@@ -668,14 +683,14 @@ final class GamepadInput: @unchecked Sendable {
                 applyAssist(&state, mouse: gyroMouse(physical: pad != nil, touch: touchConnected))
             }
             if hid {
-                if steamInputQuiesced {
-                    steamInputLatchedButtons = state.buttons
+                let passed = steamInputHeld.filter(buttons: state.buttons, left: state.left_trigger, right: state.right_trigger)
+                if passed.atRest {
                     state = winios_gamepad()
                     state.connected = 1
                     hidLive = nil
-                } else if steamInputLatchedButtons != 0 {
-                    steamInputLatchedButtons &= state.buttons
-                    state.buttons &= ~steamInputLatchedButtons
+                } else {
+                    state.buttons = passed.buttons
+                    state.left_trigger = passed.left; state.right_trigger = passed.right
                 }
                 publishHID(state, live: hidLive, pad: pad)
                 // One controller, one API: player 1 is not also an XInput pad,

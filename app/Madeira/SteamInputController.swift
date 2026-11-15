@@ -196,3 +196,38 @@ struct SteamInputConfirmationNeeded: Error, LocalizedError, Equatable {
         try JSONEncoder().encode(store).write(to: file, options: .atomic)
     }
 }
+
+/// Held input across a Steam Input layout change (milestone 5 item 5). While
+/// a change is in flight (DockSteamInputService.inputQuiesced) the virtual
+/// controller reads at rest, so Valve's engine releases every output of the
+/// old layout. Buttons and triggers still held when it ends stay released
+/// until the player lets go, so the new layout never sees a press the player
+/// made under the old one; new presses pass at once. Sticks are positions,
+/// not presses, and pass as soon as the change ends.
+struct SteamInputHeldRelease: Equatable, Sendable {
+    /// A trigger counts as pressed above this (XInput's threshold, as the
+    /// virtual DualSense's L2/R2 bits use).
+    static let triggerThreshold: UInt8 = 25
+    private(set) var quiesced = false
+    private(set) var latchedButtons: UInt16 = 0
+    private(set) var latchedLeft = false
+    private(set) var latchedRight = false
+
+    mutating func setQuiesced(_ value: Bool) { quiesced = value }
+    mutating func reset() { self = Self() }
+
+    /// What reaches the virtual controller. `atRest`: publish a connected pad
+    /// with nothing pressed and centred sticks.
+    mutating func filter(buttons: UInt16, left: UInt8, right: UInt8)
+        -> (buttons: UInt16, left: UInt8, right: UInt8, atRest: Bool) {
+        let leftDown = left > Self.triggerThreshold, rightDown = right > Self.triggerThreshold
+        if quiesced {
+            latchedButtons = buttons; latchedLeft = leftDown; latchedRight = rightDown
+            return (0, 0, 0, true)
+        }
+        latchedButtons &= buttons
+        if !leftDown { latchedLeft = false }
+        if !rightDown { latchedRight = false }
+        return (buttons & ~latchedButtons, latchedLeft ? 0 : left, latchedRight ? 0 : right, false)
+    }
+}

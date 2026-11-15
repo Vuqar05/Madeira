@@ -588,3 +588,27 @@ controllers are on; `env.MADEIRA_PAD_KBM = 0` removes only "Keyboard and mouse";
 Steam Input has its own `env.MADEIRA_STEAM_INPUT` (default 1). A saved Steam
 Input choice survives `MADEIRA_PAD_KBM = 0`
 (`tests/host/check-steam-input-availability.py`).
+
+## Lifecycle, players and editing (milestone 5, 2026-11-15)
+
+- Held input. While a layout change is in flight the virtual controller reads
+  at rest; buttons and triggers still held when it ends stay released until
+  let go (`SteamInputHeldRelease`, now covering triggers too). Going to the
+  background releases every control and stops motors; a pad that leaves stops
+  its motors and the virtual controller reads at rest. A library session end
+  now stops all controller feedback and forgets the virtual controller's last
+  output report, so a crash or an interrupted session never leaves the pad
+  rumbling and the next session does not replay it
+  (`tests/host/check-steam-input-lifecycle.py`).
+- Players. Steam Input takes player 1 (the first paired pad, merged with the
+  on-screen controls). Players 2-4 stay ordinary XInput pads for the game.
+  The process that owns the virtual controller (Dock) reads no XInput pad at
+  all (`ios_gamepad_hidden_here`, build/win32u-unix), so with the Xbox identity
+  the client cannot take over another player's pad or read one twice
+  (`tests/host/check-steam-input-players.py`). The physical multi-pad test is
+  waived by the owner.
+- Editing. With Steam Input, Game details and the session menu lead to the
+  native community and personal layouts and the native editor only; the
+  keyboard-and-mouse binds editor is offered for Keyboard and mouse only, and
+  no migration from the separate emulation branch is offered (owner waiver)
+  (`tests/host/check-steam-input-editing-route.py`).
