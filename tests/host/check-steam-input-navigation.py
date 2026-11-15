@@ -26,7 +26,10 @@ work.mkdir(parents=True, exist_ok=True)
 source = (root / "app/Madeira/Library.swift").read_text()
 start = source.index("private struct SteamInputStatusView: View {")
 end = source.index("/// Game details › Launch arguments:", start)
-(work / "App.swift").write_text("import SwiftUI\n" + source[start:end] + (fixtures / "Stubs.swift").read_text())
+app = root / "app/Madeira"
+(work / "App.swift").write_text("import SwiftUI\n" + source[start:end] + (fixtures / "Stubs.swift").read_text()
+                                + "\n" + (app / "SteamInputController.swift").read_text().replace("import Foundation", "")
+                                + "\n" + (app / "SteamInputConfirmationView.swift").read_text().replace("import SwiftUI", ""))
 for name in ("project.yml", "NavigationTests.swift"):
     shutil.copyfile(fixtures / name, work / name)
 subprocess.run(["xcodegen", "generate", "--spec", str(work / "project.yml")], check=True)

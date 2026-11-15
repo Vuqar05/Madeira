@@ -148,9 +148,11 @@ func snapshot(_ url: URL) throws -> [String: String] {
         let conditional = try storedCopy(Data(layoutText().replacingOccurrences(of: #""mode" "four_buttons""#, with: #""mode" "four_buttons" [$WIN32]"#).utf8), id: 202)
         require(refusal(conditional).contains("Conditional layouts are not supported yet."), "a conditional layout is still refused: \(refusal(conditional))")
         let gyro = try storedCopy(Data(layoutText(source: "gyro").utf8), id: 203)
-        require(refusal(gyro) == "This layout cannot be applied. Unavailable inputs or features: gyro.", "an unforwarded input is refused with its name: \(refusal(gyro))")
+        // Milestone 5: unsupported features are not refused here; they are
+        // listed and confirmed at apply time (DockSteamInputService.checkFit).
+        require(try gyro.applyRequest(root: support).compatibility.unsupported == ["gyro"], "an unforwarded input is named for confirmation")
         let menu = try storedCopy(Data(layoutText(mode: "radial_menu").utf8), id: 204)
-        require(refusal(menu).contains("overlay menus"), "\(refusal(menu))")
+        require(try menu.applyRequest(root: support).compatibility.unsupported.contains("overlay menus"))
         // Stored bytes that no longer match the record are never applied.
         let tampered = try storedCopy(original, id: 205)
         let tamperedURL = SteamInputPersonalShelf(root: support, accountID: 24, appID: 480).folder.appendingPathComponent(tampered.id.uuidString + "/source.vdf")
@@ -172,7 +174,7 @@ func snapshot(_ url: URL) throws -> [String: String] {
         require(refusal(notLayout) == Personal.ApplyFailure.notALayout.errorDescription, "\(refusal(notLayout))")
         let noRevision = try storedCopy(Data(layoutText().replacingOccurrences(of: #""revision" "7""#, with: #""revision" "x""#).utf8), id: 209)
         require(refusal(noRevision) == Personal.ApplyFailure.notALayout.errorDescription, "a layout the native revision reader rejects: \(refusal(noRevision))")
-        for message in [Personal.ApplyFailure.damaged, .notALayout, .incompatible("Unavailable inputs or features: gyro.")].map({ $0.errorDescription ?? "" }) {
+        for message in [Personal.ApplyFailure.damaged, .notALayout].map({ $0.errorDescription ?? "" }) {
             require(message.hasPrefix("This layout cannot be applied. ") && message.count > 40, "every refusal reads as a sentence: \(message)")
         }
         require(try snapshot(communityRoot) == communityAfterDownloads, "refused applies leave the community cache untouched")
@@ -228,7 +230,7 @@ func snapshot(_ url: URL) throws -> [String: String] {
                 "a file with a broken reference is refused at import, with the reference named")
         // A layout that only needs an input Madeira cannot forward is kept, like a download, and cannot be applied.
         let importedGyro = try Personal.importVDF(Data(layoutText(source: "gyro").utf8), fileName: "gyro.vdf", into: SteamInputPersonalShelf(root: support, accountID: 24, appID: 480))
-        require(refusal(importedGyro) == "This layout cannot be applied. Unavailable inputs or features: gyro.")
+        require(try importedGyro.applyRequest(root: support).compatibility.needsConfirmation, "an imported layout's gaps are confirmed, not refused")
 
         // Names taken from files.
         require(Personal.importTitle(fileName: "pad.VDF") == "pad" && Personal.importTitle(fileName: ".vdf") == "Imported layout" && Personal.importTitle(fileName: "") == "Imported layout")
@@ -313,7 +315,9 @@ for needle, why in [
     ('try DockSteamInputService.requestPersonal(appID: request.appID, accountID: request.accountID,', 'the checked request goes to the layout service'),
     ('source: request.source, id: request.id, detail: request.detail)', 'with the checked bytes, UUID and attribution'),
     ('let isActive = active?.source == .personal && active?.identity == copy.id.uuidString && active?.contentHash == copy.hash', 'active means confirmed for this UUID and content'),
-    ('.disabled(isActive || compatibility?.canApply != true || !current ||', 'apply is offered only for a checked layout in a running session'),
+    ('.disabled(isActive || compatibility == nil || !current ||', 'apply is offered only for a checked layout in a running session'),
+    ('catch let needed as SteamInputConfirmationNeeded {', 'another controller\'s layout applies only after the confirmation'),
+    ('.steamInputConfirmation($confirmation)', 'the confirmation lists the missing features before applying'),
     ('references: DockSteamInputService.personalReferences(accountID: copy.accountID, appID: copy.appID))', 'deletion is checked against the saved selection and the service'),
 ]:
     if view.count(needle) != 1:

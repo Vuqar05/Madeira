@@ -79,6 +79,7 @@ func require(_ test: @autoclosure () throws -> Bool, _ message: String, file: St
 func put32(_ data: inout Data, _ at: Int, _ value: UInt32) {
     for i in 0..<4 { data[at+i] = UInt8(truncatingIfNeeded: value >> (8*i)) }
 }
+struct SteamInputCommunityRefusal: Error {}
 @MainActor func checks() async throws {
     let fixture = try Data(contentsOf: testRoot.appendingPathComponent("fixture.bin"))
     let parsed = DockSteamInputWire.parse(fixture)!
@@ -890,6 +891,82 @@ func put32(_ data: inout Data, _ at: Int, _ value: UInt32) {
     require(DockSteamInputService.activeChoice == personalChoice, "the personal layout is active again after a restart")
     require(DockSteamInputService.selection == personalSelection)
     DockSteamInputService.end()
+
+    // Milestone 5 item 2: a layout made for another controller needs the
+    // player's confirmation, from every source and at relaunch.
+    SteamInputConsent.root = testRoot.appendingPathComponent("consent")
+    let deckGaps = ["controls made for a Steam Deck", "left trackpad"]
+    SteamInputController.environment.gaps = { bytes, _, _ in bytes == initialSource ? deckGaps : [] }
+    DockSteamInputService.begin(accountID: 25, appID: 480)
+    let heldHex = String(cString: getenv("MADEIRA_DOCK_INPUT_SESSION"))
+    for i in 0..<16 {
+        let start = heldHex.index(heldHex.startIndex, offsetBy: i*2)
+        personalFeed[8+i] = UInt8(heldHex[start..<heldHex.index(start, offsetBy: 2)], radix: 16)!
+    }
+    put32(&personalFeed, 36, 0); put32(&personalFeed, 40, 0)
+    try personalFeed.write(to: feedFile); DockSteamInputService.refresh()
+    try? fm.removeItem(at: commandFile)
+    put32(&personalFeed, 36, 1); put32(&personalFeed, 40, 1)
+    try baselineFrame(personalFeed).write(to: baselineFile)
+    try personalFeed.write(to: feedFile); DockSteamInputService.refresh()
+    require(DockSteamInputService.held?.gaps == deckGaps && DockSteamInputService.prepared == nil, "an unconfirmed layout is held, not re-applied")
+    require(!fm.fileExists(atPath: commandFile.path) && DockSteamInputService.selection == personalSelection, "nothing sent, nothing forgotten")
+    require(DockSteamInputPresentation.state(appID: 480, saved: nil) == .held, "the headline asks for confirmation")
+    require(DockSteamInputPresentation.state(appID: 481, saved: nil) == .notRunning(saved: nil))
+    do { try DockSteamInputService.clearSavedOverride(accountID: 25, appID: 480, controller: DockSteamInputService.controller); fatalError("cleared while running") }
+    catch DockSteamInputJournal.Failure.busy {}
+    // Every request is gated the same way and changes nothing until confirmed.
+    do {
+        try DockSteamInputService.requestPersonal(appID: 480, accountID: 25, source: initialSource, id: personalID, detail: personalDetail)
+        fatalError("a cross-controller layout was applied without confirmation")
+    } catch let needed as SteamInputConfirmationNeeded {
+        require(needed.gaps == deckGaps && needed.controller == DockSteamInputService.controller
+                && needed.hash == DockSteamInputNative.contentHash(initialSource))
+        require(needed.errorDescription?.contains("Valve's Steam Input engine maps what it can") == true)
+    }
+    for request in [{ try DockSteamInputService.requestGameDefault(.init(source: initialSource, origin: .steamTemplate)) },
+                    { try DockSteamInputService.requestCommunity(appID: 480, source: initialSource, itemID: 9, detail: "Deck") }] {
+        do { try request(); fatalError("ungated source") } catch is SteamInputConfirmationNeeded {}
+    }
+    require(DockSteamInputService.prepared == nil && DockSteamInputService.selection == personalSelection)
+    // Conditional, broken or malformed layouts are still refused outright.
+    SteamInputController.environment.gaps = { _, _, _ in throw SteamInputCommunityRefusal() }
+    do { try DockSteamInputService.requestPersonal(appID: 480, accountID: 25, source: initialSource, id: personalID, detail: personalDetail); fatalError("refused layout") }
+    catch is SteamInputCommunityRefusal {}
+    SteamInputController.environment.gaps = { bytes, _, _ in bytes == initialSource ? deckGaps : [] }
+    // Confirming once (this revision, this controller) lets the held layout load.
+    try DockSteamInputService.confirmHeld()
+    require(DockSteamInputService.held == nil && SteamInputConsent.isConfirmed(hash: DockSteamInputNative.contentHash(initialSource),
+                                                                                 controller: DockSteamInputService.controller))
+    require(!SteamInputConsent.isConfirmed(hash: DockSteamInputNative.contentHash(initialSource), controller: .xbox), "per controller")
+    try personalFeed.write(to: feedFile); DockSteamInputService.refresh()
+    require(DockSteamInputService.prepared != nil, "the confirmed layout is re-applied")
+    DockSteamInputService.end()
+    // The next launch re-applies it without asking again.
+    DockSteamInputService.begin(accountID: 25, appID: 480)
+    let confirmedHex = String(cString: getenv("MADEIRA_DOCK_INPUT_SESSION"))
+    for i in 0..<16 {
+        let start = confirmedHex.index(confirmedHex.startIndex, offsetBy: i*2)
+        personalFeed[8+i] = UInt8(confirmedHex[start..<againHex.index(start, offsetBy: 2)], radix: 16)!
+    }
+    put32(&personalFeed, 36, 0); put32(&personalFeed, 40, 0)
+    try personalFeed.write(to: feedFile); DockSteamInputService.refresh()
+    try? fm.removeItem(at: commandFile)
+    put32(&personalFeed, 36, 1); put32(&personalFeed, 40, 1)
+    try baselineFrame(personalFeed).write(to: baselineFile)
+    try personalFeed.write(to: feedFile); DockSteamInputService.refresh()
+    require(DockSteamInputService.held == nil && DockSteamInputService.prepared != nil, "a confirmed revision is not asked about again")
+    DockSteamInputService.end()
+    // Game details, game not running: the saved choice is shown and can go back to the game default.
+    let savedChoice = DockSteamInputService.savedSelection(accountID: 25, appID: 480, controller: .dualSense)?.requested
+    require(savedChoice?.source == .personal)
+    require(DockSteamInputPresentation.State.notRunning(saved: savedChoice).text.hasPrefix("Chosen: Personal layout"))
+    require(DockSteamInputService.savedSelection(accountID: 25, appID: 480, controller: .xbox)?.requested == nil, "per controller")
+    try DockSteamInputService.clearSavedOverride(accountID: 25, appID: 480, controller: .dualSense)
+    let cleared = DockSteamInputService.savedSelection(accountID: 25, appID: 480, controller: .dualSense)
+    require(cleared?.requested == nil && cleared?.lastActivated == savedChoice, "only the override is cleared; history stays")
+    SteamInputController.environment.gaps = { _, _, _ in [] }
+    print("PASS: cross-controller layouts held at relaunch and refused from every source until confirmed once per revision and controller")
     print("PASS: selected-Workshop resolver, scoped hash-bound recovery command and no manufactured explicit choice")
     print("PASS: personal layout by UUID through journal and receipt, scope refusals, persistence and restart reapplication")
     print("PASS: community scope, raw source, persisted attribution, acceptance versus exact receipt acknowledgement")

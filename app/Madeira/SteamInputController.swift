@@ -97,6 +97,10 @@ enum SteamInputController: String, Codable, CaseIterable, Sendable {
         var xboxSwitch: @MainActor () -> Bool = { false }
         var pairedIsPlayStation: @MainActor () -> Bool? = { nil }
         var log: @MainActor (String) -> Void = { _ in }
+        /// What a layout needs that `controller` with `hardware` cannot supply
+        /// (SteamInputCompatibility). Throws for a layout that is refused
+        /// outright: conditional, broken references, malformed.
+        var gaps: @MainActor (Data, SteamInputController, SteamInputHardware) throws -> [String] = { _, _, _ in [] }
     }
     @MainActor static var environment = Environment()
 
@@ -105,20 +109,90 @@ enum SteamInputController: String, Codable, CaseIterable, Sendable {
     /// three agree even if a pad connects in between. Nil outside Steam Input.
     @MainActor private(set) static var session: SteamInputController?
 
+    /// What the session's controller supplies beyond buttons, sticks and triggers.
+    @MainActor private(set) static var sessionHardware: SteamInputHardware?
+
     @MainActor @discardableResult
     static func beginSession() -> SteamInputController {
         let physical = environment.pairedIsPlayStation()
         let value = choose(physicalIsPlayStation: physical, xboxEnabled: xboxEnabled)
         session = value
+        sessionHardware = .of(value, physicalIsPlayStation: physical)
         environment.log("[steam-input] controller identity=\(value.rawValue) physical="
                         + (physical.map { $0 ? "playstation" : "other" } ?? "none")
                         + " xbox-switch=\(xboxEnabled ? 1 : 0)")
         return value
     }
-    @MainActor static func endSession() { session = nil }
+    @MainActor static func endSession() { session = nil; sessionHardware = nil }
     /// The running session's identity, else the one a launch would choose now:
     /// the controller whose layouts Game details and the editor work with.
     @MainActor static var current: SteamInputController {
         session ?? choose(physicalIsPlayStation: environment.pairedIsPlayStation(), xboxEnabled: xboxEnabled)
+    }
+    @MainActor static var currentHardware: SteamInputHardware {
+        if let sessionHardware { return sessionHardware }
+        let physical = environment.pairedIsPlayStation()
+        return .of(choose(physicalIsPlayStation: physical, xboxEnabled: xboxEnabled), physicalIsPlayStation: physical)
+    }
+}
+
+/// What the player's controller supplies to Valve's engine beyond buttons,
+/// sticks and triggers. The virtual DualSense carries a PlayStation pad's
+/// motion sensors and touchpad (build/hidpad); the Xbox identity has neither,
+/// and with the on-screen controls or another pad behind the DualSense
+/// identity (Xbox switch off) there is nothing to read them from.
+struct SteamInputHardware: Equatable, Codable, Sendable {
+    var gyro = false
+    var touchpad = false
+    static let none = Self()
+    static func of(_ controller: SteamInputController, physicalIsPlayStation: Bool?) -> Self {
+        controller == .dualSense && physicalIsPlayStation == true ? Self(gyro: true, touchpad: true) : .none
+    }
+}
+
+/// A layout needs features the player's controller cannot supply, and the
+/// player has not confirmed this revision for this controller yet. Nothing
+/// was applied. `gaps` are the missing features, `hash` the revision.
+struct SteamInputConfirmationNeeded: Error, LocalizedError, Equatable {
+    let controller: SteamInputController
+    let hash: String
+    let gaps: [String]
+    var errorDescription: String? { Self.message(controller: controller, gaps: gaps) }
+    /// The warning shown before applying (milestone 5 item 2).
+    static func message(controller: SteamInputController, gaps: [String]) -> String {
+        "Your \(controller.name) cannot supply: " + gaps.joined(separator: ", ") + ". "
+            + "Valve's Steam Input engine maps what it can; the bindings that use these features will not work."
+    }
+}
+
+/// Confirmations of layouts made for another controller, kept per layout
+/// revision (content hash) and controller identity (owner decision,
+/// 2026-11-15): a relaunch re-applies a confirmed revision without asking; an
+/// edited revision or another controller asks again.
+@MainActor enum SteamInputConsent {
+    static var root: URL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("MadeiraDock", isDirectory: true)
+    private static var file: URL { root.appendingPathComponent("SteamInputConsent.json") }
+    private struct Store: Codable { var version = 1; var confirmed: [String] = [] }
+    private static func key(_ hash: String, _ controller: SteamInputController) -> String { controller.rawValue + ":" + hash }
+    private static func load() -> Store {
+        guard let data = try? Data(contentsOf: file), data.count <= 1 << 20,
+              let store = try? JSONDecoder().decode(Store.self, from: data), store.version == 1 else { return Store() }
+        return store
+    }
+    static func isConfirmed(hash: String, controller: SteamInputController) -> Bool {
+        load().confirmed.contains(key(hash, controller))
+    }
+    /// Kept to the most recent 512 confirmations.
+    static func confirm(hash: String, controller: SteamInputController) throws {
+        guard hash.utf8.count == 64, hash.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
+            throw CocoaError(.fileWriteInvalidFileName)
+        }
+        var store = load()
+        store.confirmed.removeAll { $0 == key(hash, controller) }
+        store.confirmed.append(key(hash, controller))
+        if store.confirmed.count > 512 { store.confirmed.removeFirst(store.confirmed.count - 512) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try JSONEncoder().encode(store).write(to: file, options: .atomic)
     }
 }

@@ -4963,6 +4963,7 @@ private struct SteamInputStatusView: View {
     @State private var checking = false
     @State private var resolutionRequest: UUID?
     @State private var refreshPending = false
+    @State private var confirmation: SteamInputPendingConfirmation?
     private struct SourceKey: Hashable {
         let appID: UInt32
         let session: [UInt8]
@@ -4978,14 +4979,45 @@ private struct SteamInputStatusView: View {
             // Each of these reads and parses Dock's baseline file: once per tick.
             let canChange = snapshot?.appID == appID && DockSteamInputService.canChange
             let canBootstrap = snapshot?.appID == appID && !canChange && DockSteamInputService.canBootstrap
+            let running = snapshot?.appID == appID
+            let controller = SteamInputController.current
+            let account = SteamOwnedLibrary.shared.personalLayoutAccountID
+            let saved = running ? nil : DockSteamInputService.savedSelection(accountID: account, appID: appID, controller: controller)?.requested
+            let state = DockSteamInputPresentation.state(appID: appID, saved: saved)
             VStack(alignment: .leading, spacing: 3) {
-                ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
-                    Text(line).font(.caption).foregroundStyle(.secondary)
+                Text(state.text).font(.callout.weight(.semibold))
+                    .foregroundStyle(state.severity == 2 ? Color.red : state.severity == 1 ? Color.orange : Color.primary)
+                    .accessibilityIdentifier("steamInput.state")
+                Text("Steam sees \(controller == .dualSense ? "a DualSense" : "an Xbox controller")"
+                     + (running ? " in this session." : " when the game starts with the controller now connected."))
+                    .font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("steamInput.controller")
+                if running {
+                    ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+                        Text(line).font(.caption).foregroundStyle(.secondary)
+                    }
+                } else {
+                    if saved != nil {
+                        Button("Use the game default from the next launch") {
+                            do { try DockSteamInputService.clearSavedOverride(accountID: account, appID: appID, controller: controller); failure = nil }
+                            catch { failure = "The saved choice could not be changed." }
+                        }.accessibilityIdentifier("steamInput.clearOverride")
+                    }
+                    Text("Layouts are applied while the game runs, from here or the session menu, and kept for every launch. Browse and edit them any time.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    if let failure { Text(failure).font(.caption).foregroundStyle(.red) }
                 }
-                Button("Community layouts") { communityLayouts = true }
+                Button("Community and personal layouts") { communityLayouts = true }.accessibilityIdentifier("steamInput.layouts")
                 if snapshot?.appID == appID {
                     if DockSteamInputService.resolvingWorkshop {
                         Text("Downloading Steam's selected Workshop layout…").font(.caption).foregroundStyle(.secondary)
+                    }
+                    if let held = DockSteamInputService.held {
+                        Text("The saved layout was made for another controller and was not loaded. "
+                             + (held.errorDescription ?? ""))
+                            .font(.caption).foregroundStyle(.orange).accessibilityIdentifier("steamInput.held")
+                        Button("Use the saved layout anyway…") {
+                            confirmation = .init(needed: held) { try? DockSteamInputService.confirmHeld() }
+                        }.accessibilityIdentifier("steamInput.held.confirm")
                     }
                     if let sourceFailure = DockSteamInputService.sourceFailure {
                         Text(sourceFailure).font(.caption).foregroundStyle(.red)
@@ -5031,6 +5063,7 @@ private struct SteamInputStatusView: View {
         }
         // The live session menu is a custom overlay without a NavigationStack.
         // Own the presentation outside the periodically refreshed status content.
+        .steamInputConfirmation($confirmation)
         .sheet(isPresented: $communityLayouts) {
             NavigationStack {
                 SteamInputCommunityView(appID: appID)
@@ -5042,9 +5075,14 @@ private struct SteamInputStatusView: View {
             }
         }
     }
-    private func request(_ change: () throws -> Void) {
+    private func request(_ change: @escaping @MainActor () throws -> Void) {
         do { try change(); failure = nil }
-        catch { failure = "The layout change could not start. Try again once the controller layout has settled." }
+        catch let needed as SteamInputConfirmationNeeded {
+            failure = nil
+            confirmation = .init(needed: needed) { request(change) }
+        } catch is DockSteamInputJournal.Failure {
+            failure = "The layout change could not start. Try again once the controller layout has settled."
+        } catch { failure = "This layout cannot be applied. " + error.localizedDescription }
     }
     @MainActor private func resolve(refresh: Bool = false) async {
         let request = UUID()

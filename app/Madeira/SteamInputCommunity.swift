@@ -114,15 +114,43 @@ indirect enum SteamInputKV {
 
 /// Reads compatibility only. Valve evaluates the untouched bindings, including
 /// unknown fields, repeated groups, activators and layers.
+///
+/// Milestone 5: a layout made for another controller type, or one using
+/// features the player's controller cannot supply, is no longer refused. Its
+/// gaps (`unsupported`) are listed before applying and the player confirms
+/// them once per revision and controller (DockSteamInputService's gate).
+/// Conditional layouts, broken references and malformed files still throw.
 struct SteamInputCompatibility: Equatable {
+    /// The controller type the layout was made for, lower case ("" unspecified).
     let controller: String
+    /// The player's controller the gaps were worked out for.
+    let target: SteamInputController
+    /// What the layout uses that the player's controller cannot supply.
     let unsupported: [String]
+    /// True when the layout fits the player's controller with no gaps.
     var canApply: Bool { unsupported.isEmpty }
+    var needsConfirmation: Bool { !unsupported.isEmpty }
     var description: String {
-        canApply ? "Compatible with Madeira's virtual DualSense. Buttons, sticks and triggers are forwarded."
-            : "Unavailable inputs or features: " + unsupported.joined(separator: ", ") + "."
+        canApply ? "Made for your \(target.name). Buttons, sticks and triggers are forwarded."
+            : "Needs confirmation before applying. " + SteamInputConfirmationNeeded.message(controller: target, gaps: unsupported)
     }
-    init(_ bytes: Data, tags: [String] = []) throws {
+    /// Steam's controller type as a player knows it.
+    static func controllerName(_ type: String) -> String {
+        switch type.lowercased() {
+        case "": return "an unspecified controller"
+        case "controller_neptune": return "a Steam Deck"
+        case "controller_steamcontroller_gordon", "controller_steamcontroller_headcrab", "controller_triton": return "a Steam Controller"
+        case "controller_ps5", "controller_ps5_edge": return "a DualSense"
+        case "controller_ps4": return "a DualShock 4"
+        case "controller_ps3": return "a DualShock 3"
+        case "controller_xboxone", "controller_xbox360", "controller_xboxelite": return "an Xbox controller"
+        case "controller_switch_pro", "controller_switch_pro_generic": return "a Nintendo Switch Pro Controller"
+        case "controller_generic": return "a generic gamepad"
+        default: return "another controller (\(type))"
+        }
+    }
+    init(_ bytes: Data, tags: [String] = [], controller target: SteamInputController = .dualSense,
+         hardware: SteamInputHardware = .none) throws {
         let document = try SteamInputKV.parse(bytes)
         let roots = document.all("controller_mappings")
         guard roots.count == 1, case .list = roots[0] else { throw SteamInputCommunitySources.Failure.invalid }
@@ -134,9 +162,10 @@ struct SteamInputCompatibility: Equatable {
         let tagged = Set(tags.filter { $0.hasPrefix("controller_") && $0 != "controller_native" })
         guard tagged.count <= 1 else { throw SteamInputCommunitySources.Failure.invalid }
         controller = nativeType.isEmpty ? tagged.first ?? "" : nativeType.lowercased()
+        self.target = target
         if let tag = tagged.first, !nativeType.isEmpty, tag != controller { throw SteamInputCommunitySources.Failure.invalid }
         var missing = Set<String>()
-        if !["controller_ps5", "controller_ps4"].contains(controller) { missing.insert("controller type " + (controller.isEmpty ? "unspecified" : controller)) }
+        if !target.accepts(type: controller) { missing.insert("controls made for " + Self.controllerName(controller)) }
         // Workshop feature tags describe the whole file. The raw bindings below
         // decide which inputs are actually enabled in its presets and layers.
         var groups: [String: SteamInputKV] = [:]
@@ -144,7 +173,11 @@ struct SteamInputCompatibility: Equatable {
             guard let id = group.text("id"), groups[id] == nil else { throw SteamInputCommunitySources.Failure.invalid }
             groups[id] = group
         }
-        let forwarded: Set<String> = ["button_diamond", "dpad", "joystick", "right_joystick", "left_trigger", "right_trigger", "switch"]
+        // Every identity forwards these; the DualSense's touchpad and motion
+        // come only from a PlayStation pad (SteamInputHardware).
+        var forwarded: Set<String> = ["button_diamond", "dpad", "joystick", "right_joystick", "left_trigger", "right_trigger", "switch"]
+        if hardware.gyro { forwarded.insert("gyro") }
+        if hardware.touchpad { forwarded.formUnion(["left_trackpad", "right_trackpad", "center_trackpad"]) }
         for preset in mapping.all("preset") {
             for (id, value) in preset["group_source_bindings"]?.entries ?? [] {
                 guard let words = value.string?.lowercased().split(separator: " "), let source = words.first,
@@ -153,9 +186,12 @@ struct SteamInputCompatibility: Equatable {
                 let mode = group.text("mode")?.lowercased() ?? ""
                 if mode == "none" || mode == "disabled" { continue }
                 if !forwarded.contains(String(source)) { missing.insert(String(source).replacingOccurrences(of: "_", with: " ")) }
+                // Valve draws these menus in its overlay; whether that overlay
+                // shows them in a Madeira game is not established.
                 if mode.contains("radial") || mode.contains("touch_menu") { missing.insert("overlay menus") }
                 for (input, _) in group["inputs"]?.entries ?? [] {
-                    if ["grip", "rear", "paddle"].contains(where: { input.lowercased().contains($0) }) { missing.insert("rear buttons") }
+                    let name = input.lowercased()
+                    if ["grip", "rear", "paddle", "button_back_"].contains(where: { name.contains($0) }) { missing.insert("rear buttons") }
                 }
             }
         }
@@ -182,7 +218,7 @@ private extension Optional {
             case .invalid: return "Steam returned an invalid layout or a layout for another game."
             case .unavailable: return "This public layout is unavailable. Your saved layout is kept."
             case .changed: return "The layout changed while downloading. Refresh and try again."
-            case .incompatible: return "This layout needs inputs or features Madeira cannot currently forward."
+            case .incompatible: return "This layout was made for another controller and has not been confirmed for yours. Apply it from Community layouts to confirm."
             case .busy: return "This layout is already being downloaded."
             }
         }
@@ -315,7 +351,8 @@ private extension Optional {
         let bytes = try Self.read(objectURL(appID: revision.appID, id: revision.item.id, hash: revision.hash), limit: Self.limit)
         guard bytes.count == revision.item.fileSize, DockSteamInputNative.contentHash(bytes) == revision.hash else { throw Failure.invalid }
         _ = try DockSteamInputNative.revision(bytes)
-        return Layout(revision: revision, bytes: bytes, compatibility: try SteamInputCompatibility(bytes, tags: revision.item.tags ?? []))
+        return Layout(revision: revision, bytes: bytes, compatibility: try SteamInputCompatibility(bytes, tags: revision.item.tags ?? [],
+            controller: SteamInputController.current, hardware: SteamInputController.currentHardware))
     }
     /// Recover Steam's exact selected item, preferring a verified offline
     /// revision. This supplies a baseline without recording explicit user intent.
@@ -327,7 +364,12 @@ private extension Optional {
             let item = try await latest(appID: appID, id: itemID)
             layout = try await download(appID: appID, item: item)
         }
-        guard layout.compatibility.canApply else { throw Failure.incompatible }
+        // Steam's own selection still needs the player's confirmation when it
+        // was made for another controller; without it nothing is loaded.
+        guard layout.compatibility.canApply || SteamInputConsent.isConfirmed(hash: layout.revision.hash,
+                                                                             controller: layout.compatibility.target) else {
+            throw Failure.incompatible
+        }
         return layout.bytes
     }
     /// Checking for updates does not download or replace any revision.
@@ -372,7 +414,8 @@ private extension Optional {
         try Task.checkCancellation()
         guard bytes.count == before.fileSize, !bytes.isEmpty, bytes.count <= Self.limit else { throw Failure.invalid }
         _ = try DockSteamInputNative.revision(bytes)
-        let compatibility = try SteamInputCompatibility(bytes, tags: before.tags ?? [])
+        let compatibility = try SteamInputCompatibility(bytes, tags: before.tags ?? [], controller: SteamInputController.current,
+                                                         hardware: SteamInputController.currentHardware)
         let after = try await latest(appID: appID, id: item.id)
         guard Revision.sameContent(before, after) else { throw Failure.changed }
         try Task.checkCancellation()
@@ -588,14 +631,12 @@ struct SteamInputPersonalCopy: Codable, Identifiable, Equatable {
         let compatibility: SteamInputCompatibility
     }
     enum ApplyFailure: LocalizedError, Equatable {
-        case incompatible(String)
         /// The stored file is missing, is not a plain file or no longer matches its record.
         case damaged
         /// The bytes are not a layout Steam Input's loader accepts.
         case notALayout
         var errorDescription: String? {
             switch self {
-            case .incompatible(let reason): return "This layout cannot be applied. " + reason
             case .damaged: return "This layout cannot be applied. Its stored file is missing or was changed outside Madeira."
             case .notALayout: return "This layout cannot be applied. It is not a valid Steam Input layout."
             }
@@ -614,9 +655,11 @@ struct SteamInputPersonalCopy: Codable, Identifiable, Equatable {
         do { source = try bytes(of: revision ?? hash, root: root) } catch { throw ApplyFailure.damaged }
         let compatibility: SteamInputCompatibility
         // A conditional layout and a broken reference keep their own wording.
-        do { compatibility = try SteamInputCompatibility(source, tags: origin?.item.tags ?? []) }
+        // Gaps for the player's controller are confirmed at apply time
+        // (DockSteamInputService's gate), not refused here.
+        do { compatibility = try SteamInputCompatibility(source, tags: origin?.item.tags ?? [], controller: SteamInputController.current,
+                                                          hardware: SteamInputController.currentHardware) }
         catch is SteamInputCommunitySources.Failure { throw ApplyFailure.notALayout }
-        guard compatibility.canApply else { throw ApplyFailure.incompatible(compatibility.description) }
         return ApplyRequest(appID: appID, accountID: accountID, id: id, source: source, detail: detail, compatibility: compatibility)
     }
     @MainActor static func create(_ layout: SteamInputCommunitySources.Layout, title: String, accountID: UInt32, root: URL) throws -> Self {

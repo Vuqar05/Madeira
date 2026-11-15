@@ -171,6 +171,7 @@ struct SteamInputPersonalDetail: View {
     var onChange: () -> Void = {}
     @Environment(\.dismiss) private var dismiss
     @State private var compatibility: SteamInputCompatibility?
+    @State private var confirmation: SteamInputPendingConfirmation?
     @State private var problem: String?
     @State private var failure: String?
     @State private var message: String?
@@ -228,9 +229,10 @@ struct SteamInputPersonalDetail: View {
                 let active = current ? DockSteamInputService.activeChoice : nil
                 let isActive = active?.source == .personal && active?.identity == copy.id.uuidString && active?.contentHash == copy.hash
                 Section {
-                    Button(isActive ? "Active personal layout" : "Apply this personal layout") { apply() }
-                        .disabled(isActive || compatibility?.canApply != true || !current ||
+                    Button(isActive ? "Active personal layout" : compatibility?.canApply == false ? "Apply this personal layout…" : "Apply this personal layout") { apply() }
+                        .disabled(isActive || compatibility == nil || !current ||
                             !(DockSteamInputService.canChange || DockSteamInputService.canBootstrap))
+                        .accessibilityIdentifier("detail.apply")
                     ForEach(Array(DockSteamInputPresentation.lines(appID: appID, snapshot: DockSteamInputService.snapshot,
                         active: DockSteamInputService.activeChoice, selection: DockSteamInputService.selection).enumerated()), id: \.offset) { _, line in
                         Text(line).font(.caption).foregroundStyle(.secondary)
@@ -256,6 +258,7 @@ struct SteamInputPersonalDetail: View {
             if let message { Section { Text(message).foregroundStyle(.secondary).accessibilityIdentifier("detail.message") } }
         }
         .navigationTitle("Personal layout")
+        .steamInputConfirmation($confirmation)
         .confirmationDialog("Delete “\(copy.title)”?", isPresented: $confirmingDelete, titleVisibility: .visible) {
             Button("Delete layout and its history", role: .destructive) { delete() }
         } message: {
@@ -271,10 +274,7 @@ struct SteamInputPersonalDetail: View {
             directory: FileManager.default.temporaryDirectory.appendingPathComponent("SteamInputExport", isDirectory: true))
         compatibility = nil; problem = nil
         do { compatibility = try copy.applyRequest(root: support).compatibility }
-        catch SteamInputPersonalCopy.ApplyFailure.incompatible {
-            // Unforwarded inputs: say which, as a community layout's page does.
-            compatibility = try? SteamInputCompatibility(copy.bytes(root: support), tags: copy.origin?.item.tags ?? [])
-        } catch { problem = error.localizedDescription }
+        catch { problem = error.localizedDescription }
     }
 
     private func delete() {
@@ -292,6 +292,8 @@ struct SteamInputPersonalDetail: View {
             try DockSteamInputService.requestPersonal(appID: request.appID, accountID: request.accountID,
                 source: request.source, id: request.id, detail: request.detail)
             failure = nil; message = "Layout change requested. Waiting for Steam Input to confirm it."
+        } catch let needed as SteamInputConfirmationNeeded {
+            confirmation = .init(needed: needed) { apply() }
         } catch is DockSteamInputJournal.Failure {
             message = nil; failure = "The layout change could not start. Wait for the current layout to settle, then retry."
         } catch {

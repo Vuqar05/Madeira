@@ -293,10 +293,11 @@ func snapshot(_ url: URL) throws -> [String: String] {
         let gyroDraft = try SteamInputLayoutDraft(bytes: try incompatible.bytes(root: support))
             .switchingMode(of: "gyro", in: VDFPath([.init("controller_mappings"), .init("preset")]), to: "mouse_joystick")
         let gyro = try incompatible.saving(gyroDraft.bytes, references: free, root: support)
-        require(refusal { try gyro.applyRequest(root: support) } == "This layout cannot be applied. Unavailable inputs or features: gyro.")
+        // Milestone 5: a gap is no longer refused here; it is confirmed at apply time.
+        require(try gyro.applyRequest(root: support).compatibility.unsupported == ["gyro"], "the gap is reported for confirmation")
         let fixed = try gyro.saving(try SteamInputLayoutDraft(bytes: gyroDraft.bytes).disablingSource("gyro", in: VDFPath([.init("controller_mappings"), .init("preset")])).bytes,
                                     references: free, root: support)
-        require(try fixed.applyRequest(root: support).compatibility.canApply, "disabling the unforwarded source makes it applicable again")
+        require(try fixed.applyRequest(root: support).compatibility.canApply, "disabling the unforwarded source makes it fit without confirmation")
         // Imports count damaged layouts toward the bound, so a damaged one cannot hide space.
         require(try Personal.inventory(SteamInputPersonalShelf(root: support, accountID: 24, appID: 480)).count == (try Personal.inventory(SteamInputPersonalShelf(root: support, accountID: 24, appID: 480))).count)
 

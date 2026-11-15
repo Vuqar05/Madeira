@@ -23,6 +23,8 @@ import SwiftUI
     @Published private(set) var damagedDraft = false
     /// The preset (action set or layer) whose sources are shown.
     @Published var presetPath: VDFPath?
+    /// A live change waiting for the player's confirmation (another controller's layout).
+    @Published var confirmation: SteamInputPendingConfirmation?
     var onSaved: (SteamInputPersonalCopy) -> Void = { _ in }
 
     init(appID: UInt32, copy: SteamInputPersonalCopy, root: URL) {
@@ -138,6 +140,9 @@ import SwiftUI
             copy = try SteamInputLiveEdit.apply(value.current.bytes, to: copy, root: root)
             failure = nil
             message = "Applying… Held buttons and keys were released. Waiting for Steam Input to confirm the change."
+        } catch let needed as SteamInputConfirmationNeeded {
+            failure = nil
+            confirmation = .init(needed: needed) { [weak self] in self?.saveAndApply() }
         } catch {
             failure = error.localizedDescription + " The layout in use is unchanged."
         }
@@ -197,6 +202,7 @@ struct SteamInputLayoutEditorView: View {
             }
         }
         .navigationTitle("Edit layout")
+        .steamInputConfirmation($model.confirmation)
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
                 Button { model.undo() } label: { Label("Undo", systemImage: "arrow.uturn.backward") }
@@ -259,7 +265,8 @@ struct SteamInputLayoutEditorView: View {
                     Label(problem.reason, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
                 }
             }
-            if let compatibility = try? SteamInputCompatibility(draft.bytes) {
+            if let compatibility = try? SteamInputCompatibility(draft.bytes, controller: SteamInputController.current,
+                                                                 hardware: SteamInputController.currentHardware) {
                 Text(compatibility.description).foregroundStyle(compatibility.canApply ? Color.secondary : Color.orange)
                     .accessibilityIdentifier("editor.compatibility")
             }

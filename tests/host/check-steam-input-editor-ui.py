@@ -38,7 +38,7 @@ for name in ['SwiftSteam/Library/SteamAppInfo.swift', 'SwiftSteam/Proto/SteamPro
              'SteamKeyValues.swift', 'SteamInputVDF.swift', 'SteamInputModel.swift', 'SteamInputReferences.swift', 'SteamInputActions.swift',
              'SteamInputPreview.swift', 'SteamInputTransactions.swift', 'SteamInputController.swift', 'SteamInputDefaults.swift', 'SteamInputCommunity.swift',
              'SteamInputEditor.swift', 'SteamInputPersonalReferences.swift', 'SteamInputPersonalRevisions.swift', 'SteamInputLiveEdit.swift',
-             'SteamInputEditorView.swift', 'SteamInputPersonalView.swift']:
+             'SteamInputEditorView.swift', 'SteamInputPersonalView.swift', 'SteamInputConfirmationView.swift']:
     shutil.copyfile(app / name, work / 'Sources' / Path(name).name)
 for name in ['steam_input_service.c', 'steam_input_service.h']:
     shutil.copyfile(root / 'madeira-dock/src' / name, work / ('Sources' if name.endswith('.c') else 'dock') / name)

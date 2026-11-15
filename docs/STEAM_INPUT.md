@@ -536,3 +536,28 @@ Android layouts, and its templates are `controller_xboxone_*` (madeira-dock
 community filter, Steam templates and "Start from the game default" use the
 current identity. `tests/host/check-steam-input-controller.py` covers the rule,
 compatibility and per-controller resolution.
+
+## Layouts made for another controller (milestone 5, 2026-11-15)
+
+A layout made for another controller type, or one using features the
+player's controller cannot supply, is no longer refused. Before it applies,
+Madeira lists what is missing (for example "controls made for a Steam Deck",
+"left trackpad", "gyro", "rear buttons", "overlay menus") and says Valve's
+engine maps what it can and those bindings will not work. The player confirms
+once per layout revision and controller (`SteamInputConsent`); a relaunch then
+re-applies it without asking, and an edited revision or another controller asks
+again. One gate in `DockSteamInputService.checkFit` covers every source: game
+default, community, personal, imported, generic template and live editing. A
+saved layout that would be re-applied at launch without that confirmation
+(including a Steam Deck default chosen before this change) is held instead,
+shown in the Steam Input controls, and loads after "Use the saved layout
+anyway". Conditional layouts, broken references and malformed files are still
+refused. What the controller supplies follows its identity: the virtual
+DualSense carries a PlayStation pad's gyro and touchpad; the Xbox identity and
+the on-screen controls carry neither.
+
+The Steam Input controls in Game details and the session menu open with one
+status line (chosen, loading, downloading, needs confirmation, applying,
+active, rolled back, failed, no layout) and say which controller Steam sees.
+While the game is not running they show the saved choice and offer "Use the
+game default from the next launch", which clears only Madeira's override.

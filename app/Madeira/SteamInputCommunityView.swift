@@ -143,6 +143,7 @@ private struct SteamInputCommunityDetail: View {
     @State private var operation: Task<Void, Never>?
     /// The only preview state: request, loading, error and sheet all live in the model.
     @State private var preview = SteamInputPreviewPresentationModel()
+    @State private var confirmation: SteamInputPendingConfirmation?
     private var working: Bool { busy || preview.isLoading }
     private var accountID: UInt32 {
         SteamOwnedLibrary.shared.personalLayoutAccountID
@@ -212,14 +213,11 @@ private struct SteamInputCommunityDetail: View {
                     let active = current ? DockSteamInputService.activeChoice : nil
                     let isActive = active?.source == .community && active?.identity == String(item.id) && active?.contentHash == layout.revision.hash
                     Section {
-                        Button(isActive ? "Active community layout" : "Apply this revision") {
-                            do {
-                                try DockSteamInputService.requestCommunity(appID: appID, source: layout.bytes,
-                                    itemID: layout.revision.item.id, detail: layout.revision.attribution)
-                                failure = nil; message = "Layout change requested. Waiting for Steam Input to confirm it."
-                            } catch { failure = "The layout change could not start. Wait for the current layout to settle, then retry." }
-                        }.disabled(working || isActive || !layout.compatibility.canApply || !current ||
+                        Button(isActive ? "Active community layout" : layout.compatibility.canApply ? "Apply this revision" : "Apply this revision…") {
+                            apply(layout)
+                        }.disabled(working || isActive || !current ||
                             !(DockSteamInputService.canChange || DockSteamInputService.canBootstrap))
+                        .accessibilityIdentifier("community.apply")
                         ForEach(Array(DockSteamInputPresentation.lines(appID: appID, snapshot: DockSteamInputService.snapshot,
                             active: DockSteamInputService.activeChoice, selection: DockSteamInputService.selection).enumerated()), id: \.offset) { _, line in
                             Text(line).font(.caption).foregroundStyle(.secondary)
@@ -262,6 +260,18 @@ private struct SteamInputCommunityDetail: View {
                 SteamInputPreviewView(preview: data)
             }
         }
+        .steamInputConfirmation($confirmation)
+    }
+    @MainActor private func apply(_ layout: SteamInputCommunitySources.Layout) {
+        do {
+            try DockSteamInputService.requestCommunity(appID: appID, source: layout.bytes,
+                itemID: layout.revision.item.id, detail: layout.revision.attribution)
+            failure = nil; message = "Layout change requested. Waiting for Steam Input to confirm it."
+        } catch let needed as SteamInputConfirmationNeeded {
+            confirmation = .init(needed: needed) { apply(layout) }
+        } catch is DockSteamInputJournal.Failure {
+            failure = "The layout change could not start. Wait for the current layout to settle, then retry."
+        } catch { message = nil; failure = "This layout cannot be applied. " + error.localizedDescription }
     }
     @MainActor private func run(_ body: @escaping @MainActor () async throws -> Void) {
         guard !working else { return }

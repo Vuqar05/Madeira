@@ -73,6 +73,13 @@ enum DockSteamInputWire {
     /// The identity this launch's selection and journal belong to.
     private(set) static var controller: SteamInputController = .dualSense
     static var controllerID: UUID { controller.controllerID }
+    /// What this launch's controller supplies beyond buttons, sticks and triggers.
+    private(set) static var hardware: SteamInputHardware = .none
+    /// A layout Steam Input would have re-applied at this launch (the last
+    /// confirmed choice, or Steam's own saved one) that was made for another
+    /// controller and was never confirmed for this one. Nothing was applied;
+    /// `confirmHeld` records the confirmation and lets it load.
+    private(set) static var held: SteamInputConfirmationNeeded?
     private(set) static var snapshot: DockSteamInputWire.Snapshot?
     private(set) static var selection: DockSteamInputSelection?
     /// Pending journal work requires explicit recovery; never reapply it just
@@ -143,6 +150,8 @@ enum DockSteamInputWire {
         let sent: Date
     }
     private static var submission: Submission?
+    /// The choice being applied now, if any (for the status headline).
+    static var submittingChoice: DockSteamInputSelection.Revision? { submission?.choice ?? preparedChoice }
     private(set) static var receipt: DockSteamInputTransport.Receipt?
     private static var session: [UInt8] = []
     private static var appID: UInt32 = 0
@@ -219,6 +228,7 @@ enum DockSteamInputWire {
         end()
         self.accountID = accountID; self.appID = appID
         controller = SteamInputController.current
+        hardware = SteamInputController.sessionHardware ?? SteamInputController.currentHardware
         let hex = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
         session = stride(from: 0, to: 32, by: 2).map { offset in
             let start = hex.index(hex.startIndex, offsetBy: offset)
@@ -246,7 +256,7 @@ enum DockSteamInputWire {
     static func end() {
         do { try journal?.interrupt() }
         catch { SteamLog.event("[steam-input] layout interruption not saved") }
-        journal = nil; recovery = nil; prepared = nil; submission = nil; receipt = nil
+        journal = nil; recovery = nil; prepared = nil; submission = nil; receipt = nil; held = nil
         preparedChoice = nil; preparedReapplication = false; preparedClearOverride = false; activeChoice = nil
         updateInputQuiesced()
 #if DEBUG
@@ -302,6 +312,7 @@ enum DockSteamInputWire {
     /// DockSteamInputDefault; submission and activation follow the common
     /// receipt path, so the choice is shown active only after its receipt.
     static func requestGameDefault(_ recommendation: DockSteamInputDefault.Recommendation) throws {
+        try checkFit(recommendation.source)
         if !canChange, canBootstrap {
             try startBootstrap(source: recommendation.source,
                 choice: .init(source: .gameDefault, identity: nil, contentHash: recommendation.contentHash,
@@ -317,6 +328,7 @@ enum DockSteamInputWire {
     /// selections share journal reservations, rollback and restart with defaults.
     static func requestCommunity(appID: UInt32, source: Data, itemID: UInt64, detail: String) throws {
         guard appID == self.appID, itemID > 0 else { throw DockSteamInputJournal.Failure.invalid }
+        try checkFit(source)
         let choice = DockSteamInputSelection.Revision(source: .community, identity: String(itemID),
             contentHash: DockSteamInputNative.contentHash(source), detail: detail)
         if !canChange, canBootstrap {
@@ -336,6 +348,7 @@ enum DockSteamInputWire {
     static func requestPersonal(appID: UInt32, accountID: UInt32, source: Data, id: UUID, detail: String) throws {
         guard appID == self.appID, accountID == self.accountID, accountID > 0,
               id.uuidString != baselineRestoreIdentity else { throw DockSteamInputJournal.Failure.invalid }
+        try checkFit(source)
         let choice = DockSteamInputSelection.Revision(source: .personal, identity: id.uuidString,
             contentHash: DockSteamInputNative.contentHash(source), detail: detail)
         if !canChange, canBootstrap {
@@ -387,10 +400,64 @@ enum DockSteamInputWire {
         return references
     }
 
+    /// Milestone 5 item 2: every source (game default, community, personal,
+    /// imported, live edit, template) passes here before anything is staged.
+    /// A layout that fits this launch's controller goes ahead. One made for
+    /// another controller, or using features it cannot supply, goes ahead only
+    /// once the player has confirmed that revision for this controller;
+    /// otherwise SteamInputConfirmationNeeded lists the gaps and nothing changes.
+    /// Conditional, broken and malformed layouts are refused (the evaluator throws).
+    static func checkFit(_ source: Data) throws {
+        let gaps = try SteamInputController.environment.gaps(source, controller, hardware)
+        guard !gaps.isEmpty else { return }
+        let hash = DockSteamInputNative.contentHash(source)
+        guard SteamInputConsent.isConfirmed(hash: hash, controller: controller) else {
+            throw SteamInputConfirmationNeeded(controller: controller, hash: hash, gaps: gaps)
+        }
+    }
+    /// For re-applying at launch: nil when the layout may load, else what
+    /// must be confirmed first. A layout the evaluator cannot read keeps the
+    /// earlier milestones' behaviour (it was applied before) and loads.
+    private static func unconfirmed(_ source: Data) -> SteamInputConfirmationNeeded? {
+        do { try checkFit(source); return nil }
+        catch let needed as SteamInputConfirmationNeeded { return needed }
+        catch { return nil }
+    }
+    /// The player confirmed the held layout: remember it and let the launch's
+    /// restart or replay path load it on its next pass.
+    static func confirmHeld() throws {
+        guard let held else { return }
+        try SteamInputConsent.confirm(hash: held.hash, controller: held.controller)
+        self.held = nil
+        restartAttempted = false; bootstrapAutoTried = false
+        SteamLog.event("[steam-input] held layout confirmed for \(held.controller.rawValue)")
+    }
+
+    /// The saved choice for one account, game and controller while that game
+    /// is not running (Game details). Nil when it cannot be read.
+    static func savedSelection(accountID: UInt32, appID: UInt32, controller: SteamInputController) -> DockSteamInputSelection? {
+        guard accountID > 0, appID > 0 else { return nil }
+        if accountID == self.accountID, appID == self.appID, controller == self.controller, let selection { return selection }
+        return try? DockSteamInputSelection.load(in: storage, accountID: accountID, appID: appID, controllerID: controller.controllerID)
+    }
+    /// Game details, game not running: from the next launch Steam's own
+    /// saved layout (the game default unless the player chose one in Steam)
+    /// is used instead of Madeira's override. Nothing else changes: the
+    /// override's revisions stay in the journal and personal layouts are kept.
+    static func clearSavedOverride(accountID: UInt32, appID: UInt32, controller: SteamInputController) throws {
+        guard snapshot?.appID != appID, accountID > 0, appID > 0 else { throw DockSteamInputJournal.Failure.busy }
+        var saved = try DockSteamInputSelection.load(in: storage, accountID: accountID, appID: appID, controllerID: controller.controllerID)
+        guard saved.requested != nil else { return }
+        try saved.clearRequest()
+        try saved.save(in: storage)
+        SteamLog.event("[steam-input] saved override cleared for the next launch")
+    }
+
     /// An explicit, clearly generic choice; never labelled as the game's own.
     static func requestGenericTemplate(clientRoot: URL) throws {
         if !canChange, canBootstrap {
             let source = try DockSteamInputDefault.genericTemplate(clientRoot: clientRoot, controller: controller)
+            try checkFit(source)
             try startBootstrap(source: source,
                 choice: .init(source: .template, identity: controller.genericTemplate,
                               contentHash: DockSteamInputNative.contentHash(source)))
@@ -398,6 +465,7 @@ enum DockSteamInputWire {
         }
         guard canChange, let baseline = workingBaseline() else { throw DockSteamInputJournal.Failure.busy }
         let source = try DockSteamInputDefault.genericTemplate(clientRoot: clientRoot, controller: controller)
+        try checkFit(source)
         _ = try prepareLocal(source: source, baseline: baseline,
                              choice: .init(source: .template, identity: controller.genericTemplate, contentHash: nil))
         try submitPrepared()
@@ -573,6 +641,11 @@ enum DockSteamInputWire {
             restartAttempted = true
             guard saved.requested != nil, let choice = saved.lastActivated, let hash = choice.contentHash else { return }
             let source = try journal.reapplicationSource(hash: hash)
+            if let needed = unconfirmed(source) {
+                held = needed
+                SteamLog.event("[steam-input] confirmed layout held: made for another controller, not confirmed")
+                return
+            }
             let work = try journal.prepareLocal(source: source, baseline: baseline)
             prepared = work; preparedChoice = choice; preparedReapplication = true; preparedClearOverride = false
             updateInputQuiesced()
@@ -622,7 +695,12 @@ enum DockSteamInputWire {
             bootstrapAutoTried = true
             if let source = try? journal.reapplicationSource(hash: hash),
                (try? DockSteamInputNative.revision(source)) != nil {
-                bootstrap = Bootstrap(source: source, purpose: .replay)
+                if let needed = unconfirmed(source) {
+                    held = needed
+                    SteamLog.event("[steam-input] saved layout held: made for another controller, not confirmed")
+                } else {
+                    bootstrap = Bootstrap(source: source, purpose: .replay)
+                }
             }
         }
         guard var work = bootstrap else { return }
@@ -985,7 +1063,7 @@ struct DockSteamInputSelection: Codable, Equatable {
 /// receipt can describe a Madeira choice as active; Steam's saved selection
 /// and cache/activation requests are reported separately.
 enum DockSteamInputPresentation {
-    private static func name(_ choice: DockSteamInputSelection.Revision) -> String {
+    static func name(_ choice: DockSteamInputSelection.Revision) -> String {
         switch choice.source {
         case .gameDefault: return "Game default"
         case .community: return "Community layout"
@@ -1020,6 +1098,71 @@ enum DockSteamInputPresentation {
             lines.append("Requested: \(name(requested)); not yet confirmed.")
         }
         return lines
+    }
+}
+
+extension DockSteamInputPresentation {
+    /// One headline for the Steam Input controls (milestone 5 item 4), the
+    /// same in Game details and the session menu.
+    enum State: Equatable {
+        case notRunning(saved: DockSteamInputSelection.Revision?)
+        case disconnected
+        case loading
+        case downloading
+        case held
+        case applying(DockSteamInputSelection.Revision?)
+        case active(DockSteamInputSelection.Revision)
+        case rolledBack
+        case failed
+        case noLayout
+        case unconfirmed
+
+        var text: String {
+            switch self {
+            case .notRunning(let saved?):
+                return "Chosen: \(DockSteamInputPresentation.name(saved)). It is applied when the game starts."
+            case .notRunning(nil): return "Chosen: Game default (Steam's saved layout for this game)."
+            case .disconnected: return "Controller disconnected. The layout comes back when it reconnects."
+            case .loading: return "Loading the layout into Steam Input…"
+            case .downloading: return "Downloading Steam's selected Workshop layout…"
+            case .held: return "Needs your confirmation: the saved layout was made for another controller."
+            case .applying(let choice?): return "Applying \(DockSteamInputPresentation.name(choice))… waiting for Steam Input to confirm."
+            case .applying(nil): return "Applying a layout… waiting for Steam Input to confirm."
+            case .active(let choice): return "Active: \(DockSteamInputPresentation.name(choice))."
+            case .rolledBack: return "The change failed. Steam Input restored the previous layout."
+            case .failed: return "The layout could not be applied. Your saved choice is kept; retry or relaunch."
+            case .noLayout: return "No layout is loaded yet. Choose one below."
+            case .unconfirmed: return "Steam's own layout is loaded."
+            }
+        }
+        /// Attention states read in orange or red.
+        var severity: Int {
+            switch self {
+            case .held, .rolledBack: return 1
+            case .failed: return 2
+            default: return 0
+            }
+        }
+    }
+    @MainActor static func state(appID: UInt32, saved: DockSteamInputSelection.Revision?) -> State {
+        let service = DockSteamInputService.self
+        guard let snapshot = service.snapshot, snapshot.appID == appID else { return .notRunning(saved: saved) }
+        guard snapshot.connected else { return .disconnected }
+        if service.held != nil { return .held }
+        if service.resolvingWorkshop { return .downloading }
+        if service.bootstrapping { return .loading }
+        if service.prepared != nil || service.submittingChoice != nil { return .applying(service.submittingChoice) }
+        // A receipt lasts until the next change is sent.
+        if let receipt = service.receipt {
+            if receipt.phase == .rolledBack { return .rolledBack }
+            if receipt.phase == .failed { return .failed }
+        }
+        if let active = service.activeChoice, snapshot.state != .failed { return .active(active) }
+        if service.sourceFailure != nil { return .failed }
+        // Dock's own load did not produce a layout: either nothing is saved
+        // (choose one) or the saved one is still being re-applied.
+        if snapshot.state == .failed { return service.canBootstrap ? .noLayout : .loading }
+        return .unconfirmed
     }
 }
 

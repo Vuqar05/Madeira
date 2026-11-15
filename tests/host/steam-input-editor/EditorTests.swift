@@ -184,6 +184,10 @@ final class EditorTests: XCTestCase {
         openFaceButtons(app)
         XCTAssertTrue(bindingText(app).hasPrefix("A (Cross)"), "switching back restores the earlier group's bindings")
         app.navigationBars.buttons.element(boundBy: 0).tap()
+        reveal(app.textFields["New action set"], in: app)
+        // Keep the field clear of the keyboard its tap brings up: with a longer
+        // compatibility note above it, it can otherwise sit under the keyboard.
+        app.swipeUp()
         let newSet = reveal(app.textFields["New action set"], in: app)
         newSet.tap(); newSet.typeText("Driving")
         newSet.coordinate(withNormalizedOffset: CGVector(dx: 1.05, dy: 0.5)).tap()

@@ -124,6 +124,19 @@ func require(_ body: @autoclosure () throws -> Bool, file: StaticString = #file,
     let activeMenu = Data(String(decoding: bytes, as: UTF8.self).replacingOccurrences(of: "mode four_buttons", with: "mode radial_menu").utf8)
     require(try !SteamInputCompatibility(activeMenu).canApply)
     require(try !SteamInputCompatibility(Data("controller_mappings { controller_type controller_neptune }".utf8)).canApply)
+    // Milestone 5: gaps depend on the player's controller and what it supplies.
+    let dualSenseHardware = SteamInputHardware.of(.dualSense, physicalIsPlayStation: true)
+    require(try SteamInputCompatibility(gyro, controller: .dualSense, hardware: dualSenseHardware).canApply)
+    require(try SteamInputCompatibility(gyro, controller: .dualSense, hardware: .none).unsupported == ["gyro"])
+    let deck = Data("controller_mappings { revision 1 controller_type controller_neptune group { id 0 mode absolute_mouse inputs { } } group { id 1 mode four_buttons inputs { button_back_left { } } } preset { id 0 name Default group_source_bindings { 0 \"left_trackpad active\" 1 \"switch active\" } } }".utf8)
+    let onDualSense = try SteamInputCompatibility(deck, controller: .dualSense, hardware: dualSenseHardware)
+    require(onDualSense.unsupported == ["controls made for a Steam Deck", "rear buttons"])
+    let onXbox = try SteamInputCompatibility(deck, controller: .xbox, hardware: .none)
+    require(onXbox.unsupported == ["controls made for a Steam Deck", "left trackpad", "rear buttons"])
+    require(onXbox.description.contains("Your Xbox controller cannot supply") && onXbox.description.contains("maps what it can"))
+    let xboxLayout = Data("controller_mappings { revision 1 controller_type controller_xbox360 }".utf8)
+    require(try SteamInputCompatibility(xboxLayout, controller: .xbox).canApply)
+    require(try SteamInputCompatibility(xboxLayout, controller: .dualSense).unsupported == ["controls made for an Xbox controller"])
     do { _ = try SteamInputCompatibility(bytes, tags: ["controller_ps4"]); fatalError("controller mismatch accepted") } catch Sources.Failure.invalid {}
     for invalid in ["controller_mappings { revision 1 } trailing", "controller_mappings { #base secret }", "controller_mappings { revision 1 } [$WIN32]"] {
         do { _ = try SteamInputKV.parse(Data(invalid.utf8)); fatalError("invalid document accepted") } catch {}

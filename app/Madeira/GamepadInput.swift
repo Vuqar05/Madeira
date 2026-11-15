@@ -179,7 +179,10 @@ final class GamepadInput: @unchecked Sendable {
                 guard let pad = GCController.controllers().first(where: { $0.extendedGamepad != nil })?.extendedGamepad else { return nil }
                 return pad is GCDualSenseGamepad || pad is GCDualShockGamepad
             },
-            log: { SteamLog.event($0) })
+            log: { SteamLog.event($0) },
+            gaps: { bytes, controller, hardware in
+                try SteamInputCompatibility(bytes, controller: controller, hardware: hardware).unsupported
+            })
     }
 
     /// Documents/madeira.cfg `env.NAME`, else the process environment; only "0" disables.
