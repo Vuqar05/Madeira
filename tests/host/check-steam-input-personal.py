@@ -114,7 +114,7 @@ func snapshot(_ url: URL) throws -> [String: String] {
         require(try snapshot(support) == stored, "preparing an apply writes nothing to the personal store")
         require(try snapshot(communityRoot) == communityBefore, "copying and applying a personal layout leaves the community original untouched")
         require(try sources.load(downloaded.revision).bytes == original, "the downloaded original still loads and verifies")
-        let listed = try Personal.list(root: support, accountID: 24, appID: 480)
+        let listed = try Personal.list(SteamInputPersonalShelf(root: support, accountID: 24, appID: 480))
         require(listed.map(\.id) == [copy.id])
         require(try listed[0].applyRequest(root: support) == request, "a listed copy applies the same way")
 
@@ -153,11 +153,11 @@ func snapshot(_ url: URL) throws -> [String: String] {
         require(refusal(menu).contains("overlay menus"), "\(refusal(menu))")
         // Stored bytes that no longer match the record are never applied.
         let tampered = try storedCopy(original, id: 205)
-        let tamperedURL = Personal.folder(root: support, accountID: 24, appID: 480).appendingPathComponent(tampered.id.uuidString + "/source.vdf")
+        let tamperedURL = SteamInputPersonalShelf(root: support, accountID: 24, appID: 480).folder.appendingPathComponent(tampered.id.uuidString + "/source.vdf")
         try Data(layoutText(binding: "key_press ESCAPE, Quit, ").utf8).write(to: tamperedURL)
         require(refusal(tampered) == Personal.ApplyFailure.damaged.errorDescription, "changed bytes are refused: \(refusal(tampered))")
         let linked = try storedCopy(original, id: 206)
-        let linkedURL = Personal.folder(root: support, accountID: 24, appID: 480).appendingPathComponent(linked.id.uuidString + "/source.vdf")
+        let linkedURL = SteamInputPersonalShelf(root: support, accountID: 24, appID: 480).folder.appendingPathComponent(linked.id.uuidString + "/source.vdf")
         try FileManager.default.removeItem(at: linkedURL)
         // The link's target holds exactly the recorded bytes, so only the link itself can be what is refused.
         let outside = temp.appendingPathComponent("outside.vdf")
@@ -166,7 +166,7 @@ func snapshot(_ url: URL) throws -> [String: String] {
         require(try Data(contentsOf: linkedURL) == original && DockSteamInputNative.contentHash(original) == linked.hash)
         require(refusal(linked) == Personal.ApplyFailure.damaged.errorDescription, "a linked file is not followed")
         let missing = try storedCopy(original, id: 207)
-        try FileManager.default.removeItem(at: Personal.folder(root: support, accountID: 24, appID: 480).appendingPathComponent(missing.id.uuidString + "/source.vdf"))
+        try FileManager.default.removeItem(at: SteamInputPersonalShelf(root: support, accountID: 24, appID: 480).folder.appendingPathComponent(missing.id.uuidString + "/source.vdf"))
         require(refusal(missing) == Personal.ApplyFailure.damaged.errorDescription)
         let notLayout = try storedCopy(Data(#""controller_mappings" { "version" "3" "controller_type" "controller_ps5" } "controller_mappings" { }"#.utf8), id: 208)
         require(refusal(notLayout) == Personal.ApplyFailure.notALayout.errorDescription, "\(refusal(notLayout))")
@@ -185,7 +185,7 @@ func snapshot(_ url: URL) throws -> [String: String] {
                 && Personal.storageNote.contains("export the VDF"), "personal layouts are described as local, with export as the way to keep one")
         let importedAt = Date(timeIntervalSince1970: 1_700_000_000)
         let beforeImport = try snapshot(support)
-        let imported = try Personal.importVDF(original, fileName: "My pad.vdf", accountID: 24, appID: 480, root: support, now: importedAt)
+        let imported = try Personal.importVDF(original, fileName: "My pad.vdf", into: SteamInputPersonalShelf(root: support, accountID: 24, appID: 480), now: importedAt)
         require(imported.title == "My pad" && imported.origin == nil && imported.sourceName == "My pad.vdf" && imported.imported == importedAt)
         require(imported.hash == DockSteamInputNative.contentHash(original) && imported.accountID == 24 && imported.appID == 480)
         require(imported.provenance == "Imported from My pad.vdf" && imported.detail == "My pad · imported VDF file")
@@ -199,14 +199,14 @@ func snapshot(_ url: URL) throws -> [String: String] {
         require(Set(afterImport.keys).subtracting(beforeImport.keys).count == 3 && beforeImport.allSatisfy { afterImport[$0.key] == $0.value },
                 "an import adds its own folder and two files and changes nothing else")
         require(try snapshot(communityRoot) == communityAfterDownloads, "importing touches no community download")
-        let relisted = try Personal.list(root: support, accountID: 24, appID: 480)
+        let relisted = try Personal.list(SteamInputPersonalShelf(root: support, accountID: 24, appID: 480))
         require(relisted.contains { $0.id == imported.id && $0.origin == nil && $0.imported == importedAt } && relisted.contains { $0.id == copy.id && $0.origin != nil },
                 "copies and imports are listed together; records written before imports existed still load")
 
         // A refused file leaves nothing behind and says why in plain words.
         func importRefusal(_ bytes: Data, account: UInt32 = 24, name: String = "bad.vdf") throws -> String {
             let before = try snapshot(support)
-            do { _ = try Personal.importVDF(bytes, fileName: name, accountID: account, appID: 480, root: support); fatalError("\(name): imported") }
+            do { _ = try Personal.importVDF(bytes, fileName: name, into: SteamInputPersonalShelf(root: support, accountID: account, appID: 480)); fatalError("\(name): imported") }
             catch {
                 require(try snapshot(support) == before, "\(name): a refused import leaves nothing behind")
                 guard let reason = (error as? LocalizedError)?.errorDescription, !reason.isEmpty else { fatalError("\(name): unreadable refusal \(error)") }
@@ -227,7 +227,7 @@ func snapshot(_ url: URL) throws -> [String: String] {
                 == "This layout cannot be applied. A mode shift on Cross (A) in group 0 switches right stick to group 99, which the layout does not define.",
                 "a file with a broken reference is refused at import, with the reference named")
         // A layout that only needs an input Madeira cannot forward is kept, like a download, and cannot be applied.
-        let importedGyro = try Personal.importVDF(Data(layoutText(source: "gyro").utf8), fileName: "gyro.vdf", accountID: 24, appID: 480, root: support)
+        let importedGyro = try Personal.importVDF(Data(layoutText(source: "gyro").utf8), fileName: "gyro.vdf", into: SteamInputPersonalShelf(root: support, accountID: 24, appID: 480))
         require(refusal(importedGyro) == "This layout cannot be applied. Unavailable inputs or features: gyro.")
 
         // Names taken from files.
@@ -244,14 +244,14 @@ func snapshot(_ url: URL) throws -> [String: String] {
         require(try snapshot(support) == storeBeforeExport, "exporting changes nothing in the store")
         let picked = try Personal.readImport(exported)
         require(picked == original)
-        let roundTrip = try Personal.importVDF(picked, fileName: exported.lastPathComponent, accountID: 24, appID: 480, root: support)
+        let roundTrip = try Personal.importVDF(picked, fileName: exported.lastPathComponent, into: SteamInputPersonalShelf(root: support, accountID: 24, appID: 480))
         require(roundTrip.hash == copy.hash && roundTrip.id != copy.id && roundTrip.title == "My jump layout" && roundTrip.origin == nil)
         require(try roundTrip.bytes(root: support) == (try copy.bytes(root: support)), "export then import preserves every byte")
         require(try roundTrip.applyRequest(root: support).source == request.source, "and what it applies")
         require(try copy.applyRequest(root: support) == request, "the layout that was exported is unchanged")
         let unsafeName = try storedCopy(original, id: 301)
         _ = unsafeName
-        let slashes = try Personal.importVDF(original, fileName: "a:b.vdf", accountID: 24, appID: 480, root: support)
+        let slashes = try Personal.importVDF(original, fileName: "a:b.vdf", into: SteamInputPersonalShelf(root: support, accountID: 24, appID: 480))
         require(slashes.title == "a:b")
         require(try slashes.exportFile(root: support, directory: scratch).lastPathComponent == "a b.vdf", "characters a file name cannot hold are replaced")
         require(try longCopy.exportFile(root: support, directory: scratch).lastPathComponent == String(repeating: "é", count: 80) + ".vdf")
@@ -270,26 +270,26 @@ func snapshot(_ url: URL) throws -> [String: String] {
 
         // The count kept per account and game is bounded.
         for index in 0..<Personal.limit {
-            _ = try Personal.importVDF(original, fileName: "fill \(index).vdf", accountID: 26, appID: 480, root: support)
+            _ = try Personal.importVDF(original, fileName: "fill \(index).vdf", into: SteamInputPersonalShelf(root: support, accountID: 26, appID: 480))
         }
-        require(try Personal.list(root: support, accountID: 26, appID: 480).count == Personal.limit)
+        require(try Personal.list(SteamInputPersonalShelf(root: support, accountID: 26, appID: 480)).count == Personal.limit)
         let full = try snapshot(support)
-        do { _ = try Personal.importVDF(original, fileName: "one more.vdf", accountID: 26, appID: 480, root: support); fatalError("limit exceeded") }
+        do { _ = try Personal.importVDF(original, fileName: "one more.vdf", into: SteamInputPersonalShelf(root: support, accountID: 26, appID: 480)); fatalError("limit exceeded") }
         catch Personal.ImportFailure.tooMany {}
         require(try snapshot(support) == full)
         // A record whose hash is not a hash is not listed as a usable layout.
-        let brokenRecord = Personal.folder(root: support, accountID: 27, appID: 480).appendingPathComponent(UUID().uuidString)
+        let brokenRecord = SteamInputPersonalShelf(root: support, accountID: 27, appID: 480).folder.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: brokenRecord, withIntermediateDirectories: true)
         let json = String(decoding: try JSONEncoder().encode(imported), as: UTF8.self)
             .replacingOccurrences(of: imported.id.uuidString, with: brokenRecord.lastPathComponent)
             .replacingOccurrences(of: "\"accountID\":24", with: "\"accountID\":27").replacingOccurrences(of: imported.hash, with: "not-a-hash")
         try Data(json.utf8).write(to: brokenRecord.appendingPathComponent("layout.json"))
-        do { _ = try Personal.list(root: support, accountID: 27, appID: 480); fatalError("invalid record listed") } catch Sources.Failure.invalid {}
+        do { _ = try Personal.list(SteamInputPersonalShelf(root: support, accountID: 27, appID: 480)); fatalError("invalid record listed") } catch Sources.Failure.invalid {}
         require(try snapshot(communityRoot) == communityAfterDownloads, "nothing in this check changed a community download")
 
         // Another account or game never sees the layout.
-        require(try Personal.list(root: support, accountID: 25, appID: 480).isEmpty)
-        require(try Personal.list(root: support, accountID: 24, appID: 481).isEmpty)
+        require(try Personal.list(SteamInputPersonalShelf(root: support, accountID: 25, appID: 480)).isEmpty)
+        require(try Personal.list(SteamInputPersonalShelf(root: support, accountID: 24, appID: 481)).isEmpty)
         _ = payload; payload = original
 
         print("PASS: personal layout apply request, exact stored bytes, UUID identity, attribution, refusals before apply, untouched community original, local-only labelling, and byte-exact VDF import and export")
@@ -314,7 +314,7 @@ for needle, why in [
     ('source: request.source, id: request.id, detail: request.detail)', 'with the checked bytes, UUID and attribution'),
     ('let isActive = active?.source == .personal && active?.identity == copy.id.uuidString && active?.contentHash == copy.hash', 'active means confirmed for this UUID and content'),
     ('.disabled(isActive || compatibility?.canApply != true || !current ||', 'apply is offered only for a checked layout in a running session'),
-    ('references: DockSteamInputService.personalReferences(accountID: copy.accountID, appID: copy.appID), root: support)', 'deletion is checked against the saved selection and the service'),
+    ('references: DockSteamInputService.personalReferences(accountID: copy.accountID, appID: copy.appID))', 'deletion is checked against the saved selection and the service'),
 ]:
     if view.count(needle) != 1:
         raise SystemExit(f'FAIL: {why}: expected exactly one `{needle}` in SteamInputPersonalDetail')

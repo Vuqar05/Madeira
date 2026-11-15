@@ -93,12 +93,12 @@ func snapshot(_ url: URL) throws -> [String: String] {
         // 1. Every creation source, with a stable identity of its own
         // =============================================================
         let fromDefault = try Personal.create(from: base, title: "From default", creation: .init(kind: .gameDefault, detail: "the layout bundled with this game"),
-                                              accountID: 24, appID: 480, root: support, now: t0)
+                                              in: SteamInputPersonalShelf(root: support, accountID: 24, appID: 480), now: t0)
         require(fromDefault.provenance == "Made from the game default · the layout bundled with this game")
         require(fromDefault.detail == "From default · personal layout from the game default" && fromDefault.revisions.map(\.note) == ["Created"])
         require(try fromDefault.applyRequest(root: support).source == base && fromDefault.version == 2)
         let template = try Personal.create(from: layout(title: "Template"), title: "From template", creation: .init(kind: .template, detail: "Gamepad"),
-                                           accountID: 24, appID: 480, root: support, now: t0)
+                                           in: SteamInputPersonalShelf(root: support, accountID: 24, appID: 480), now: t0)
         require(template.provenance == "Made from Steam's Gamepad template" && template.id != fromDefault.id)
         // A community copy, the original download untouched.
         let item: SteamWorkshopItem = {
@@ -114,7 +114,7 @@ func snapshot(_ url: URL) throws -> [String: String] {
         let community = try Personal.create(downloaded, title: "Community copy", accountID: 24, root: support)
         require(community.version == 1 && community.history == nil, "a community copy is still written as before")
         // An existing VDF and an existing personal layout.
-        let imported = try Personal.importVDF(base, fileName: "pad.vdf", accountID: 24, appID: 480, root: support, now: t0)
+        let imported = try Personal.importVDF(base, fileName: "pad.vdf", into: SteamInputPersonalShelf(root: support, accountID: 24, appID: 480), now: t0)
         let duplicate = try imported.duplicate(root: support, now: t0)
         require(duplicate.id != imported.id && duplicate.hash == imported.hash && duplicate.title == "pad copy" && duplicate.creation?.from == imported.id)
         require(try duplicate.provenance == "Duplicated from pad" && (try duplicate.bytes(root: support)) == base)
@@ -123,15 +123,15 @@ func snapshot(_ url: URL) throws -> [String: String] {
         // Refusals, with nothing left behind.
         let before = try snapshot(support)
         require(refusal { try Personal.create(from: Data(String(decoding: base, as: UTF8.self).replacingOccurrences(of: "\"0\" \"button_diamond active\"", with: "\"0\" \"button_diamond active\" [$WIN32]").utf8),
-                                              title: "x", creation: .init(kind: .template, detail: "x"), accountID: 24, appID: 480, root: support) }.contains("Conditional layouts are not supported yet."))
-        require(refusal { try Personal.create(from: layout("mode_shift joystick 9, , "), title: "x", creation: .init(kind: .template, detail: "x"), accountID: 24, appID: 480, root: support) }
+                                              title: "x", creation: .init(kind: .template, detail: "x"), in: SteamInputPersonalShelf(root: support, accountID: 24, appID: 480)) }.contains("Conditional layouts are not supported yet."))
+        require(refusal { try Personal.create(from: layout("mode_shift joystick 9, , "), title: "x", creation: .init(kind: .template, detail: "x"), in: SteamInputPersonalShelf(root: support, accountID: 24, appID: 480)) }
                 .contains("group 9, which the layout does not define"))
-        require(refusal { try Personal.create(from: base, title: "x", creation: .init(kind: .template, detail: "x"), accountID: 0, appID: 480, root: support) }
+        require(refusal { try Personal.create(from: base, title: "x", creation: .init(kind: .template, detail: "x"), in: SteamInputPersonalShelf(root: support, accountID: 0, appID: 480)) }
                 == Personal.ImportFailure.noAccount.errorDescription)
-        require(refusal { try Personal.create(from: base, title: " ", creation: .init(kind: .template, detail: "x"), accountID: 24, appID: 480, root: support) }
+        require(refusal { try Personal.create(from: base, title: " ", creation: .init(kind: .template, detail: "x"), in: SteamInputPersonalShelf(root: support, accountID: 24, appID: 480)) }
                 == Personal.LifecycleFailure.invalidTitle.errorDescription)
         require(try snapshot(support) == before, "refused creations write nothing")
-        var listing = try Personal.inventory(root: support, accountID: 24, appID: 480)
+        var listing = try Personal.inventory(SteamInputPersonalShelf(root: support, accountID: 24, appID: 480))
         require(listing.count == 6 && listing.allSatisfy { $0.problem == nil }, "\(listing.map(\.title))")
         require(Set(listing.map(\.id)).count == 6, "every layout keeps its own identity")
 
@@ -159,7 +159,7 @@ func snapshot(_ url: URL) throws -> [String: String] {
         require(try restored.bytes(root: support) == base)
         // Export and import round-trip the saved revision byte for byte under a new identity.
         let exported = try restored.saving(edited.bytes, references: free, root: support).exportFile(root: support, directory: temp.appendingPathComponent("export"))
-        let back = try Personal.importVDF(try Personal.readImport(exported), fileName: exported.lastPathComponent, accountID: 24, appID: 480, root: support)
+        let back = try Personal.importVDF(try Personal.readImport(exported), fileName: exported.lastPathComponent, into: SteamInputPersonalShelf(root: support, accountID: 24, appID: 480))
         require(try back.bytes(root: support) == edited.bytes && back.id != community.id)
         // Refused saves change nothing.
         let stateBefore = try snapshot(support)
@@ -173,7 +173,7 @@ func snapshot(_ url: URL) throws -> [String: String] {
         _ = try broken.restoring(broken.revisions[0], references: free, root: support)
 
         // History is bounded; the revision the game uses is kept beyond it.
-        var long = try Personal.create(from: base, title: "Long history", creation: .init(kind: .template, detail: "Gamepad"), accountID: 24, appID: 480, root: support, now: t0)
+        var long = try Personal.create(from: base, title: "Long history", creation: .init(kind: .template, detail: "Gamepad"), in: SteamInputPersonalShelf(root: support, accountID: 24, appID: 480), now: t0)
         let firstHash = long.hash
         let retainedRefs = SteamInputPersonalReferences(selected: [long.id: [firstHash]], confirmed: [long.id: firstHash])
         for index in 0..<(Personal.historyLimit + 6) {
@@ -196,7 +196,7 @@ func snapshot(_ url: URL) throws -> [String: String] {
         let draftBytes = edited.bytes
         try imported.savingDraft(draftBytes, base: imported.hash, root: support, now: t0)
         // A "restart": everything read again from disk.
-        let afterRestart = try Personal.inventory(root: support, accountID: 24, appID: 480).first { $0.id == imported.id }!.copy!
+        let afterRestart = try Personal.inventory(SteamInputPersonalShelf(root: support, accountID: 24, appID: 480)).first { $0.id == imported.id }!.copy!
         let recoveredDraft = try afterRestart.draft(root: support)!
         require(try recoveredDraft.base == imported.hash && (try afterRestart.draftBytes(recoveredDraft, root: support)) == draftBytes)
         require(try afterRestart.bytes(root: support) == base, "a draft never changes the saved revision")
@@ -242,7 +242,7 @@ func snapshot(_ url: URL) throws -> [String: String] {
         // 5. Safe deletion
         // =============================================================
         func delete(_ copy: Personal, _ references: SteamInputPersonalReferences) -> String {
-            refusal { try Personal.delete(copy.id, accountID: 24, appID: 480, references: references, root: support) }
+            refusal { try Personal.delete(copy.id, from: SteamInputPersonalShelf(root: support, accountID: 24, appID: 480), references: references) }
         }
         let storeBefore = try snapshot(support)
         require(delete(fromDefault, SteamInputPersonalReferences(selected: [fromDefault.id: [fromDefault.hash]])).hasPrefix("This layout is this game's chosen Steam Input layout."))
@@ -251,45 +251,45 @@ func snapshot(_ url: URL) throws -> [String: String] {
         require(try snapshot(support) == storeBefore, "a refused deletion removes nothing")
         // Another layout's selection does not block this one.
         require(delete(named, SteamInputPersonalReferences(selected: [fromDefault.id: [fromDefault.hash]])) == "")
-        require(try !(try Personal.inventory(root: support, accountID: 24, appID: 480)).contains { $0.id == named.id })
+        require(try !(try Personal.inventory(SteamInputPersonalShelf(root: support, accountID: 24, appID: 480))).contains { $0.id == named.id })
         // An interrupted deletion (renamed out, not yet removed) is cleaned up and is not listed.
-        let trash = Personal.folder(root: support, accountID: 24, appID: 480).appendingPathComponent(".deleted-\(UUID().uuidString)")
+        let trash = SteamInputPersonalShelf(root: support, accountID: 24, appID: 480).folder.appendingPathComponent(".deleted-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: trash, withIntermediateDirectories: true)
         try Data("x".utf8).write(to: trash.appendingPathComponent("layout.json"))
-        let staging = Personal.folder(root: support, accountID: 24, appID: 480).appendingPathComponent(".\(UUID().uuidString).tmp")
+        let staging = SteamInputPersonalShelf(root: support, accountID: 24, appID: 480).folder.appendingPathComponent(".\(UUID().uuidString).tmp")
         try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
-        listing = try Personal.inventory(root: support, accountID: 24, appID: 480)
+        listing = try Personal.inventory(SteamInputPersonalShelf(root: support, accountID: 24, appID: 480))
         require(!FileManager.default.fileExists(atPath: trash.path) && !FileManager.default.fileExists(atPath: staging.path))
 
         // =============================================================
         // 6. Recovery of damaged and incompatible layouts
         // =============================================================
         // The current revision was changed outside Madeira: the newest readable earlier revision returns.
-        var damaged = try Personal.create(from: base, title: "Damaged", creation: .init(kind: .template, detail: "Gamepad"), accountID: 24, appID: 480, root: support, now: t0)
+        var damaged = try Personal.create(from: base, title: "Damaged", creation: .init(kind: .template, detail: "Gamepad"), in: SteamInputPersonalShelf(root: support, accountID: 24, appID: 480), now: t0)
         damaged = try damaged.saving(layout("key_press K, , "), references: free, root: support, now: t0.addingTimeInterval(10))
         try Data("garbage".utf8).write(to: damaged.directory(support).appendingPathComponent("revisions/\(damaged.hash).vdf"))
-        listing = try Personal.inventory(root: support, accountID: 24, appID: 480)
+        listing = try Personal.inventory(SteamInputPersonalShelf(root: support, accountID: 24, appID: 480))
         require(listing.first { $0.id == damaged.id }?.problem == "Its current revision is missing or was changed outside Madeira.")
         require(refusal { try damaged.applyRequest(root: support) } == Personal.ApplyFailure.damaged.errorDescription)
-        let repaired = try Personal.recover(damaged.id, accountID: 24, appID: 480, root: support, now: t0)
+        let repaired = try Personal.recover(damaged.id, in: SteamInputPersonalShelf(root: support, accountID: 24, appID: 480), now: t0)
         require(try repaired.id == damaged.id && repaired.hash == DockSteamInputNative.contentHash(base) && (try repaired.bytes(root: support)) == base)
-        require(try Personal.inventory(root: support, accountID: 24, appID: 480).first { $0.id == damaged.id }?.problem == nil)
+        require(try Personal.inventory(SteamInputPersonalShelf(root: support, accountID: 24, appID: 480)).first { $0.id == damaged.id }?.problem == nil)
         // An unreadable record is rebuilt from the files that remain, under the same identity.
         try Data("{".utf8).write(to: duplicate.directory(support).appendingPathComponent("layout.json"))
-        require(try Personal.inventory(root: support, accountID: 24, appID: 480).first { $0.id == duplicate.id }?.problem == "Its record cannot be read.")
+        require(try Personal.inventory(SteamInputPersonalShelf(root: support, accountID: 24, appID: 480)).first { $0.id == duplicate.id }?.problem == "Its record cannot be read.")
         // The strict listing refuses while a record is damaged; the inventory lists it for recovery.
-        require(refusal { try Personal.list(root: support, accountID: 24, appID: 480) } != "")
-        let rebuilt = try Personal.recover(duplicate.id, accountID: 24, appID: 480, root: support, now: t0)
+        require(refusal { try Personal.list(SteamInputPersonalShelf(root: support, accountID: 24, appID: 480)) } != "")
+        let rebuilt = try Personal.recover(duplicate.id, in: SteamInputPersonalShelf(root: support, accountID: 24, appID: 480), now: t0)
         require(rebuilt.id == duplicate.id && rebuilt.title == "Recovered layout" && rebuilt.creation?.kind == .recovered)
         require(Set(rebuilt.revisions.map(\.hash)) == [DockSteamInputNative.contentHash(base), DockSteamInputNative.contentHash(layout("key_press D, , "))])
         require(try rebuilt.applyRequest(root: support).source.isEmpty == false)
         // Nothing readable left: recovery refuses, deletion still works.
-        let hopeless = try Personal.create(from: base, title: "Hopeless", creation: .init(kind: .template, detail: "Gamepad"), accountID: 24, appID: 480, root: support)
+        let hopeless = try Personal.create(from: base, title: "Hopeless", creation: .init(kind: .template, detail: "Gamepad"), in: SteamInputPersonalShelf(root: support, accountID: 24, appID: 480))
         try Data("garbage".utf8).write(to: hopeless.directory(support).appendingPathComponent("source.vdf"))
-        require(refusal { try Personal.recover(hopeless.id, accountID: 24, appID: 480, root: support) } == Personal.LifecycleFailure.nothingToRecover.errorDescription)
+        require(refusal { try Personal.recover(hopeless.id, in: SteamInputPersonalShelf(root: support, accountID: 24, appID: 480)) } == Personal.LifecycleFailure.nothingToRecover.errorDescription)
         require(delete(hopeless, free) == "")
         // A layout that reads but cannot be applied stays editable: the editor opens it and fixes it.
-        let incompatible = try Personal.create(from: layout(), title: "Gyro", creation: .init(kind: .template, detail: "Gamepad"), accountID: 24, appID: 480, root: support)
+        let incompatible = try Personal.create(from: layout(), title: "Gyro", creation: .init(kind: .template, detail: "Gamepad"), in: SteamInputPersonalShelf(root: support, accountID: 24, appID: 480))
         let gyroDraft = try SteamInputLayoutDraft(bytes: try incompatible.bytes(root: support))
             .switchingMode(of: "gyro", in: VDFPath([.init("controller_mappings"), .init("preset")]), to: "mouse_joystick")
         let gyro = try incompatible.saving(gyroDraft.bytes, references: free, root: support)
@@ -298,12 +298,12 @@ func snapshot(_ url: URL) throws -> [String: String] {
                                     references: free, root: support)
         require(try fixed.applyRequest(root: support).compatibility.canApply, "disabling the unforwarded source makes it applicable again")
         // Imports count damaged layouts toward the bound, so a damaged one cannot hide space.
-        require(try Personal.inventory(root: support, accountID: 24, appID: 480).count == (try Personal.inventory(root: support, accountID: 24, appID: 480)).count)
+        require(try Personal.inventory(SteamInputPersonalShelf(root: support, accountID: 24, appID: 480)).count == (try Personal.inventory(SteamInputPersonalShelf(root: support, accountID: 24, appID: 480))).count)
 
         // =============================================================
         // 7. Staging a live change: the working revision stays until confirmed
         // =============================================================
-        var live = try Personal.create(from: base, title: "Live", creation: .init(kind: .template, detail: "Gamepad"), accountID: 24, appID: 480, root: support, now: t0)
+        var live = try Personal.create(from: base, title: "Live", creation: .init(kind: .template, detail: "Gamepad"), in: SteamInputPersonalShelf(root: support, accountID: 24, appID: 480), now: t0)
         let working = live.hash
         let next = layout("xinput_button Y, , ")
         let nextHash = DockSteamInputNative.contentHash(next)
@@ -339,7 +339,7 @@ func snapshot(_ url: URL) throws -> [String: String] {
         _ = try tamper.unstaged(root: support)
 
         // Isolation.
-        require(try Personal.inventory(root: support, accountID: 25, appID: 480).isEmpty && (try Personal.inventory(root: support, accountID: 24, appID: 481)).isEmpty)
+        require(try Personal.inventory(SteamInputPersonalShelf(root: support, accountID: 25, appID: 480)).isEmpty && (try Personal.inventory(SteamInputPersonalShelf(root: support, accountID: 24, appID: 481))).isEmpty)
         // A touchpad half the layout uses blocks apply; set to Not used in the
         // editor (Steam's "inactive"), the layout applies.
         let halves = try SteamInputLayoutDraft(bytes: base)

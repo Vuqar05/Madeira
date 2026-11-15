@@ -21,6 +21,7 @@ struct SteamInputPersonalLayoutsSection: View {
     @State private var importMessage: String?
     @State private var importFailure: String?
     private var support: URL { FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0] }
+    private var shelf: SteamInputPersonalShelf { SteamInputPersonalShelf(root: support, accountID: accountID, appID: appID) }
 
     var body: some View {
         Section {
@@ -69,7 +70,7 @@ struct SteamInputPersonalLayoutsSection: View {
 
     private func reload() {
         do {
-            listings = try SteamInputPersonalCopy.inventory(root: support, accountID: accountID, appID: appID)
+            listings = try SteamInputPersonalCopy.inventory(shelf)
         } catch { importFailure = error.localizedDescription }
     }
 
@@ -81,8 +82,7 @@ struct SteamInputPersonalLayoutsSection: View {
             guard let url = try result.get().first else { return }
             let scoped = url.startAccessingSecurityScopedResource()
             defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-            let copy = try SteamInputPersonalCopy.importVDF(SteamInputPersonalCopy.readImport(url), fileName: url.lastPathComponent,
-                                                            accountID: accountID, appID: appID, root: support)
+            let copy = try SteamInputPersonalCopy.importVDF(SteamInputPersonalCopy.readImport(url), fileName: url.lastPathComponent, into: shelf)
             reload()
             importMessage = "Imported “\(copy.title)”. It is kept on this device; open it to apply or export it."
         } catch {
@@ -106,6 +106,7 @@ struct SteamInputCreateLayoutView: View {
     @State private var working = false
     @State private var failure: String?
     private var support: URL { FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0] }
+    private var shelf: SteamInputPersonalShelf { SteamInputPersonalShelf(root: support, accountID: accountID, appID: appID) }
 
     var body: some View {
         Form {
@@ -145,7 +146,7 @@ struct SteamInputCreateLayoutView: View {
 
     private func create(_ bytes: Data, _ creation: SteamInputPersonalCopy.Creation) {
         do {
-            _ = try SteamInputPersonalCopy.create(from: bytes, title: name, creation: creation, accountID: accountID, appID: appID, root: support)
+            _ = try SteamInputPersonalCopy.create(from: bytes, title: name, creation: creation, in: shelf)
             dismiss()
         } catch { failure = error.localizedDescription }
     }
@@ -278,8 +279,8 @@ struct SteamInputPersonalDetail: View {
 
     private func delete() {
         do {
-            try SteamInputPersonalCopy.delete(copy.id, accountID: copy.accountID, appID: copy.appID,
-                                              references: DockSteamInputService.personalReferences(accountID: copy.accountID, appID: copy.appID), root: support)
+            try SteamInputPersonalCopy.delete(copy.id, from: copy.shelf(support),
+                                              references: DockSteamInputService.personalReferences(accountID: copy.accountID, appID: copy.appID))
             onChange()
             dismiss()
         } catch { failure = error.localizedDescription }
@@ -353,6 +354,7 @@ struct SteamInputPersonalRecoveryView: View {
     @State private var failure: String?
     @State private var recovered: SteamInputPersonalCopy?
     private var support: URL { FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0] }
+    private var shelf: SteamInputPersonalShelf { SteamInputPersonalShelf(root: support, accountID: accountID, appID: appID) }
 
     var body: some View {
         Form {
@@ -365,15 +367,15 @@ struct SteamInputPersonalRecoveryView: View {
             Section {
                 Button("Recover layout") {
                     do {
-                        recovered = try SteamInputPersonalCopy.recover(listing.id, accountID: accountID, appID: appID, root: support)
+                        recovered = try SteamInputPersonalCopy.recover(listing.id, in: shelf)
                         failure = nil
                         onChange()
                     } catch { failure = error.localizedDescription }
                 }.accessibilityIdentifier("recovery.recover")
                 Button("Delete layout", role: .destructive) {
                     do {
-                        try SteamInputPersonalCopy.delete(listing.id, accountID: accountID, appID: appID,
-                                                          references: DockSteamInputService.personalReferences(accountID: accountID, appID: appID), root: support)
+                        try SteamInputPersonalCopy.delete(listing.id, from: shelf,
+                                                          references: DockSteamInputService.personalReferences(accountID: accountID, appID: appID))
                         onChange()
                         dismiss()
                     } catch { failure = error.localizedDescription }

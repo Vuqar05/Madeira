@@ -62,7 +62,7 @@ func probeLayout(title: String, binding: String = "xinput_button A, Jump, ") -> 
     try? FileManager.default.removeItem(at: support.appendingPathComponent("SteamInputPersonal"))
     try? FileManager.default.removeItem(at: support.appendingPathComponent("MadeiraDock"))
     let seedCopy = try! SteamInputPersonalCopy.create(from: probeLayout(title: "Seed"), title: "Seed", creation: .init(kind: .template, detail: "Gamepad"),
-                                                      accountID: 24, appID: 480, root: support)
+                                                      in: SteamInputPersonalShelf(root: support, accountID: 24, appID: 480))
     if arguments.contains("selected") {
         // The saved selection names Seed: it must not be deletable.
         var selection = DockSteamInputSelection(accountID: 24, appID: 480, controllerID: DockSteamInputService.controllerID)
@@ -71,7 +71,7 @@ func probeLayout(title: String, binding: String = "xinput_button A, Jump, ") -> 
     }
     if arguments.contains("damaged") {
         let broken = try! SteamInputPersonalCopy.create(from: probeLayout(title: "Broken"), title: "Broken", creation: .init(kind: .template, detail: "Gamepad"),
-                                                        accountID: 24, appID: 480, root: support)
+                                                        in: SteamInputPersonalShelf(root: support, accountID: 24, appID: 480))
         try! Data("{".utf8).write(to: broken.directory(support).appendingPathComponent("layout.json"))
     }
 }

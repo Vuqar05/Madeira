@@ -103,7 +103,7 @@ extension SteamInputPersonalCopy {
     @MainActor func writeRecord(root: URL) throws {
         var record = self
         record.version = 2
-        guard record.isValid(id: id, accountID: accountID, appID: appID) else { throw SteamInputCommunitySources.Failure.invalid }
+        guard record.isValid(id: id, in: shelf(root)) else { throw SteamInputCommunitySources.Failure.invalid }
         let encoded = try JSONEncoder().encode(record)
         guard encoded.count <= 256 << 10 else { throw SteamInputCommunitySources.Failure.invalid }
         try encoded.write(to: directory(root).appendingPathComponent("layout.json"), options: .atomic)
@@ -114,7 +114,7 @@ extension SteamInputPersonalCopy {
     @MainActor func reloaded(root: URL) throws -> Self {
         let url = directory(root).appendingPathComponent("layout.json")
         let value = try JSONDecoder().decode(Self.self, from: SteamInputCommunitySources.read(url, limit: 256 << 10))
-        guard value.isValid(id: id, accountID: accountID, appID: appID) else { throw SteamInputCommunitySources.Failure.invalid }
+        guard value.isValid(id: id, in: shelf(root)) else { throw SteamInputCommunitySources.Failure.invalid }
         return value
     }
 
@@ -122,9 +122,9 @@ extension SteamInputPersonalCopy {
 
     /// Every personal layout of the account and game, damaged ones included,
     /// so each can be recovered or deleted. Interrupted work is cleaned first.
-    @MainActor static func inventory(root: URL, accountID: UInt32, appID: UInt32) throws -> [Listing] {
-        guard accountID > 0, appID > 0 else { return [] }
-        let directory = folder(root: root, accountID: accountID, appID: appID)
+    @MainActor static func inventory(_ shelf: SteamInputPersonalShelf) throws -> [Listing] {
+        guard shelf.accountID > 0, shelf.appID > 0 else { return [] }
+        let directory = shelf.folder
         guard FileManager.default.fileExists(atPath: directory.path) else { return [] }
         let children = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
         guard children.count <= 1024 else { throw SteamInputCommunitySources.Failure.invalid }
@@ -139,8 +139,8 @@ extension SteamInputPersonalCopy {
             guard let id = UUID(uuidString: name) else { continue }
             do {
                 let value = try JSONDecoder().decode(Self.self, from: SteamInputCommunitySources.read(url.appendingPathComponent("layout.json"), limit: 256 << 10))
-                guard value.isValid(id: id, accountID: accountID, appID: appID) else { throw SteamInputCommunitySources.Failure.invalid }
-                do { _ = try value.bytes(root: root) }
+                guard value.isValid(id: id, in: shelf) else { throw SteamInputCommunitySources.Failure.invalid }
+                do { _ = try value.bytes(root: shelf.root) }
                 catch {
                     listings.append(Listing(id: id, copy: value, problem: "Its current revision is missing or was changed outside Madeira."))
                     continue
@@ -161,22 +161,22 @@ extension SteamInputPersonalCopy {
     /// A new personal layout from bytes the caller obtained: the game's
     /// default, a Steam template or a recovered file. The bytes must pass the
     /// same check as an import; nothing is selected or applied.
-    @MainActor static func create(from bytes: Data, title: String, creation: Creation, accountID: UInt32, appID: UInt32, root: URL,
+    @MainActor static func create(from bytes: Data, title: String, creation: Creation, in shelf: SteamInputPersonalShelf,
                                   now: Date = Date()) throws -> Self {
-        guard accountID > 0 else { throw ImportFailure.noAccount }
-        guard appID > 0, !bytes.isEmpty else { throw ImportFailure.notALayout }
+        guard shelf.accountID > 0 else { throw ImportFailure.noAccount }
+        guard shelf.appID > 0, !bytes.isEmpty else { throw ImportFailure.notALayout }
         guard bytes.count <= SteamInputCommunitySources.limit else { throw ImportFailure.tooLarge }
         do { _ = try SteamInputCompatibility(bytes) }
         catch is SteamInputCommunitySources.Failure { throw ImportFailure.notALayout }
         catch SteamFileError.invalid(let reason) { throw ImportFailure.invalidLayout(reason) }
         let title = try checkedTitle(String(title.prefix(160)))
-        guard (try? inventory(root: root, accountID: accountID, appID: appID).count) ?? limit < limit else { throw LifecycleFailure.tooMany }
+        guard (try? inventory(shelf).count) ?? limit < limit else { throw LifecycleFailure.tooMany }
         let hash = DockSteamInputNative.contentHash(bytes)
-        var copy = Self(id: UUID(), accountID: accountID, appID: appID, title: title, origin: nil, hash: hash)
+        var copy = Self(id: UUID(), accountID: shelf.accountID, appID: shelf.appID, title: title, origin: nil, hash: hash)
         copy.version = 2
         copy.creation = creation
         copy.history = [HistoryEntry(hash: hash, saved: now, note: "Created")]
-        try copy.store(bytes, root: root)
+        try copy.store(bytes, root: shelf.root)
         return copy
     }
 
@@ -185,7 +185,7 @@ extension SteamInputPersonalCopy {
         let current = try reloaded(root: root)
         let bytes = try current.bytes(root: root)
         let name = try Self.checkedTitle(String((title ?? current.title + " copy").prefix(160)))
-        guard (try? Self.inventory(root: root, accountID: accountID, appID: appID).count) ?? Self.limit < Self.limit else { throw LifecycleFailure.tooMany }
+        guard (try? Self.inventory(shelf(root)).count) ?? Self.limit < Self.limit else { throw LifecycleFailure.tooMany }
         var copy = Self(id: UUID(), accountID: accountID, appID: appID, title: name, origin: nil, hash: current.hash)
         copy.version = 2
         copy.creation = Creation(kind: .duplicate, detail: String(current.title.prefix(120)), from: id)
@@ -300,9 +300,9 @@ extension SteamInputPersonalCopy {
 
     /// Deletes a layout that nothing uses. The folder is first renamed out of
     /// the listing in one step, so a crash leaves the layout or nothing.
-    @MainActor static func delete(_ id: UUID, accountID: UInt32, appID: UInt32, references: SteamInputPersonalReferences, root: URL) throws {
+    @MainActor static func delete(_ id: UUID, from shelf: SteamInputPersonalShelf, references: SteamInputPersonalReferences) throws {
         if let reason = references.blocksDeletion(id) { throw LifecycleFailure.inUse(reason) }
-        let parent = folder(root: root, accountID: accountID, appID: appID)
+        let parent = shelf.folder
         let url = parent.appendingPathComponent(id.uuidString)
         if let record = try? JSONDecoder().decode(Self.self, from: SteamInputCommunitySources.read(url.appendingPathComponent("layout.json"), limit: 256 << 10)),
            record.pending != nil {
@@ -320,11 +320,12 @@ extension SteamInputPersonalCopy {
     /// readable revision becomes current, and every revision that still reads
     /// is kept in the history. A record that cannot be read is rebuilt.
     /// Nothing is applied.
-    @MainActor static func recover(_ id: UUID, accountID: UInt32, appID: UInt32, root: URL, now: Date = Date()) throws -> Self {
-        let url = folder(root: root, accountID: accountID, appID: appID).appendingPathComponent(id.uuidString)
+    @MainActor static func recover(_ id: UUID, in shelf: SteamInputPersonalShelf, now: Date = Date()) throws -> Self {
+        let root = shelf.root
+        let url = shelf.folder.appendingPathComponent(id.uuidString)
         let record = try? JSONDecoder().decode(Self.self, from: SteamInputCommunitySources.read(url.appendingPathComponent("layout.json"), limit: 256 << 10))
-        let usable = record.flatMap { $0.isValid(id: id, accountID: accountID, appID: appID) ? $0 : nil }
-        var base = usable ?? Self(id: id, accountID: accountID, appID: appID, title: record?.title.isEmpty == false ? String(record!.title.prefix(160)) : "Recovered layout",
+        let usable = record.flatMap { $0.isValid(id: id, in: shelf) ? $0 : nil }
+        var base = usable ?? Self(id: id, accountID: shelf.accountID, appID: shelf.appID, title: record?.title.isEmpty == false ? String(record!.title.prefix(160)) : "Recovered layout",
                                   origin: nil, hash: String(repeating: "0", count: 64))
         func readable(_ file: URL) -> (hash: String, bytes: Data, date: Date)? {
             guard let bytes = try? SteamInputCommunitySources.read(file, limit: SteamInputCommunitySources.limit),

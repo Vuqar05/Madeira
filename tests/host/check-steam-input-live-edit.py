@@ -127,8 +127,8 @@ cases = r'''
     }
     let v1 = layout("xinput_button A, , ")
     let h1 = DockSteamInputNative.contentHash(v1)
-    var copy = try Personal.create(from: v1, title: "Live", creation: .init(kind: .template, detail: "Gamepad"), accountID: 25, appID: 480, root: personalRoot)
-    let spare = try Personal.create(from: v1, title: "Spare", creation: .init(kind: .template, detail: "Gamepad"), accountID: 25, appID: 480, root: personalRoot)
+    var copy = try Personal.create(from: v1, title: "Live", creation: .init(kind: .template, detail: "Gamepad"), in: SteamInputPersonalShelf(root: personalRoot, accountID: 25, appID: 480))
+    let spare = try Personal.create(from: v1, title: "Spare", creation: .init(kind: .template, detail: "Gamepad"), in: SteamInputPersonalShelf(root: personalRoot, accountID: 25, appID: 480))
 
     // A launch whose Steam Input layout has loaded and settled.
     let template = try Data(contentsOf: testRoot.appendingPathComponent("feed.bin"))
@@ -225,7 +225,7 @@ cases = r'''
     copy = try SteamInputLiveEdit.apply(edited.bytes, to: copy, root: personalRoot)
     require(copy.pending == h2 && copy.hash == h1 && quiesce.first.map { $0.on && !$0.commandWritten } == true)
     require(try SteamInputLiveEdit.settle(copy, root: personalRoot).1 == .waiting)
-    require(refusal { try Personal.delete(copy.id, accountID: 25, appID: 480, references: references(), root: personalRoot) }.hasPrefix("Steam Input is still switching"))
+    require(refusal { try Personal.delete(copy.id, from: SteamInputPersonalShelf(root: personalRoot, accountID: 25, appID: 480), references: references()) }.hasPrefix("Steam Input is still switching"))
     try answer("rollback")
     require(DockSteamInputService.activeChoice == choice(h1), "Steam Input restored the working layout")
     require(!DockSteamInputService.inputQuiesced && DockSteamInputService.receipt?.phase == .rolledBack)
@@ -298,10 +298,10 @@ cases = r'''
     // =============================================================
     // 7. Deletion and retention against the saved selection, game not running
     // =============================================================
-    require(refusal { try Personal.delete(copy.id, accountID: 25, appID: 480, references: references(), root: personalRoot) }
+    require(refusal { try Personal.delete(copy.id, from: SteamInputPersonalShelf(root: personalRoot, accountID: 25, appID: 480), references: references()) }
             .hasPrefix("This layout is this game's chosen Steam Input layout."))
-    require(try Personal.delete(spare.id, accountID: 25, appID: 480, references: references(), root: personalRoot) == ())
-    require(try Personal.inventory(root: personalRoot, accountID: 25, appID: 480).map(\.id) == [copy.id])
+    require(try Personal.delete(spare.id, from: SteamInputPersonalShelf(root: personalRoot, accountID: 25, appID: 480), references: references()) == ())
+    require(try Personal.inventory(SteamInputPersonalShelf(root: personalRoot, accountID: 25, appID: 480)).map(\.id) == [copy.id])
     // The revision the game was last confirmed with survives any amount of history pruning.
     var pruned = copy
     for index in 0..<(Personal.historyLimit + 3) {
@@ -315,7 +315,7 @@ cases = r'''
     require(!target.isEmpty, "the selection is persisted under the support directory")
     try Data("{".utf8).write(to: storage.appendingPathComponent(target))
     require(references() == .unknown)
-    require(refusal { try Personal.delete(copy.id, accountID: 25, appID: 480, references: references(), root: personalRoot) }.hasPrefix("Madeira could not read"))
+    require(refusal { try Personal.delete(copy.id, from: SteamInputPersonalShelf(root: personalRoot, accountID: 25, appID: 480), references: references()) }.hasPrefix("Madeira could not read"))
     let staged = try pruned.staging(v3.bytes, root: personalRoot)
     require(try staged.reconciled(references: references(), root: personalRoot).1 == .waiting)
     print("PASS: live personal-layout editing through the real layout service: held output released before each change, confirmed/rolled-back/failed/refused/interrupted changes, validation and conditional refusal before sending, working revision kept until confirmed, safe deletion and retention against the saved selection")

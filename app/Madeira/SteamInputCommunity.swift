@@ -422,6 +422,14 @@ private extension Optional {
     }
 }
 
+/// One Steam account's personal layouts for one game, under Madeira's support folder.
+struct SteamInputPersonalShelf: Equatable {
+    let root: URL
+    let accountID: UInt32
+    let appID: UInt32
+    var folder: URL { root.appendingPathComponent("SteamInputPersonal/\(accountID)/\(appID)") }
+}
+
 /// A personal layout is exact bytes the player keeps under their own name:
 /// a copy of a community layout (never an edit of its original), a VDF file
 /// they imported, or a layout made from the game default, a Steam template or
@@ -465,6 +473,24 @@ struct SteamInputPersonalCopy: Codable, Identifiable, Equatable {
         let detail: String
         /// The personal layout a duplicate was made from.
         var from: UUID? = nil
+
+        /// Where the layout came from, for its row and page.
+        var provenance: String {
+            switch kind {
+            case .gameDefault: return "Made from the game default · " + detail
+            case .template: return "Made from Steam's " + detail + " template"
+            case .duplicate: return "Duplicated from " + detail
+            case .recovered: return "Recovered · " + detail
+            }
+        }
+        /// What follows the title in the active choice's detail.
+        var selectionSuffix: String {
+            switch kind {
+            case .gameDefault: return " · personal layout from the game default"
+            case .template: return " · personal layout from a Steam template"
+            case .duplicate, .recovered: return " · personal layout"
+            }
+        }
     }
     struct HistoryEntry: Codable, Equatable, Identifiable {
         let hash: String
@@ -479,29 +505,21 @@ struct SteamInputPersonalCopy: Codable, Identifiable, Equatable {
     /// Where the layout came from, for its row and page.
     var provenance: String {
         if let origin { return "Copied from " + origin.attribution }
-        if let creation {
-            switch creation.kind {
-            case .gameDefault: return "Made from the game default · " + creation.detail
-            case .template: return "Made from Steam's " + creation.detail + " template"
-            case .duplicate: return "Duplicated from " + creation.detail
-            case .recovered: return "Recovered · " + creation.detail
-            }
-        }
+        if let creation { return creation.provenance }
         return "Imported" + (sourceName.map { " from " + $0 } ?? " VDF file")
     }
-    static func folder(root: URL, accountID: UInt32, appID: UInt32) -> URL {
-        root.appendingPathComponent("SteamInputPersonal/\(accountID)/\(appID)")
-    }
-    @MainActor static func list(root: URL, accountID: UInt32, appID: UInt32) throws -> [Self] {
-        guard accountID > 0, appID > 0 else { return [] }
-        let directory = folder(root: root, accountID: accountID, appID: appID)
+    /// The shelf this layout is kept on.
+    func shelf(_ root: URL) -> SteamInputPersonalShelf { SteamInputPersonalShelf(root: root, accountID: accountID, appID: appID) }
+    @MainActor static func list(_ shelf: SteamInputPersonalShelf) throws -> [Self] {
+        guard shelf.accountID > 0, shelf.appID > 0 else { return [] }
+        let directory = shelf.folder
         guard FileManager.default.fileExists(atPath: directory.path) else { return [] }
         let children = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
         guard children.count <= 1024 else { throw SteamInputCommunitySources.Failure.invalid }
         return try children.compactMap { url -> Self? in
             guard let id = UUID(uuidString: url.lastPathComponent) else { return nil }
             let value = try JSONDecoder().decode(Self.self, from: SteamInputCommunitySources.read(url.appendingPathComponent("layout.json"), limit: 256 << 10))
-            guard value.isValid(id: id, accountID: accountID, appID: appID) else { throw SteamInputCommunitySources.Failure.invalid }
+            guard value.isValid(id: id, in: shelf) else { throw SteamInputCommunitySources.Failure.invalid }
             return value
         }.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
     }
@@ -509,8 +527,8 @@ struct SteamInputPersonalCopy: Codable, Identifiable, Equatable {
         hash.utf8.count == 64 && hash.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
     }
     /// A record read from disk describes itself, its scope and its revisions consistently.
-    func isValid(id: UUID, accountID: UInt32, appID: UInt32) -> Bool {
-        guard (1...2).contains(version), self.id == id, self.accountID == accountID, self.appID == appID, Self.validHash(hash),
+    func isValid(id: UUID, in shelf: SteamInputPersonalShelf) -> Bool {
+        guard (1...2).contains(version), self.id == id, accountID == shelf.accountID, appID == shelf.appID, Self.validHash(hash),
               pending.map(Self.validHash) ?? true, !title.isEmpty, title.count <= 160 else { return false }
         if let history {
             // A community copy's history starts at the downloaded revision; edits add to it.
@@ -525,7 +543,7 @@ struct SteamInputPersonalCopy: Codable, Identifiable, Equatable {
     /// and the one waiting for confirmation are kept beyond this.
     static let historyLimit = 64
     /// This layout's own folder.
-    func directory(_ root: URL) -> URL { Self.folder(root: root, accountID: accountID, appID: appID).appendingPathComponent(id.uuidString) }
+    func directory(_ root: URL) -> URL { shelf(root).folder.appendingPathComponent(id.uuidString) }
     /// Where a revision's bytes are kept: `revisions/<hash>.vdf`, or the first
     /// stored file `source.vdf` for the revision a copy or import began with.
     @MainActor func revisionURL(_ revision: String, root: URL) throws -> URL {
@@ -554,13 +572,8 @@ struct SteamInputPersonalCopy: Codable, Identifiable, Equatable {
     var detail: String {
         let from: String
         if let origin { from = " · personal copy of " + origin.attribution }
-        else if let creation {
-            switch creation.kind {
-            case .gameDefault: from = " · personal layout from the game default"
-            case .template: from = " · personal layout from a Steam template"
-            case .duplicate, .recovered: from = " · personal layout"
-            }
-        } else { from = " · imported VDF file" }
+        else if let creation { from = creation.selectionSuffix }
+        else { from = " · imported VDF file" }
         var text = String(String.UnicodeScalarView(title.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) })) + from
         while text.utf8.count > 512 { text.removeLast() }
         return text
@@ -618,7 +631,7 @@ struct SteamInputPersonalCopy: Codable, Identifiable, Equatable {
     func store(_ bytes: Data, root: URL) throws {
         let encoded = try JSONEncoder().encode(self)
         guard encoded.count <= 256 << 10 else { throw SteamInputCommunitySources.Failure.invalid }
-        let parent = Self.folder(root: root, accountID: accountID, appID: appID)
+        let parent = shelf(root).folder
         let staging = parent.appendingPathComponent(".\(id.uuidString).tmp")
         try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: staging) }
@@ -669,19 +682,18 @@ struct SteamInputPersonalCopy: Codable, Identifiable, Equatable {
     /// a layout that only needs inputs Madeira cannot forward is kept and
     /// cannot be applied, like a downloaded one. Nothing is selected or
     /// applied, and a refused file leaves nothing behind.
-    @MainActor static func importVDF(_ bytes: Data, fileName: String, accountID: UInt32, appID: UInt32, root: URL,
-                                     now: Date = Date()) throws -> Self {
-        guard accountID > 0 else { throw ImportFailure.noAccount }
-        guard appID > 0, !bytes.isEmpty else { throw ImportFailure.notALayout }
+    @MainActor static func importVDF(_ bytes: Data, fileName: String, into shelf: SteamInputPersonalShelf, now: Date = Date()) throws -> Self {
+        guard shelf.accountID > 0 else { throw ImportFailure.noAccount }
+        guard shelf.appID > 0, !bytes.isEmpty else { throw ImportFailure.notALayout }
         guard bytes.count <= SteamInputCommunitySources.limit else { throw ImportFailure.tooLarge }
         do { _ = try SteamInputCompatibility(bytes) }
         catch is SteamInputCommunitySources.Failure { throw ImportFailure.notALayout }
         catch SteamFileError.invalid(let reason) { throw ImportFailure.invalidLayout(reason) }
-        guard (try? inventory(root: root, accountID: accountID, appID: appID).count) ?? limit < limit else { throw ImportFailure.tooMany }
+        guard (try? inventory(shelf).count) ?? limit < limit else { throw ImportFailure.tooMany }
         let name = String((fileName as NSString).lastPathComponent.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) }.prefix(120).map(String.init).joined())
-        let copy = Self(id: UUID(), accountID: accountID, appID: appID, title: importTitle(fileName: fileName), origin: nil,
+        let copy = Self(id: UUID(), accountID: shelf.accountID, appID: shelf.appID, title: importTitle(fileName: fileName), origin: nil,
                         hash: DockSteamInputNative.contentHash(bytes), imported: now, sourceName: name.isEmpty ? nil : name)
-        try copy.store(bytes, root: root)
+        try copy.store(bytes, root: shelf.root)
         return copy
     }
     /// A copy of the stored bytes under a readable file name, for sharing.
