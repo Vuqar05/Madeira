@@ -602,6 +602,11 @@ not only layouts that emit Xbox buttons.
   unsupported features and settings the viewer cannot interpret.
 - [ ] Support creating from the game default, a template, a community copy or an
   existing personal VDF. Assign stable local identities and revision history.
+  Deferred until after milestone 5's "apply a layout made for another controller
+  type with a warning" item (owner decision, 2026-11-15). Everything here is
+  implemented and accepted on the device except applying a layout created from
+  the game default: the tested game's default is a Steam Deck layout, which apply
+  refuses until that item exists. Check this box after the retest listed there.
 - [x] Reuse editor controls where possible, backed by the native model. Implement
   buttons/chords, stick and trigger behavior, dead zones/curves, activators,
   toggle/turbo, action sets/layers/mode shifts, gyro, touchpad and menu bindings.
@@ -1074,9 +1079,9 @@ simulator-tested; owner device acceptance below, item 3 still open):
   acceptance script states. Item 3 stays open: creating from a template, a
   community copy, an import and a duplicate passed, but creating from the game
   default was not accepted on the device, because Terraria's default is a
-  Steam Deck layout that apply refuses (the milestone 5 warning item). It needs
-  one game whose default is a PlayStation or Xbox gamepad layout, or that
-  milestone 5 item.
+  Steam Deck layout that apply refuses (the milestone 5 warning item). By the
+  owner's decision it is deferred until that milestone 5 item, which carries
+  the retest.
 
 Done when: a player creates a layout, changes a recognizable binding, uses it in
 the running game, restarts and gets the same result. Export/import preserves
@@ -1143,6 +1148,11 @@ layout unchanged, including when fetching or parsing fails.
   controller-specific default, a Steam Deck (`controller_neptune`) layout, on the
   virtual DualSense through Use game default; its trackpad bindings had nothing
   to act on. A personal copy of that default is refused at apply until this is done.
+  After this is implemented, retest milestone 4 item 3 on the device and check
+  its box there: in a game whose default is made for another controller type
+  (Terraria's Steam Deck default), use New layout › Start from the game default,
+  change a recognizable binding, save, apply it after the warning, and confirm
+  the change in the game and again after a restart.
 - [ ] Recover after Madeira is killed mid-game. Observed on the iPad (2026-11-15, Debug
   `b845a746`): Madeira was closed while a game ran, and the next two launches stalled
   at "Loading Steam". Valve's client started and Dock's engine factory succeeded, but
