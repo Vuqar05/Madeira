@@ -1,4 +1,8 @@
-/* pipe2 only exists on iOS 27+, but the iOS 27 SDK makes configure report it,
+/* SPDX-License-Identifier: GPL-3.0-or-later
+ * Copyright 2026 125hz
+ * Madeira Converter Exception: see LICENSE-EXCEPTION.md
+ *
+ * pipe2 only exists on iOS 27+, but the iOS 27 SDK makes configure report it,
  * which weak-links a NULL pipe2 on older iOS. Always use pipe + fcntl instead. */
 #pragma once
 #include <unistd.h>
