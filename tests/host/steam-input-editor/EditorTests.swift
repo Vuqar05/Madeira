@@ -87,6 +87,28 @@ final class EditorTests: XCTestCase {
         XCTAssertTrue(bindingText(app).hasPrefix("A (Cross)"), "the restored revision is current")
     }
 
+    /// Item 6 through the UI: a field the editor cannot edit is listed, survives
+    /// an edit, a save and a relaunch byte for byte, and the saved revision is
+    /// what the editor reads back.
+    func testUnsupportedFieldsSurviveEditSaveAndRelaunch() {
+        var app = launch()
+        openSeedEditor(app)
+        let raw = "\"future_block\" { \"kept\" \"exactly\" }"
+        XCTAssertTrue(reveal(element("unsupported.future_block", app), in: app).label.contains(raw), element("unsupported.future_block", app).label)
+        openFaceButtons(app)
+        chooseGamepad("X (Square)", app)
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        element("editor.save", app).tap()
+        XCTAssertTrue(reveal(element("editor.message", app), in: app).label.hasPrefix("Saved as a new revision."))
+        app.terminate()
+        app = launch([])
+        openSeedEditor(app)
+        XCTAssertFalse(element("editor.resumeDraft", app).exists, "the edit was saved, not left as a draft")
+        XCTAssertTrue(reveal(element("unsupported.future_block", app), in: app).label.contains(raw), "the saved revision keeps the field exactly")
+        openFaceButtons(app)
+        XCTAssertTrue(bindingText(app).hasPrefix("X (Square)"), "the saved revision holds the edit")
+    }
+
     func testUnsavedEditsSurviveRelaunch() {
         var app = launch()
         openSeedEditor(app)

@@ -780,6 +780,7 @@ struct SteamInputUnsupportedSection: View {
                     Text(entry.path).font(.caption.bold())
                     Text(entry.rawContent).font(.caption.monospaced()).lineLimit(6).foregroundStyle(.secondary)
                 }
+                .accessibilityElement(children: .combine)
                 .accessibilityIdentifier("unsupported.\(entry.key)")
             }
         } header: {

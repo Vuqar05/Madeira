@@ -982,11 +982,20 @@ simulator-tested; owner device acceptance outstanding, so their boxes stay open)
   `check-steam-input-live-edit.py` (the real service, journal and C
   confirm/rollback/fail receipts under ASan/UBSan), the updated personal check,
   and `check-steam-input-editor-ui.py --simulator <UUID>`. The last builds the
-  production editor, store, service and C sources into a probe app and runs six
+  production editor, store, service and C sources into a probe app and runs seven
   XCUITests: edit, undo, redo, save, history and restore; unsaved edits across a
-  relaunch; create, rename, duplicate and delete; refusal to delete the chosen
-  layout; recovery of a damaged layout; and modes and action sets. The Debug iOS
-  app build succeeds.
+  relaunch; an unsupported field shown and kept exactly through an edit, a save
+  and a relaunch; create, rename, duplicate and delete; refusal to delete the
+  chosen layout; recovery of a damaged layout; and modes and action sets. The
+  Debug iOS app build succeeds.
+- Packaging note: in this worktree the ignored Wine DLLs and native libraries are
+  symlinks into the main checkout, and Xcode copies the DLL links into the
+  bundle as links (734 of them), which would be broken on the iPad and fail
+  strict signature verification. The Debug IPA for acceptance is therefore made
+  from a copy with the links resolved to their files, and the outer app is
+  re-signed with its own identity and entitlements. `codesign --verify --deep
+  --strict` then passes. The DLLs are whatever the main checkout last built:
+  they were not rebuilt here, though the bundled-runtime preflight passes.
 - Not established offline, and so left for the device: Valve's engine executing
   an edited layout (including the written `CHANGE_PRESET`/layer argument forms
   and mode shifts), held output on a real pad during a live switch, and the
