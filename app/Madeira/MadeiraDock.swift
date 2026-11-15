@@ -340,7 +340,7 @@ enum MadeiraDock {
         "session-offline-entitled", "session-offline-listed", "session-offline-timeout-state",
         "session-offline-fallback", "session-offline-ready",
         "launch-user-arguments-bytes", "launch-user-arguments-invalid",
-        "launch-game-running", "friends-available", "friends-own-state", "friends-signin-available", "friends-signin", "friends-requested", "friends-own-game", "friends-total", "friends-valid-ids", "friends-named", "friends-playing", "friends-seconds", "friends-count", "friends-cmd-seq", "friends-cmd-result",
+        "launch-game-running",
         "steam-input-available", "steam-input-controllers", "steam-input-ps-support", "steam-input-ps-support-set", "steam-input-ps-support-restored", "steam-input-settings-changed", "steam-input-config", "steam-input-store1-ps", "steam-input-store1-app", "steam-input-store2-ps", "steam-input-store2-app", "steam-input-store3-ps", "steam-input-store3-app", "steam-input-store4-ps", "steam-input-store4-app", "steam-input-store1-set", "steam-input-store2-set", "steam-input-store3-set", "steam-input-store4-set", "steam-input-override-restored", "steam-input-sdl-init", "steam-input-sdl-joysticks", "steam-input-focus-pid", "steam-input-focus-set", "steam-input-focused-app", "steam-input-activated", "steam-input-selected", "steam-input-layout-loaded", "steam-input-binding",
         "steam-input-mapping-cached", "steam-input-layout-source", "steam-input-layout-queued", "steam-input-layout-unavailable", "steam-input-connected",
         "steam-input-output-stream", "steam-input-output-reserved", "steam-input-output-connected", "steam-input-output-changed",
@@ -362,9 +362,8 @@ enum MadeiraDock {
     /// The host's report rounds (madeira-dock src/main.c).
     static let reportRounds: Set<String> = ["ml1820", "ml1830", "ml1860", "ml1870", "ml1970", "ml1990", "ml2000", "ml2011", "ml2015", "ml2016", "ml2020"]
 
-    /// The largest report read. Dock bounds its friends lines, but a long session
-    /// still writes more than the old 32 KB, and a report past the cap would hide
-    /// probe-result at game end.
+    /// The largest report read. A long session can write more than the old
+    /// 32 KB, and a report past the cap would hide probe-result at game end.
     static let reportCap = 1 << 20
 
     static func parseReport(_ data: Data) -> Report {
@@ -475,8 +474,6 @@ enum MadeiraDock {
             setenv(key, "1", 1)
         }
         setenv("MADEIRA_STEAM_HOST_APPID", String(game.id), 1)
-        // The app has no Friends code yet: without this, Dock would sign in to Friends and announce the user.
-        setenv("MADEIRA_DOCK_FRIENDS", "0", 1)
         setenv("MADEIRA_STEAM_HOST_LAUNCH_OPTION", String(launchOption), 1)
         setenv("MADEIRA_STEAM_HOST_CLIENT_DIR", SteamRuntimeFiles.windowsRoot, 1)
         setenv("MADEIRA_STEAM_HOST_EXPECTED_INSTALL", game.windowsInstallPath, 1)

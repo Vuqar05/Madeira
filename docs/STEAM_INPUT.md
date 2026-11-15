@@ -66,7 +66,7 @@ Slot names come from each IPC wrapper's RIP-relative reference to its own name
 string (149 slots, 0 to 148). The pipe-entry offset was cross-checked against the
 neighbouring constructors: `+0x38`…`+0x50` are the four System managers
 (slots 38 to 41) and `+0x58` is `IClientVRMap` (slot 61). The September build was not
-inspected, so it gets no pins and the feature is off there, as with Friends.
+inspected, so it gets no pins and the feature is off there.
 Reproduce with `madeira-dock/tools/check-client-layout.py`.
 
 ## Feasibility
