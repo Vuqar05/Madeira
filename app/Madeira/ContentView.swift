@@ -2750,7 +2750,7 @@ struct ContentView: View {
         MadeiraConfig.migrateLegacy { self.logStore.log($0) }
         MadeiraConfig.deleteLegacyFiles { self.logStore.log($0) }   /* ml1096: the old files go once the cfg exists */
         /* ml2100: XInput (default) or the HID controller; before the wineserver starts. */
-        GamepadInput.shared.beginPadSession(steamInput: GamepadInput.keyboardMouseAvailable && profile?.usesSteamInput == true)
+        GamepadInput.shared.beginPadSession(steamInput: GamepadInput.steamInputAvailable && profile?.usesSteamInput == true)
         /* ml1990: player 1 exists before the game enumerates XInput. */
         GamepadInput.shared.reserveSessionSlot(touchControls: TouchControlsModel.shared.offersControllerInput)
         if MadeiraConfig.present {
@@ -3564,7 +3564,7 @@ struct ContentView: View {
                 guard let signIn = SteamSignIn.credentialsForDock() else {
                     throw DockError.message("Sign in to Steam in Madeira before starting Dock.")
                 }
-                if GamepadInput.keyboardMouseAvailable && profile?.usesSteamInput == true {
+                if GamepadInput.steamInputAvailable && profile?.usesSteamInput == true {
                     try await SteamRuntimeInstaller.shared.prepareSteamInput(prefix: MadeiraDock.prefix) { _ in }
                     // One identity for the whole launch: the selection store,
                     // the client's settings and the HID device all read it.
@@ -3572,11 +3572,13 @@ struct ContentView: View {
                 } else {
                     SteamInputController.endSession()
                 }
+                // A session cut off with Madeira (closed mid-game) leaves client state behind.
+                DockSessionRecovery.begin(appID: game.id, clientRoot: MadeiraDock.clientRoot)
                 try MadeiraDock.writeHandoff(account: signIn.accountName, token: signIn.refreshToken, appID: game.id)
                 // Steam Input: the client reads its PlayStation setting from the account's
                 // localconfig.vdf when it starts (DockSteamInput; put back in dockEnded).
                 try DockSteamInput.prepare(steamID: try MadeiraDock.subject(signIn.refreshToken),
-                                       enabled: GamepadInput.keyboardMouseAvailable && profile?.usesSteamInput == true,
+                                       enabled: GamepadInput.steamInputAvailable && profile?.usesSteamInput == true,
                                        controller: SteamInputController.session ?? .dualSense)
             } catch { fail(error); return }
             MadeiraDock.configure(game, launchOption: launchOption, arguments: LaunchArgumentText.plain(profile?.arguments ?? ""))

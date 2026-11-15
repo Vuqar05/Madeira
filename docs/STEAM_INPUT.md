@@ -561,3 +561,30 @@ status line (chosen, loading, downloading, needs confirmation, applying,
 active, rolled back, failed, no layout) and say which controller Steam sees.
 While the game is not running they show the saved choice and offer "Use the
 game default from the next launch", which clears only Madeira's override.
+
+## Recovery after Madeira is closed mid-game (milestone 5, 2026-11-15)
+
+Observed on the iPad (Debug `b845a746`): after Madeira was closed while a game
+ran, the next starts stopped at "Loading Steam" — the client loaded, but its
+connectivity job (`CJobTestConnectivity`, `test.steampowered.com/204`) never
+finished, so sign-in never began. A Dock start now writes a session record
+(`DockSessionRecovery`) and removes it when the session ends. A record found at
+the next start means the previous session was cut off: the client's crash
+marker (`.crash`) and HTTP cache (`appcache/httpcache`), both rebuilt by the
+client, are removed before it starts; sign-in, licenses and settings are kept
+and links are not followed. If sign-in has not begun 120 s after the start, the
+starting screen says so in words (close the session and start again; if it
+persists, reopen Madeira and export the log), and the log gets the client's own
+connection lines once, with Steam IDs, addresses and long numbers removed. The
+cause is not yet confirmed on a device; the next device session reproduces it
+and reads those lines. `tests/host/check-dock-session-recovery.py` covers the
+record, the cleanup and the redaction.
+
+## Steam Input without keyboard-and-mouse mode (milestone 5, 2026-11-15)
+
+Steam Input no longer depends on `GamepadInput.keyboardMouseAvailable`
+(`MADEIRA_XINPUT && MADEIRA_PAD_KBM`). The Controller choice exists whenever
+controllers are on; `env.MADEIRA_PAD_KBM = 0` removes only "Keyboard and mouse";
+Steam Input has its own `env.MADEIRA_STEAM_INPUT` (default 1). A saved Steam
+Input choice survives `MADEIRA_PAD_KBM = 0`
+(`tests/host/check-steam-input-availability.py`).

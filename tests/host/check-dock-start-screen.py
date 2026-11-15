@@ -47,6 +47,12 @@ header = (app / 'Winios/Winios.h').read_text(encoding='utf-8')
 driver = (root / 'build/win32u-unix/driver_ios.c').read_text(encoding='utf-8')
 project = (root / 'app/Madeira.xcodeproj/project.pbxproj').read_text(encoding='utf-8')
 rules = screen[screen.index('// MARK: - Rules'):screen.index('// MARK: - Model')]
+# The stall words and threshold come from DockSessionRecovery (milestone 5 item 3).
+recovery = (app / 'DockSessionRecovery.swift').read_text(encoding='utf-8')
+stall_after = recovery[recovery.index('    static let stallAfter'):].split('\n', 1)[0]
+stall_text = recovery[recovery.index('    static let stallText'):recovery.index('    private static var stallLogged')]
+rules += '\nenum DockSessionRecovery {\n' + stall_after + '\n' + stall_text + '}\n'
+
 
 # ------------------------------------------------------------------ 4. static
 require(screen.startswith('// SPDX-License-Identifier: GPL-3.0-or-later\n// Copyright 2026 125hz\n'
@@ -263,7 +269,10 @@ func window(_ image: String, _ w: Int, _ h: Int, visible: Bool = true, drawn: Bo
         require(text([:], waited: 29) == "Starting Madeira Dock…" && text([:], waited: 30) == "Still starting Madeira Dock…",
                 "after 30 s without its first field the host is late")
         require(text(started) == "Loading Steam…" && text(loaded) == "Loading Steam…", "host started: Valve's client loads")
-        require(text(started, waited: 300) == "Loading Steam…", "late only matters before the host's first field")
+        require(text(started, waited: 119) == "Loading Steam…", "late only matters before the host's first field")
+        require(text(started, waited: 300) == DockSessionRecovery.stallText && DockSessionRecovery.stallText.contains("close this session"),
+                "a client that never begins signing in is named, in words")
+        require(text(loaded, waited: 300).hasPrefix("Steam has not connected yet"), "the stall words lead with what is wrong")
         require(text(submitted) == "Signing in to Steam…" && text(["probe-start-bits": "64", "session-logon-start-result": "1"]) == "Signing in to Steam…",
                 "the sign-in was submitted")
         require(text(online) == "Signed in. Waiting for Steam to confirm this game's license…", "signed in, the license check waits")

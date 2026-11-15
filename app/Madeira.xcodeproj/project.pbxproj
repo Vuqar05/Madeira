@@ -19,6 +19,7 @@
 		A10006B3 /* SteamInputLiveEdit.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20006B3 /* SteamInputLiveEdit.swift */; };
 		A10006B5 /* DockSteamInput.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20006B5 /* DockSteamInput.swift */; };
 		A10006B6 /* SteamInputController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20006B6 /* SteamInputController.swift */; };
+		A10006B8 /* DockSessionRecovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20006B8 /* DockSessionRecovery.swift */; };
 		A10006B7 /* SteamInputConfirmationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20006B7 /* SteamInputConfirmationView.swift */; };
 		A10006B2 /* SteamInputPersonalReferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20006B2 /* SteamInputPersonalReferences.swift */; };
 		A10006B1 /* SteamInputPersonalRevisions.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20006B1 /* SteamInputPersonalRevisions.swift */; };
@@ -318,6 +319,7 @@
 		A20006B3 /* SteamInputLiveEdit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SteamInputLiveEdit.swift"; sourceTree = "<group>"; };
 		A20006B5 /* DockSteamInput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "DockSteamInput.swift"; sourceTree = "<group>"; };
 		A20006B6 /* SteamInputController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SteamInputController.swift"; sourceTree = "<group>"; };
+		A20006B8 /* DockSessionRecovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "DockSessionRecovery.swift"; sourceTree = "<group>"; };
 		A20006B7 /* SteamInputConfirmationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SteamInputConfirmationView.swift"; sourceTree = "<group>"; };
 		A20006B2 /* SteamInputPersonalReferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SteamInputPersonalReferences.swift"; sourceTree = "<group>"; };
 		A20006B1 /* SteamInputPersonalRevisions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SteamInputPersonalRevisions.swift"; sourceTree = "<group>"; };
@@ -669,6 +671,7 @@
 				A20006B3 /* SteamInputLiveEdit.swift */,
 				A20006B5 /* DockSteamInput.swift */,
 				A20006B6 /* SteamInputController.swift */,
+				A20006B8 /* DockSessionRecovery.swift */,
 				A20006B7 /* SteamInputConfirmationView.swift */,
 				A20006B2 /* SteamInputPersonalReferences.swift */,
 				A20006B1 /* SteamInputPersonalRevisions.swift */,
@@ -1161,6 +1164,7 @@
 				A10006B3 /* SteamInputLiveEdit.swift in Sources */,
 				A10006B5 /* DockSteamInput.swift in Sources */,
 				A10006B6 /* SteamInputController.swift in Sources */,
+				A10006B8 /* DockSessionRecovery.swift in Sources */,
 				A10006B7 /* SteamInputConfirmationView.swift in Sources */,
 				A10006B2 /* SteamInputPersonalReferences.swift in Sources */,
 				A10006B1 /* SteamInputPersonalRevisions.swift in Sources */,

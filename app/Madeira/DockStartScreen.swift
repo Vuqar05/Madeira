@@ -245,7 +245,8 @@ enum DockStartStatus {
         if fields["session-native-token-submitted"] != nil || fields["session-logon-start-result"] != nil {
             return "Signing in to Steam…"
         }
-        if hostStarted(fields) { return "Loading Steam…" }
+        // Milestone 5 item 3: the client started but never began signing in.
+        if hostStarted(fields) { return waited >= DockSessionRecovery.stallAfter ? DockSessionRecovery.stallText : "Loading Steam…" }
         // Before the host's first field: the one-time installs run first, then the host starts.
         let starting = waited >= slowAfter ? "Still starting Madeira Dock…" : "Starting Madeira Dock…"
         guard installers else { return starting }
@@ -337,10 +338,17 @@ final class DockStartScreen: ObservableObject {
                 }
             }
         }
-        guard var hold else { return }
         if !hostStarted {
             hostStarted = DockStartStatus.hostStarted((report ?? MainActor.assumeIsolated { MadeiraDock.pollReport() }).fields)
         }
+        if hostStarted, elapsed >= DockSessionRecovery.stallAfter {
+            let fields = (report ?? MainActor.assumeIsolated { MadeiraDock.pollReport() }).fields
+            if DockStartStatus.text(fields, installers: false, installerProgress: nil, installsFinished: true,
+                                    waited: elapsed) == DockSessionRecovery.stallText {
+                MainActor.assumeIsolated { DockSessionRecovery.logStall(clientRoot: MadeiraDock.clientRoot, elapsed: elapsed) }
+            }
+        }
+        guard var hold else { return }
         let windows = Self.censusWindows()
         // Windows shown before the host started belong to the one-time installs.
         if !hostStarted { for window in windows where window.visible { early.insert(window.hwnd) } }

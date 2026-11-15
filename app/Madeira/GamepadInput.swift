@@ -208,8 +208,21 @@ final class GamepadInput: @unchecked Sendable {
     /// main actor by the library for its session; read on `queue`.
     private var keyboardMouse: PadBindings?
 
-    /// Availability of the mode. 0 removes the per-game choice; the physical pad then always feeds XInput.
+    /// Availability of keyboard-and-mouse mode. 0 removes that choice only; the
+    /// other controller modes, Steam Input among them, stay.
     static let keyboardMouseAvailable: Bool = flag("MADEIRA_XINPUT") && flag("MADEIRA_PAD_KBM")
+    /// The per-game Controller choice exists whenever controllers are on.
+    static let controllerModeAvailable: Bool = flag("MADEIRA_XINPUT")
+    /// Steam Input (Valve's client reads the pad in Dock), independent of
+    /// keyboard-and-mouse mode (milestone 5 item 9). 0 removes the choice.
+    static let steamInputAvailable: Bool = flag("MADEIRA_XINPUT") && flag("MADEIRA_STEAM_INPUT")
+    /// A saved Controller choice this build can honour, else nil (the game's own support).
+    static func allowedMode(_ mode: String?) -> String? {
+        guard controllerModeAvailable, let mode else { return nil }
+        if mode == "keys" && !keyboardMouseAvailable { return nil }
+        if mode == "steam" && !steamInputAvailable { return nil }
+        return mode
+    }
 
     /// ml2170: XInputGetBatteryInformation and XINPUT_CAPS_WIRELESS from each
     /// pad's GCDeviceBattery (win32u op 4). 0: nothing is published and XInput

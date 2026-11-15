@@ -805,11 +805,11 @@ struct LibraryEntry: Codable, Identifiable {
         // Exported only for that choice, and it wins over madeira.cfg's MADEIRA_DINPUT_PAD
         // (ml1240: in ml1184's per-launch list, unset when the session ends); the cfg's
         // own value still applies to the other choices.
-        if GamepadInput.keyboardMouseAvailable, controllerMode == "dinput" { setenv("MADEIRA_DINPUT_PAD", "1", 1) }
+        if GamepadInput.controllerModeAvailable, controllerMode == "dinput" { setenv("MADEIRA_DINPUT_PAD", "1", 1) }
         else if MadeiraConfig.get("env.MADEIRA_DINPUT_PAD") == nil { unsetenv("MADEIRA_DINPUT_PAD") }
         // "steam": Madeira Dock asks Valve's client about Steam Input (madeira-dock
         // src/steam_input.c); beginPadSession already made player 1 a HID DualSense.
-        if GamepadInput.keyboardMouseAvailable, usesSteamInput { setenv("MADEIRA_DOCK_STEAM_INPUT", "1", 1) }
+        if GamepadInput.steamInputAvailable, usesSteamInput { setenv("MADEIRA_DOCK_STEAM_INPUT", "1", 1) }
         else if MadeiraConfig.get("env.MADEIRA_DOCK_STEAM_INPUT") == nil { unsetenv("MADEIRA_DOCK_STEAM_INPUT") }
         if let anisotropyLimit, [1, 2, 4, 8].contains(anisotropyLimit) { setenv("DXMT_D9_ANISO_LIMIT", String(anisotropyLimit), 1) }
         else { unsetenv("DXMT_D9_ANISO_LIMIT") }
@@ -1750,7 +1750,7 @@ final class LibraryModel: ObservableObject {
         controls.sizeScale = min(max(entry.controlSize ?? 1, 0.5), 2)
         controllerBinds = GamepadInput.keyboardMouseAvailable ? (entry.controllerBinds ?? [:]) : [:]
         padMouseVertical = GamepadInput.keyboardMouseAvailable ? (entry.padMouseVertical ?? 1) : 1
-        controllerMode = GamepadInput.keyboardMouseAvailable ? entry.controllerMode : nil
+        controllerMode = GamepadInput.allowedMode(entry.controllerMode)
         applyControllerMode()
         padAssist = entry.padAssist
         GamepadInput.shared.setPadAssist(padAssist)
@@ -1902,7 +1902,7 @@ final class LibraryModel: ObservableObject {
             entry.fpsMode = fpsMode; entry.performance = performance
             entry.overlayFields = overlayFields
             entry.controlOpacity = opacity; entry.controlSize = controls.sizeScale
-            if GamepadInput.keyboardMouseAvailable { entry.controllerMode = controllerMode }
+            if GamepadInput.controllerModeAvailable { entry.controllerMode = controllerMode }
             if GamepadInput.keyboardMouseAvailable { entry.controllerBinds = controllerBinds.isEmpty ? nil : controllerBinds }
             if GamepadInput.keyboardMouseAvailable { entry.padMouseVertical = padMouseVertical == 1 ? nil : padMouseVertical }
             entry.padAssist = padAssist
@@ -4244,7 +4244,7 @@ struct LibraryDetail: View {
 
     @ViewBuilder private var controlsPage: some View {
         Section("On screen") {
-            if GamepadInput.keyboardMouseAvailable {
+            if GamepadInput.controllerModeAvailable {
                 ControllerModeChoice(mode: $entry.controllerMode, steamInput: entry.steamAppID != nil && !entry.startsSteamGameDirectly)
                 if entry.controllerMode == "dinput" {
                     Text("For older games that read the pad through DirectInput.").font(.caption).foregroundStyle(.secondary)
@@ -4948,8 +4948,8 @@ struct ControllerModeChoice: View {
             Picker("Controller", selection: Binding(get: { mode ?? "" }, set: { mode = $0.isEmpty ? nil : $0 })) {
                 Text("Game's own support").tag("")
                 Text("XInput and DirectInput").tag("dinput")
-                Text("Keyboard and mouse").tag("keys")
-                if steamInput || mode == "steam" { Text("Steam Input").tag("steam") }
+                if GamepadInput.keyboardMouseAvailable || mode == "keys" { Text("Keyboard and mouse").tag("keys") }
+                if GamepadInput.steamInputAvailable && (steamInput || mode == "steam") { Text("Steam Input").tag("steam") }
             }.pickerStyle(.menu).labelsHidden()
         }
     }
@@ -6131,7 +6131,7 @@ struct LibraryHUD: View {
                     }.pickerStyle(.segmented).frame(maxWidth: 220)
                 }
                 Button("Edit controls", systemImage: "slider.horizontal.3") { controls.visible = true; controls.editing = true; model.menu = false }
-                if GamepadInput.keyboardMouseAvailable {
+                if GamepadInput.controllerModeAvailable {
                     ControllerModeChoice(mode: Binding(get: { model.controllerMode }, set: { model.controllerMode = $0; model.saveCurrentProfile() }),
                                          steamInput: model.entries.first { $0.id == model.current }.map { $0.steamAppID != nil && !$0.startsSteamGameDirectly } ?? false)
                     if model.controllerMode == "keys" {

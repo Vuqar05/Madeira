@@ -726,6 +726,10 @@ OVERLAY = {
                 "note": "1: with the HID controller on, player 1 also stays an XInput pad. Off by default, so a game "
                         "that reads both APIs does not see the same pad twice.",
                 "sources": ["app/Madeira/GamepadInput.swift"]},
+    "env.MADEIRA_STEAM_INPUT": {"category": "Controllers", "title": "Steam Input choice", "kind": "bool", "default": "1",
+                "note": "Availability of Controller = Steam Input for Steam games started through Madeira Dock. 0 removes "
+                        "that choice. Independent of keyboard-and-mouse mode (env.MADEIRA_PAD_KBM).",
+                "sources": ["app/Madeira/GamepadInput.swift"]},
     "env.MADEIRA_STEAM_INPUT_XBOX": {"category": "Controllers", "title": "Steam Input: Xbox identity for on-screen and other pads",
                 "kind": "bool", "default": "0",
                 "note": "1: with Controller = Steam Input, the on-screen controls and pads that are not PlayStation ones reach "

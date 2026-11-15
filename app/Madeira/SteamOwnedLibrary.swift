@@ -1302,6 +1302,7 @@ final class SteamOwnedLibrary: ObservableObject {
     func dockEnded() {
         DockSteamInput.restore()
         SteamInputController.endSession()
+        DockSessionRecovery.end()
         guard gate.heldForDock else { return }
         gate.releaseDock()
         reconcileSession()
