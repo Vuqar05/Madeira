@@ -440,7 +440,8 @@ Original VDF bytes, Workshop metadata, hashes and attribution remain separate fr
 private revision-tagged transaction copies. Unknown bindings and repeated keys
 are retained. Unsupported controller types, motion, touch positions, rear inputs
 and overlay menus are identified before applying; known unsupported layouts cannot
-be applied. Personal copies retain the raw original and attribution in separate
+be applied. (Superseded by owner decision, 2026-11-15: milestone 5 will allow such
+layouts to be applied after a warning and confirmation; until then this refusal stands.) Personal copies retain the raw original and attribution in separate
 account/game/UUID-scoped storage and can be exported. Editing remains milestone 4.
 
 Static January SteamUI checks now cover saved-Workshop locator formatting, the UGC
@@ -1063,6 +1064,21 @@ layout unchanged, including when fetching or parsing fails.
   - Decide with the previous item whether the on-screen controls and a physical
     pad remain one merged player or become separate players, each with its own
     controller type.
+- [ ] Allow a layout made for another controller type to be applied, with a warning.
+  Before applying, list the layout features the player's current controller cannot
+  supply, such as trackpads, gyro, rear buttons, overlay menus or a different
+  controller type. Say that Valve's engine maps what it can and that those
+  bindings will not work, and apply only after the player confirms. This covers
+  every source: game default, community, personal, imported and live editing.
+  Conditional layouts, broken references and malformed files are still refused.
+  Build the feature list on the per-controller identity from the previous item,
+  not on today's DualSense-only assumption. This supersedes milestone 3's "known
+  unsupported layouts cannot be applied" (owner decision, 2026-11-15) and meets
+  the rule above that a layout is never applied silently to another controller
+  type. Observed on the iPad (Debug `b845a746`): Valve's engine ran Terraria's only
+  controller-specific default, a Steam Deck (`controller_neptune`) layout, on the
+  virtual DualSense through Use game default; its trackpad bindings had nothing
+  to act on. A personal copy of that default is refused at apply until this is done.
 - [ ] Recover after Madeira is killed mid-game. Observed on the iPad (2026-11-15, Debug
   `b845a746`): Madeira was closed while a game ran, and the next two launches stalled
   at "Loading Steam". Valve's client started and Dock's engine factory succeeded, but
