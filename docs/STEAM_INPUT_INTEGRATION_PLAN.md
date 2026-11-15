@@ -1063,6 +1063,13 @@ layout unchanged, including when fetching or parsing fails.
   - Decide with the previous item whether the on-screen controls and a physical
     pad remain one merged player or become separate players, each with its own
     controller type.
+- [ ] Recover after Madeira is killed mid-game. Observed on the iPad (2026-11-15, Debug
+  `b845a746`): Madeira was closed while a game ran, and the next two launches stalled
+  at "Loading Steam". Valve's client started and Dock's engine factory succeeded, but
+  the client never finished its connectivity test (`test.steampowered.com/204`), so
+  sign-in and Dock's session never began. Fully closing and reopening Madeira cleared
+  it. Find what the killed session leaves behind, recover from it on launch, and
+  show a readable message instead of an indefinite load.
 - [ ] Test focus loss, background/foreground, suspend/resume, hot unplug/replug,
   late connection, repeated launches and rapid layout changes; release held keys,
   buttons and feedback without duplicate events or stuck input.
